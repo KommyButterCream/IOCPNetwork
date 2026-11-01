@@ -44,7 +44,7 @@ constexpr static uint32_t PACKET_SIZE_LIMIT = 65535;
 // (Buffer/SessionBufferConfig.h 참고)
 // 송신 큐 엔트리(SendPacketEntry) 풀의 초기 블록 수.
 //
-// 상한이 아니라 출발점이다. 모자라면 EngineMemoryPool 이 런타임에 확장하고,
+// 상한이 아니라 출발점이다. 모자라면 TlsMemoryPool 이 런타임에 확장하고,
 // 그 사실은 LogStats("sendQueue") 의 grow 값으로 드러난다.
 //
 // 예전 이름은 HYBRID_SEND_PACKET_POOL_SIZE 였고 그때는 진짜 상한이었다.

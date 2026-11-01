@@ -19,7 +19,7 @@ class PacketHandlerTable;
 class SessionManager;
 class ReadySessionQueue;
 class ReadySessionScheduler;
-#include "../Memory/EngineMemoryPoolFwd.h"
+class TlsMemoryPool;
 class HeartbeatThread;
 
 struct OverlappedEx;
@@ -75,8 +75,8 @@ private:
 	ReadySessionScheduler* m_readySessionScheduler = nullptr;
 	HeartbeatThread* m_heartbeatThread = nullptr;
 	PacketHandlerTable* m_packetHandlerTable = nullptr;
-	EngineMemoryPool* m_jobMemoryPool = nullptr;
-	EngineMemoryPool* m_packetMemoryPool = nullptr;
+	TlsMemoryPool* m_jobMemoryPool = nullptr;
+	TlsMemoryPool* m_packetMemoryPool = nullptr;
 
 	// 송신 큐 엔트리 전용 풀.
 	//
@@ -86,7 +86,7 @@ private:
 	// grow / acquireFail 이 송신 경로만의 신호가 되는 이점도 있다.
 	//
 	// 예전에는 HybridSendPacketPool 이 이 자리에 있었다.
-	EngineMemoryPool* m_sendQueueMemoryPool = nullptr;
+	TlsMemoryPool* m_sendQueueMemoryPool = nullptr;
 
 	HandlerContext m_handlerContext = {};
 
@@ -254,15 +254,15 @@ public:
 	uint32_t GetRecvPauseCount() const;
 
 protected:
-	EngineMemoryPool* GetJobMemoryPool() const;
-	EngineMemoryPool* GetPacketMemoryPool() const;
+	TlsMemoryPool* GetJobMemoryPool() const;
+	TlsMemoryPool* GetPacketMemoryPool() const;
 
 	// 송신 경로 부기용 풀. 64바이트 빈 하나를 갖고 있다.
 	//
 	// 브로드캐스트에서 SharedSendPacket 을 담을 곳이 필요해서 열었다.
 	// packet 풀은 수신 경로와 공유하므로 작은 송신 부기 객체는 여기에 둔다.
 	// (분리 이유는 m_sendQueueMemoryPool 선언부 주석 참고)
-	EngineMemoryPool* GetSendQueueMemoryPool() const;
+	TlsMemoryPool* GetSendQueueMemoryPool() const;
 
 	const HandlerContext& GetHandlerContext() const;
 	virtual void* GetServiceContext();

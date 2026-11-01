@@ -11,7 +11,7 @@ using namespace Core::Util;
 #include "../Memory/EngineMemoryPoolHelper.h"
 
 
-SessionJobQueue::SessionJobQueue(SESSION_ROLE sessionRole, EngineMemoryPool* jobMemoryPool, EngineMemoryPool* packetMemoryPool)
+SessionJobQueue::SessionJobQueue(SESSION_ROLE sessionRole, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool)
 {
 	m_sessionRole = sessionRole;
 	m_jobMemoryPool = jobMemoryPool;

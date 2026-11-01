@@ -9,12 +9,12 @@
 #include "PreDefine.h"
 #include "SendPacketEntry.h"
 
-#include "../Memory/EngineMemoryPoolFwd.h"
+class TlsMemoryPool;
 
 // 세션 하나의 송신 대기열.
 //
 // 구조
-//   엔트리를 EngineMemoryPool 에서 받아 next 로 엮은 단방향 리스트다.
+//   엔트리를 TlsMemoryPool 에서 받아 next 로 엮은 단방향 리스트다.
 //   head 에서 꺼내고 tail 에 붙이므로 FIFO 이고, 깊이는 개수 상한으로만
 //   제한한다.
 //
@@ -58,7 +58,7 @@ public:
 
 	// maxCount 는 이 큐에 동시에 담을 수 있는 패킷 수의 상한이다.
 	// 2의 거듭제곱이 아니어도 된다.
-	bool Initialize(EngineMemoryPool* sendQueueMemoryPool, EngineMemoryPool* packetMemoryPool, uint32_t maxCount);
+	bool Initialize(TlsMemoryPool* sendQueueMemoryPool, TlsMemoryPool* packetMemoryPool, uint32_t maxCount);
 	void Finalize();
 
 	bool Enqueue(void** packetData, uint32_t packetSize);
@@ -96,6 +96,6 @@ private:
 	// 예전에는 컴파일 타임 상수였다. 역할마다 적정 깊이가 달라 런타임으로 옮겼다.
 	uint32_t m_maxCount = 0;
 
-	EngineMemoryPool* m_sendQueueMemoryPool = nullptr;
-	EngineMemoryPool* m_packetMemoryPool = nullptr;
+	TlsMemoryPool* m_sendQueueMemoryPool = nullptr;
+	TlsMemoryPool* m_packetMemoryPool = nullptr;
 };

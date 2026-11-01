@@ -84,10 +84,6 @@ public:
 		uint64_t committedBytes = 0;   // 이 빈이 OS 에서 잡은 총 바이트
 	};
 
-	// 예전 이름. 호출부 호환용으로 남긴다.
-	using SlabConfig = BinConfig;
-	using SlabStats = BinStats;
-
 public:
 	TlsMemoryPool() = default;
 	~TlsMemoryPool();
@@ -142,12 +138,6 @@ public:
 
 	// size 가 어느 빈으로 가는지. binCount 이상이면 OS 우회다. 진단용.
 	uint32_t GetBinIndex(size_t size) const;
-
-	// 예전 이름. 호출부 호환용.
-	uint32_t GetSlabCount() const { return GetBinCount(); }
-	bool GetSlabStats(uint32_t bin, BinStats& out) const { return GetBinStats(bin, out); }
-	uint32_t GetClassBlockSize(uint32_t bin) const { return GetBinBlockSize(bin); }
-	uint32_t GetClassIndex(size_t size) const { return GetBinIndex(size); }
 
 private:
 	void* AcquireBypass(size_t size);

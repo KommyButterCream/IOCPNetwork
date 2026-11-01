@@ -6,7 +6,7 @@
 
 #include "../Protocol/PacketHeader.h"
 
-#include "../Memory/EngineMemoryPoolFwd.h"
+class TlsMemoryPool;
 
 // 링에서 패킷 하나를 꺼낸 결과.
 //
@@ -38,7 +38,7 @@ public:
 	RecvPacketBuffer& operator=(RecvPacketBuffer&&) = delete;
 
 private:
-	EngineMemoryPool* m_packetMemoryPool = nullptr;
+	TlsMemoryPool* m_packetMemoryPool = nullptr;
 
 	char* m_buffer = nullptr;
 	uint32_t m_writePos = 0;
@@ -54,7 +54,7 @@ private:
 public:
 	// ringSize 는 2의 거듭제곱이어야 하고 maxPacketSize 의 2배 이상이어야
 	// 한다. 어기면 false 를 반환한다. (예전에는 static_assert 였다)
-	bool Initialize(EngineMemoryPool* packetMemoryPool, uint32_t ringSize, uint32_t maxPacketSize);
+	bool Initialize(TlsMemoryPool* packetMemoryPool, uint32_t ringSize, uint32_t maxPacketSize);
 	void Finalize();
 	void Reset();
 

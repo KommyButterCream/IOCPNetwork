@@ -57,9 +57,6 @@
     <ClCompile Include="..\HandlerTable\PacketHandlerTable.cpp">
       <Filter>HandlerTable</Filter>
     </ClCompile>
-    <ClCompile Include="..\Memory\SlabMemoryPool.cpp">
-      <Filter>Memory</Filter>
-    </ClCompile>
     <ClCompile Include="..\Memory\GlobalBlockPool.cpp">
       <Filter>Memory</Filter>
     </ClCompile>
@@ -157,15 +154,6 @@
     </ClInclude>
     <ClInclude Include="..\Job\JobDefs.h">
       <Filter>Job</Filter>
-    </ClInclude>
-    <ClInclude Include="..\Memory\SlabMemoryPool.h">
-      <Filter>Memory</Filter>
-    </ClInclude>
-    <ClInclude Include="..\Memory\EngineMemoryPool.h">
-      <Filter>Memory</Filter>
-    </ClInclude>
-    <ClInclude Include="..\Memory\EngineMemoryPoolFwd.h">
-      <Filter>Memory</Filter>
     </ClInclude>
     <ClInclude Include="..\Memory\EngineMemoryPoolHelper.h">
       <Filter>Memory</Filter>

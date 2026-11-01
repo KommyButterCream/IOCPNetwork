@@ -27,7 +27,6 @@
     <ClCompile Include="..\Core\IOCPCore.cpp" />
     <ClCompile Include="..\Core\IOCPServer.cpp" />
     <ClCompile Include="..\HandlerTable\PacketHandlerTable.cpp" />
-    <ClCompile Include="..\Memory\SlabMemoryPool.cpp" />
     <ClCompile Include="..\Memory\GlobalBlockPool.cpp" />
     <ClCompile Include="..\Memory\ThreadBlockCache.cpp" />
     <ClCompile Include="..\Memory\TlsMemoryPool.cpp" />
@@ -62,9 +61,6 @@
     <ClInclude Include="..\HandlerTable\PacketHandlerTable.h" />
     <ClInclude Include="..\Job\Job.h" />
     <ClInclude Include="..\Job\JobDefs.h" />
-    <ClInclude Include="..\Memory\SlabMemoryPool.h" />
-    <ClInclude Include="..\Memory\EngineMemoryPool.h" />
-    <ClInclude Include="..\Memory\EngineMemoryPoolFwd.h" />
     <ClInclude Include="..\Memory\EngineMemoryPoolHelper.h" />
     <ClInclude Include="..\Memory\EnginePoolConfig.h" />
     <ClInclude Include="..\Memory\EnginePoolBuilder.h" />

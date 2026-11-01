@@ -16,7 +16,7 @@
 
 #include "../Network/SocketOption.h"
 
-#include "../Memory/EngineMemoryPool.h"
+#include "../Memory/TlsMemoryPool.h"
 #include "../Memory/EngineMemoryPoolHelper.h"
 #include "../Memory/EnginePoolBuilder.h"
 
@@ -1214,17 +1214,17 @@ PacketHandlerTable* IOCPClient::GetPacketHandlerTable() const
 	return m_packetHandlerTable;
 }
 
-EngineMemoryPool* IOCPClient::GetJobMemoryPool() const
+TlsMemoryPool* IOCPClient::GetJobMemoryPool() const
 {
 	return m_jobMemoryPool;
 }
 
-EngineMemoryPool* IOCPClient::GetPacketMemoryPool() const
+TlsMemoryPool* IOCPClient::GetPacketMemoryPool() const
 {
 	return m_packetMemoryPool;
 }
 
-EngineMemoryPool* IOCPClient::GetSendQueueMemoryPool() const
+TlsMemoryPool* IOCPClient::GetSendQueueMemoryPool() const
 {
 	return m_sendQueueMemoryPool;
 }

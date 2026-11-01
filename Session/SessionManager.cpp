@@ -18,7 +18,7 @@ SessionManager::~SessionManager()
 	Finalize();
 }
 
-bool SessionManager::Initialize(const uint32_t acceptSessionCount, const uint32_t clientSessionCount, EngineMemoryPool* sendQueueMemoryPool, EngineMemoryPool* jobMemoryPool, EngineMemoryPool* packetMemoryPool, CloseSocketFunc closeSocketFunc, const SessionBufferConfig& bufferConfig)
+bool SessionManager::Initialize(const uint32_t acceptSessionCount, const uint32_t clientSessionCount, TlsMemoryPool* sendQueueMemoryPool, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, CloseSocketFunc closeSocketFunc, const SessionBufferConfig& bufferConfig)
 {
 	m_acceptSessionCount = acceptSessionCount;
 	m_clientSessionCount = clientSessionCount;

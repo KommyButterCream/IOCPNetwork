@@ -6,7 +6,7 @@
 
 using namespace Core::Util;
 
-#include "../Memory/EngineMemoryPool.h"
+#include "../Memory/TlsMemoryPool.h"
 #include "../Memory/EngineMemoryPoolHelper.h"
 
 #include <memory.h>
@@ -17,7 +17,7 @@ RecvPacketBuffer::RecvPacketBuffer()
 {
 }
 
-bool RecvPacketBuffer::Initialize(EngineMemoryPool* packetMemoryPool, uint32_t ringSize, uint32_t maxPacketSize)
+bool RecvPacketBuffer::Initialize(TlsMemoryPool* packetMemoryPool, uint32_t ringSize, uint32_t maxPacketSize)
 {
 	if (packetMemoryPool == nullptr)
 	{
@@ -238,7 +238,7 @@ PacketReadResult RecvPacketBuffer::ReadPacket(char*& outBuffer, uint32_t& outSiz
 	//char* packetMemory = reinterpret_cast<char*>(m_packetMemoryPool->Acquire(header.packetSize));
 	if (!packetMemory)
 	{
-		// 패킷 풀에서 메모리를 못 얻었다. 구체적 원인은 EngineMemoryPool 이 남긴다.
+		// 패킷 풀에서 메모리를 못 얻었다. 구체적 원인은 TlsMemoryPool 이 남긴다.
 		//
 		// 위반이 아니라 오류로 남긴다.
 		//

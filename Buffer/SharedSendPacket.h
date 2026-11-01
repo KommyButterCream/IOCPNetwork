@@ -7,7 +7,7 @@
 
 #include "SendPacketEntry.h"
 
-#include "../Memory/EngineMemoryPool.h"
+#include "../Memory/TlsMemoryPool.h"
 
 #include <new>   // placement new
 
@@ -67,10 +67,10 @@ struct SharedSendPacket
 	const void* packet = nullptr;
 
 	// 서버 객체가 아니라 풀을 직접 든다. 수명이 서버에 묶이지 않는다.
-	EngineMemoryPool* packetPool = nullptr;
+	TlsMemoryPool* packetPool = nullptr;
 
 	// 이 구조체 자신이 나온 풀. new / delete 를 쓰지 않기 위한 것이다.
-	EngineMemoryPool* selfPool = nullptr;
+	TlsMemoryPool* selfPool = nullptr;
 };
 
 namespace SHARED_SEND_PACKET
@@ -80,7 +80,7 @@ namespace SHARED_SEND_PACKET
 	// 송신 큐 엔트리 풀(IOCPServer::GetSendQueueMemoryPool)을 권한다.
 	// 이미 송신 경로 부기 전용이고 64바이트 빈을 갖고 있어 이 구조체가
 	// 그대로 들어간다. 송신 부기 객체 전용 풀을 사용한다.
-	inline SharedSendPacket* Create(EngineMemoryPool& selfPool, EngineMemoryPool& packetPool, const void* packet)
+	inline SharedSendPacket* Create(TlsMemoryPool& selfPool, TlsMemoryPool& packetPool, const void* packet)
 	{
 		if (!packet)
 			return nullptr;
@@ -124,7 +124,7 @@ namespace SHARED_SEND_PACKET
 			shared->packetPool->Release(shared->packet);
 		}
 
-		EngineMemoryPool* selfPool = shared->selfPool;
+		TlsMemoryPool* selfPool = shared->selfPool;
 
 		shared->packet = nullptr;
 		shared->packetPool = nullptr;

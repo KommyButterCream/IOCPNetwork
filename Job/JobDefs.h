@@ -4,13 +4,13 @@
 
 class ISession;
 class IDBConnection;
-#include "../Memory/EngineMemoryPoolFwd.h"
+class TlsMemoryPool;
 class IOCPCore;
 
 struct HandlerContext
 {
-	EngineMemoryPool* jobMemoryPool = nullptr;
-	EngineMemoryPool* packetMemoryPool = nullptr;
+	TlsMemoryPool* jobMemoryPool = nullptr;
+	TlsMemoryPool* packetMemoryPool = nullptr;
 	void* serviceContext = nullptr;
 };
 

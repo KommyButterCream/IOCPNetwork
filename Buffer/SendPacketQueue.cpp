@@ -8,7 +8,7 @@ SendPacketQueue::SendPacketQueue()
 {
 }
 
-bool SendPacketQueue::Initialize(EngineMemoryPool* sendQueueMemoryPool, EngineMemoryPool* packetMemoryPool, uint32_t maxCount)
+bool SendPacketQueue::Initialize(TlsMemoryPool* sendQueueMemoryPool, TlsMemoryPool* packetMemoryPool, uint32_t maxCount)
 {
 	if (!sendQueueMemoryPool || !packetMemoryPool)
 	{

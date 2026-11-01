@@ -30,7 +30,7 @@ ReadySessionScheduler::~ReadySessionScheduler()
 	Finalize();
 }
 
-bool ReadySessionScheduler::Initialize(uint32_t workerCount, ReadySessionQueue* readySessionQueue, EngineMemoryPool* jobMemoryPool, EngineMemoryPool* packetMemoryPool)
+bool ReadySessionScheduler::Initialize(uint32_t workerCount, ReadySessionQueue* readySessionQueue, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool)
 {
 	if (workerCount == 0 || readySessionQueue == nullptr || jobMemoryPool == nullptr)
 	{

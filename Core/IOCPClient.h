@@ -18,7 +18,7 @@ struct OverlappedEx;
 class ISession;
 class BaseSession;
 class ClientSession;
-#include "../Memory/EngineMemoryPoolFwd.h"
+class TlsMemoryPool;
 class ClientSessionScheduler;
 class ClientWatchdogThread;
 class PacketHandlerTable;
@@ -110,11 +110,11 @@ private:
 
 	ClientSession* m_session = nullptr;
 
-	EngineMemoryPool* m_jobMemoryPool = nullptr;
-	EngineMemoryPool* m_packetMemoryPool = nullptr;
+	TlsMemoryPool* m_jobMemoryPool = nullptr;
+	TlsMemoryPool* m_packetMemoryPool = nullptr;
 
 	// 송신 큐 엔트리 전용 풀. 분리 이유는 IOCPServer 의 같은 멤버 주석 참고.
-	EngineMemoryPool* m_sendQueueMemoryPool = nullptr;
+	TlsMemoryPool* m_sendQueueMemoryPool = nullptr;
 	ClientSessionScheduler* m_clientSessionScheduler = nullptr;
 
 	// 서버가 조용해진 것을 알아차리는 감시 스레드.
@@ -202,13 +202,13 @@ private:
 
 public:
 	PacketHandlerTable* GetPacketHandlerTable() const;
-	EngineMemoryPool* GetJobMemoryPool() const;
-	EngineMemoryPool* GetPacketMemoryPool() const;
+	TlsMemoryPool* GetJobMemoryPool() const;
+	TlsMemoryPool* GetPacketMemoryPool() const;
 
 	// 서버 쪽 같은 이름과 대칭으로 둔다. (사정은 IOCPServer.h 주석 참고)
 	// 클라는 세션이 하나라 브로드캐스트가 없지만, 공유 송신 자체는 막혀
 	// 있지 않으므로 한쪽만 여는 편이 더 헷갈린다.
-	EngineMemoryPool* GetSendQueueMemoryPool() const;
+	TlsMemoryPool* GetSendQueueMemoryPool() const;
 
 	const HandlerContext& GetHandlerContext() const;
 	ClientSession* GetClientSession() const;

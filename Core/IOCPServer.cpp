@@ -17,7 +17,7 @@
 #include "../Scheduler/ReadySessionScheduler.h"
 #include "../HandlerTable/PacketHandlerTable.h"
 
-#include "../Memory/EngineMemoryPool.h"
+#include "../Memory/TlsMemoryPool.h"
 #include "../Memory/EngineMemoryPoolHelper.h"
 #include "../Memory/EnginePoolBuilder.h"
 
@@ -1830,17 +1830,17 @@ PacketHandlerTable* IOCPServer::GetPacketHandlerTable() const
 	return m_packetHandlerTable;
 }
 
-EngineMemoryPool* IOCPServer::GetJobMemoryPool() const
+TlsMemoryPool* IOCPServer::GetJobMemoryPool() const
 {
 	return m_jobMemoryPool;
 }
 
-EngineMemoryPool* IOCPServer::GetPacketMemoryPool() const
+TlsMemoryPool* IOCPServer::GetPacketMemoryPool() const
 {
 	return m_packetMemoryPool;
 }
 
-EngineMemoryPool* IOCPServer::GetSendQueueMemoryPool() const
+TlsMemoryPool* IOCPServer::GetSendQueueMemoryPool() const
 {
 	return m_sendQueueMemoryPool;
 }

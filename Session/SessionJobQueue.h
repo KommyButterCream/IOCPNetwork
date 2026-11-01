@@ -16,14 +16,14 @@
 #endif
 
 struct Job;
-#include "../Memory/EngineMemoryPoolFwd.h"
+class TlsMemoryPool;
 enum class SESSION_ROLE;
 
 // 세션별 JobQueue (singly-linked list) - SRWLock 으로 보호
 class IOCP_ENGINE_API SessionJobQueue
 {
 public:
-	SessionJobQueue(SESSION_ROLE sessionRole, EngineMemoryPool* jobMemoryPool, EngineMemoryPool* packetMemoryPool);
+	SessionJobQueue(SESSION_ROLE sessionRole, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool);
 	~SessionJobQueue();
 
 private:
@@ -38,8 +38,8 @@ private:
 	// 여태 도달한 최고 깊이. m_count 와 같은 락이 지킨다.
 	int32_t m_peakCount = 0;
 
-	EngineMemoryPool* m_jobMemoryPool = nullptr;
-	EngineMemoryPool* m_packetMemoryPool = nullptr;
+	TlsMemoryPool* m_jobMemoryPool = nullptr;
+	TlsMemoryPool* m_packetMemoryPool = nullptr;
 
 	bool m_stopFlag = false;
 

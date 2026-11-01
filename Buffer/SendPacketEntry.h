@@ -24,7 +24,7 @@ using SendPacketReleaseFunc = void (*)(const void* packetData, void* context);
 //     같은 샤드에 313개가 몰리면 세션당 6~7개였다.
 //   - 한 샤드가 마른 순간에도 다른 샤드에 남은 재고(97%)를 쓸 수 없었다.
 //
-// 이제는 EngineMemoryPool(TlsMemoryPool)에서 엔트리를 받는다. 그 풀은 이미
+// 이제는 TlsMemoryPool에서 엔트리를 받는다. 그 풀은 이미
 // 스레드별 캐시로 샤딩되어 있고 — 할당하는 스레드 축이다. 세션 아이디보다
 // 올바른 축이다 — 재고는 전역에 공유되며 부족하면 런타임에 확장한다.
 // 그래서 SList 상속과 그것이 요구하던 정렬 제약이 함께 사라졌다.

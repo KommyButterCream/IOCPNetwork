@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include "EngineMemoryPool.h"
+#include "TlsMemoryPool.h"
 
 #include "../../Core/Util/Logger.h"
 
@@ -20,15 +20,15 @@ using namespace Core::Util;
 // (실측: 로그 억제 221k pkt/s -> 로그 켜짐 13k pkt/s)
 //
 // 그래서 개별 할당/해제는 LOGT(릴리스에서 컴파일 제거) 로만 남기고,
-// 실제 운영 지표는 EngineMemoryPool 이 누적하는 카운터로 본다.
-//   EngineMemoryPool::LogStats() -> 슬랩별 peak / 확장 횟수 / 미반환 수
-// 실패 원인 로그도 EngineMemoryPool::Acquire 안에서 남긴다.
+// 실제 운영 지표는 TlsMemoryPool 이 누적하는 카운터로 본다.
+//   TlsMemoryPool::LogStats() -> 빈별 peak / 확장 횟수 / 미반환 수
+// 실패 원인 로그도 TlsMemoryPool::Acquire 안에서 남긴다.
 
 namespace MEMORY_POOL
 {
 	// Utility helpers for Packet objects
 
-	inline void* CreatePacket(EngineMemoryPool& pool, size_t size)
+	inline void* CreatePacket(TlsMemoryPool& pool, size_t size)
 	{
 		// 메모리 풀에서 크기에 맞는 메모리를 찾아서 반환
 		void* memory = pool.Acquire(size);
@@ -38,7 +38,7 @@ namespace MEMORY_POOL
 		return memory;
 	}
 
-	inline void ReleasePacket(EngineMemoryPool& packetPool, const void* memory)
+	inline void ReleasePacket(TlsMemoryPool& packetPool, const void* memory)
 	{
 		// 사용이 끝난 메모리를 메모리풀에 반환
 		if (!memory)
@@ -53,10 +53,10 @@ namespace MEMORY_POOL
 
 	// 송신 큐 엔트리 하나를 받아 온다.
 	//
-	// 전용 풀(SendPacketPool)이 하던 일을 EngineMemoryPool 이 대신한다.
+	// 전용 풀(SendPacketPool)이 하던 일을 TlsMemoryPool 이 대신한다.
 	// 고갈 로그는 남기지 않는다 — 이 함수는 송신 패킷 하나당 호출되고,
 	// 실패 원인(빈 고갈 / 크기 초과)은 Acquire 안에서 이미 남는다.
-	inline SendPacketEntry* CreateSendPacketEntry(EngineMemoryPool& pool)
+	inline SendPacketEntry* CreateSendPacketEntry(TlsMemoryPool& pool)
 	{
 		void* memory = pool.Acquire(sizeof(SendPacketEntry));
 		if (!memory)
@@ -70,7 +70,7 @@ namespace MEMORY_POOL
 		return new (memory) SendPacketEntry();
 	}
 
-	inline void ReleaseSendPacketEntry(EngineMemoryPool& pool, SendPacketEntry* entry)
+	inline void ReleaseSendPacketEntry(TlsMemoryPool& pool, SendPacketEntry* entry)
 	{
 		if (!entry)
 			return;
@@ -82,7 +82,7 @@ namespace MEMORY_POOL
 
 	// Utility helpers for Job objects
 
-	inline Job* CreateJob(EngineMemoryPool& pool)
+	inline Job* CreateJob(TlsMemoryPool& pool)
 	{
 		// Job 메모리 버퍼를 버퍼풀로부터 반환
 		void* memory = pool.Acquire(sizeof(Job));
@@ -99,7 +99,7 @@ namespace MEMORY_POOL
 		return static_cast<Job*>(memory);
 	}
 
-	inline void ReleaseJob(EngineMemoryPool& pool, Job* job)
+	inline void ReleaseJob(TlsMemoryPool& pool, Job* job)
 	{
 		// 사용이 끝난 Job 메모리 버퍼를 버퍼풀에 반환
 		if (!job)

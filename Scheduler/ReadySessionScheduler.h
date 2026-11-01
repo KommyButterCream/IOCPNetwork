@@ -10,7 +10,7 @@
 #include "../../Core/Concurrency/ThreadBase.h"
 
 class ReadySessionQueue;
-#include "../Memory/EngineMemoryPoolFwd.h"
+class TlsMemoryPool;
 class ReadySessionScheduler;
 
 // ThreadBase 는 객체 1개당 스레드 1개이므로, 워커 N개를 두려면
@@ -42,7 +42,7 @@ public:
 	~ReadySessionScheduler();
 
 public:
-	bool Initialize(uint32_t workerCount, ReadySessionQueue* readySessionQueue, EngineMemoryPool* jobMemoryPool, EngineMemoryPool* packetMemoryPool);
+	bool Initialize(uint32_t workerCount, ReadySessionQueue* readySessionQueue, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool);
 	void Finalize();
 
 	// ReadySessionWorker 가 호출한다. 정지 판정은 워커의 정지 이벤트로 한다.
@@ -52,8 +52,8 @@ private:
 	ReadySessionWorker** m_workers = nullptr;
 	uint32_t m_workerCount = 0;
 	ReadySessionQueue* m_readySessionQueue = nullptr;
-	EngineMemoryPool* m_jobMemoryPool = nullptr;
-	EngineMemoryPool* m_packetMemoryPool = nullptr;
+	TlsMemoryPool* m_jobMemoryPool = nullptr;
+	TlsMemoryPool* m_packetMemoryPool = nullptr;
 
 	void DestroyWorkers();
 };

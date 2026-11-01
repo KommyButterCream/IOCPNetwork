@@ -12,7 +12,7 @@
 
 using namespace Core::Util;
 
-ClientSessionPool::ClientSessionPool(uint32_t capacity, EngineMemoryPool* sendQueueMemoryPool, EngineMemoryPool* jobMemoryPool, EngineMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig)
+ClientSessionPool::ClientSessionPool(uint32_t capacity, TlsMemoryPool* sendQueueMemoryPool, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig)
 {
 	m_capacity = capacity;
 

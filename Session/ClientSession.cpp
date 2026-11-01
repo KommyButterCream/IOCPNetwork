@@ -286,7 +286,7 @@ bool ClientSession::OnDisconnect()
 	return BaseSession::OnDisconnect();
 }
 
-bool ClientSession::InitializeMemoryPool(EngineMemoryPool* sendQueueMemoryPool, EngineMemoryPool* jobMemoryPool, EngineMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig)
+bool ClientSession::InitializeMemoryPool(TlsMemoryPool* sendQueueMemoryPool, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig)
 {
 	if (!bufferConfig.IsValid())
 	{

@@ -19,7 +19,7 @@ ClientSessionScheduler::~ClientSessionScheduler()
 	Finalize();
 }
 
-bool ClientSessionScheduler::Initialize(ClientSession* clientSession, EngineMemoryPool* jobMemoryPool, EngineMemoryPool* packetMemoryPool)
+bool ClientSessionScheduler::Initialize(ClientSession* clientSession, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool)
 {
 	if (clientSession == nullptr || jobMemoryPool == nullptr)
 	{

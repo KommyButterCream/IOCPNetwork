@@ -15,7 +15,7 @@ struct SessionNode;
 class ISession;
 class BaseSession;
 class ClientSession;
-#include "../Memory/EngineMemoryPoolFwd.h"
+class TlsMemoryPool;
 
 class ClientSessionPool
 {
@@ -44,7 +44,7 @@ private:
 	bool m_ready = false;
 
 public:
-	explicit ClientSessionPool(uint32_t capacity, EngineMemoryPool* sendQueueMemoryPool, EngineMemoryPool* jobMemoryPool, EngineMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig);
+	explicit ClientSessionPool(uint32_t capacity, TlsMemoryPool* sendQueueMemoryPool, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig);
 	~ClientSessionPool();
 
 	bool IsReady() const { return m_ready; }

@@ -17,7 +17,7 @@ struct Job;
 class SessionJobQueue;
 class RecvPacketBuffer;
 class SendPacketQueue;
-#include "../Memory/EngineMemoryPoolFwd.h"
+class TlsMemoryPool;
 class ISessionEvent;
 
 #ifdef BUILD_IOCP_ENGINE_DLL
@@ -36,8 +36,8 @@ public:
 
 	// ClientSession 전용 멤버 변수
 private:
-	EngineMemoryPool* m_jobMemoryPool = nullptr;
-	EngineMemoryPool* m_packetMemoryPool = nullptr;
+	TlsMemoryPool* m_jobMemoryPool = nullptr;
+	TlsMemoryPool* m_packetMemoryPool = nullptr;
 
 	// Client Role
 	OverlappedEx m_connectOverlapped{};
@@ -112,7 +112,7 @@ public:
 
 	// ClientSession 전용 메서드
 public:
-	bool InitializeMemoryPool(EngineMemoryPool* sendQueueMemoryPool, EngineMemoryPool* jobMemoryPool, EngineMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig);
+	bool InitializeMemoryPool(TlsMemoryPool* sendQueueMemoryPool, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig);
 
 	bool IsReady() const;
 	// 두 단계다. IsTransportConnected 는 소켓이 붙었는가,

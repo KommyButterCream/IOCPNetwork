@@ -21,7 +21,7 @@
 //   (IOCPServer / IOCPClient 의 중복 자체를 없애는 작업은 별개다.
 //    여기서는 새로 만드는 코드가 두 벌이 되는 것만 막는다)
 
-#include "EngineMemoryPool.h"
+#include "TlsMemoryPool.h"
 #include "EnginePoolConfig.h"
 
 #include "../Buffer/SendPacketEntry.h"
@@ -36,9 +36,9 @@ namespace ENGINE_POOL
 	// 엔진이 들고 다니는 풀 묶음. 만들기와 지우기를 한 단위로 다루려고 둔다.
 	struct EnginePools
 	{
-		EngineMemoryPool* packet = nullptr;
-		EngineMemoryPool* job = nullptr;
-		EngineMemoryPool* sendQueue = nullptr;
+		TlsMemoryPool* packet = nullptr;
+		TlsMemoryPool* job = nullptr;
+		TlsMemoryPool* sendQueue = nullptr;
 	};
 
 	inline void DestroyPools(EnginePools& pools)
@@ -84,19 +84,19 @@ namespace ENGINE_POOL
 	namespace Detail
 	{
 		// 빈 목록형 풀 하나를 만든다.
-		inline EngineMemoryPool* CreateBinSetPool(const PoolBinSetConfig& config,
+		inline TlsMemoryPool* CreateBinSetPool(const PoolBinSetConfig& config,
 			const char* poolName, uint32_t payloadAlignment = 16)
 		{
 			// 설정 배열을 풀이 받는 모양으로 옮긴다. 둘을 같은 타입으로
 			// 두지 않는 이유는 서비스가 풀 헤더를 포함하지 않게 하려는 것이다.
-			EngineMemoryPool::BinConfig binConfigs[PoolBinSetConfig::MAX_ENTRIES] = {};
+			TlsMemoryPool::BinConfig binConfigs[PoolBinSetConfig::MAX_ENTRIES] = {};
 			for (uint32_t i = 0; i < config.entryCount; ++i)
 			{
 				binConfigs[i].blockSize = config.entries[i].blockSize;
 				binConfigs[i].blockCount = config.entries[i].blockCount;
 			}
 
-			EngineMemoryPool* pool = new (std::nothrow) EngineMemoryPool;
+			TlsMemoryPool* pool = new (std::nothrow) TlsMemoryPool;
 			if (!pool)
 			{
 				LOGE("failed to allocate the %s memory pool", poolName);
@@ -115,12 +115,12 @@ namespace ENGINE_POOL
 		}
 
 		// 블록 크기가 고정된 풀 하나를 만든다.
-		inline EngineMemoryPool* CreateReservePool(const PoolReserveConfig& config,
+		inline TlsMemoryPool* CreateReservePool(const PoolReserveConfig& config,
 			uint32_t blockSize, const char* poolName, uint32_t payloadAlignment = 16)
 		{
-			const EngineMemoryPool::BinConfig binConfig{ blockSize, config.blockCount };
+			const TlsMemoryPool::BinConfig binConfig{ blockSize, config.blockCount };
 
-			EngineMemoryPool* pool = new (std::nothrow) EngineMemoryPool;
+			TlsMemoryPool* pool = new (std::nothrow) TlsMemoryPool;
 			if (!pool)
 			{
 				LOGE("failed to allocate the %s memory pool", poolName);
