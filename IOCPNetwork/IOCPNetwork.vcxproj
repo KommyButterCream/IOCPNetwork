@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\Buffer\RecvPacketBuffer.cpp" />
+    <ClCompile Include="..\Buffer\SendPacketQueue.cpp" />
+    <ClCompile Include="..\Core\ClientWatchdogThread.cpp" />
+    <ClCompile Include="..\Core\HeartbeatThread.cpp" />
+    <ClCompile Include="..\Core\IOCPClient.cpp" />
+    <ClCompile Include="..\Core\IOCPCore.cpp" />
+    <ClCompile Include="..\Core\IOCPServer.cpp" />
+    <ClCompile Include="..\HandlerTable\PacketHandlerTable.cpp" />
+    <ClCompile Include="..\Memory\SlabMemoryPool.cpp" />
+    <ClCompile Include="..\Memory\GlobalBlockPool.cpp" />
+    <ClCompile Include="..\Memory\ThreadBlockCache.cpp" />
+    <ClCompile Include="..\Memory\TlsMemoryPool.cpp" />
+    <ClCompile Include="..\Network\SocketOption.cpp" />
+    <ClCompile Include="..\Scheduler\ClientSessionScheduler.cpp" />
+    <ClCompile Include="..\Scheduler\ReadySessionQueue.cpp" />
+    <ClCompile Include="..\Scheduler\ReadySessionScheduler.cpp" />
+    <ClCompile Include="..\Diagnostics\EngineDiagnostics.cpp" />
+    <ClCompile Include="..\Session\AcceptSession.cpp" />
+    <ClCompile Include="..\Session\AcceptSessionPool.cpp" />
+    <ClCompile Include="..\Session\BaseSession.cpp" />
+    <ClCompile Include="..\Session\ClientSession.cpp" />
+    <ClCompile Include="..\Session\ClientSessionPool.cpp" />
+    <ClCompile Include="..\Session\SessionJobQueue.cpp" />
+    <ClCompile Include="..\Session\SessionManager.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\Buffer\PreDefine.h" />
+    <ClInclude Include="..\Buffer\RecvPacketBuffer.h" />
+    <ClInclude Include="..\Buffer\SendPacketEntry.h" />
+    <ClInclude Include="..\Buffer\SendPacketQueue.h" />
+    <ClInclude Include="..\Buffer\SharedSendPacket.h" />
+    <ClInclude Include="..\Core\ClientLivenessConfig.h" />
+    <ClInclude Include="..\Core\ClientWatchdogThread.h" />
+    <ClInclude Include="..\Core\HeartbeatConfig.h" />
+    <ClInclude Include="..\Core\HeartbeatThread.h" />
+    <ClInclude Include="..\Core\IOCPClient.h" />
+    <ClInclude Include="..\Core\IOCPCore.h" />
+    <ClInclude Include="..\Core\IOCPServer.h" />
+    <ClInclude Include="..\Diagnostics\EngineAssert.h" />
+    <ClInclude Include="..\Diagnostics\EngineDiagnostics.h" />
+    <ClInclude Include="..\HandlerTable\PacketHandlerTable.h" />
+    <ClInclude Include="..\Job\Job.h" />
+    <ClInclude Include="..\Job\JobDefs.h" />
+    <ClInclude Include="..\Memory\SlabMemoryPool.h" />
+    <ClInclude Include="..\Memory\EngineMemoryPool.h" />
+    <ClInclude Include="..\Memory\EngineMemoryPoolFwd.h" />
+    <ClInclude Include="..\Memory\EngineMemoryPoolHelper.h" />
+    <ClInclude Include="..\Memory\EnginePoolConfig.h" />
+    <ClInclude Include="..\Memory\EnginePoolBuilder.h" />
+    <ClInclude Include="..\Memory\BlockLayout.h" />
+    <ClInclude Include="..\Memory\GlobalBlockPool.h" />
+    <ClInclude Include="..\Memory\SizeBin.h" />
+    <ClInclude Include="..\Memory\ThreadBlockCache.h" />
+    <ClInclude Include="..\Memory\TlsMemoryPool.h" />
+    <ClInclude Include="..\Network\OverlappedEx.h" />
+    <ClInclude Include="..\Network\SocketOption.h" />
+    <ClInclude Include="..\Protocol\PacketHeader.h" />
+    <ClInclude Include="..\Protocol\PacketID.h" />
+    <ClInclude Include="..\Protocol\SystemPacket.h" />
+    <ClInclude Include="..\Scheduler\ClientSessionScheduler.h" />
+    <ClInclude Include="..\Scheduler\ReadySessionQueue.h" />
+    <ClInclude Include="..\Scheduler\ReadySessionScheduler.h" />
+    <ClInclude Include="..\Session\AcceptSession.h" />
+    <ClInclude Include="..\Session\AcceptSessionPool.h" />
+    <ClInclude Include="..\Session\BaseSession.h" />
+    <ClInclude Include="..\Session\ClientSession.h" />
+    <ClInclude Include="..\Session\ClientSessionPool.h" />
+    <ClInclude Include="..\Session\DisconnectReason.h" />
+    <ClInclude Include="..\Session\ISession.h" />
+    <ClInclude Include="..\Session\ISessionEvent.h" />
+    <ClInclude Include="..\Session\SessionContext.h" />
+    <ClInclude Include="..\Session\SessionDefs.h" />
+    <ClInclude Include="..\Session\SessionJobQueue.h" />
+    <ClInclude Include="..\Session\SessionManager.h" />
+    <ClInclude Include="..\Session\SessionNode.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\Core\Core\Core.vcxproj">
+      <Project>{e3bd70c4-fc37-4703-9a54-152fd00bdea2}</Project>
+    </ProjectReference>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{8baeddcb-b352-4813-a055-9ad3b9ee8653}</ProjectGuid>
+    <RootNamespace>IOCPNetwork</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="Shared">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <IntDir>$(Platform)\$(Configuration)\$(MSBuildProjectName)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_DEBUG;_CONSOLE;BUILD_IOCP_ENGINE_DLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalOptions>/utf-8</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;BUILD_IOCP_ENGINE_DLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalOptions>/utf-8</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

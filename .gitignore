@@ -1,0 +1,15 @@
+.vs/
+Debug/
+Release/
+x64/
+x86/
+bin/
+obj/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+*.bak
+
+# 검증 하네스 (로컬 전용, 커밋하지 않는다)
+/tools/

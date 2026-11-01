@@ -1,0 +1,1110 @@
+﻿<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IOCPNetwork</title>
+<style>
+:root{
+  --ink:#131a22; --ink-2:#48566a; --ink-3:#7b8798;
+  --paper:#f7f9fc; --paper-2:#edf2f8; --paper-3:#e2e9f2;
+  --rule:#d3dce8; --rule-2:#b7c3d4;
+  --signal:#2a6099; --signal-2:#1c4573; --signal-soft:#e8f0f9;
+  --ok:#2f6b5e; --warn:#8a6420; --bad:#a34038;
+  --mono:"Cascadia Mono","JetBrains Mono","Consolas","D2Coding",ui-monospace,monospace;
+  --sans:"Pretendard","Pretendard Variable","Segoe UI Variable Text","Segoe UI",
+         -apple-system,"Malgun Gothic",system-ui,sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ink:#dde5ef; --ink-2:#9caaba; --ink-3:#6d7b8c;
+    --paper:#0e1319; --paper-2:#151d26; --paper-3:#1d2630;
+    --rule:#27313d; --rule-2:#374553;
+    --signal:#6aa6de; --signal-2:#8dc0ef; --signal-soft:#122234;
+    --ok:#6cae9d; --warn:#c6a04e; --bad:#df8a80;
+  }
+}
+:root[data-theme="dark"]{
+  --ink:#dde5ef; --ink-2:#9caaba; --ink-3:#6d7b8c;
+  --paper:#0e1319; --paper-2:#151d26; --paper-3:#1d2630;
+  --rule:#27313d; --rule-2:#374553;
+  --signal:#6aa6de; --signal-2:#8dc0ef; --signal-soft:#122234;
+  --ok:#6cae9d; --warn:#c6a04e; --bad:#df8a80;
+}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0; background:var(--paper); color:var(--ink);
+  font-family:var(--sans); font-size:16px; line-height:1.75}
+.wrap{max-width:1180px; margin:0 auto; padding:0 20px}
+
+header.top{border-bottom:1px solid var(--rule); background:var(--paper-2)}
+.top .wrap{padding-block:52px 40px}
+.eyebrow{font-family:var(--mono); font-size:11.5px; letter-spacing:.16em;
+  text-transform:uppercase; color:var(--signal); margin:0 0 14px}
+h1{margin:0; font-size:clamp(30px,5.2vw,50px); line-height:1.1;
+  letter-spacing:-.02em; font-weight:660; text-wrap:balance}
+.tagline{margin:16px 0 0; max-width:64ch; font-size:17px; color:var(--ink-2); text-wrap:pretty}
+.chips{display:flex; flex-wrap:wrap; gap:7px; margin-top:26px; padding:0; list-style:none}
+.chips li{font-family:var(--mono); font-size:11.5px; letter-spacing:.03em;
+  border:1px solid var(--rule-2); border-radius:2px; padding:3px 9px;
+  color:var(--ink-2); background:var(--paper)}
+
+.shell{display:grid; grid-template-columns:210px minmax(0,1fr); gap:56px; align-items:start}
+nav.toc{position:sticky; top:24px; padding-block:48px 24px; font-size:13.5px}
+nav.toc ol{list-style:none; margin:0; padding:0; counter-reset:toc}
+nav.toc li{counter-increment:toc; margin:0 0 3px}
+nav.toc a{display:grid; grid-template-columns:22px 1fr; gap:6px;
+  color:var(--ink-3); text-decoration:none; padding:3px 0; line-height:1.45}
+nav.toc a::before{content:counter(toc,decimal-leading-zero); font-family:var(--mono);
+  font-size:10.5px; color:var(--rule-2); padding-top:3px}
+nav.toc a:hover{color:var(--signal)}
+main{padding-block:48px 100px; min-width:0}
+
+section{margin:0 0 68px; scroll-margin-top:20px}
+h2{margin:0 0 6px; font-size:25px; letter-spacing:-.015em; font-weight:640;
+  line-height:1.25; text-wrap:balance}
+.sub{margin:0 0 26px; color:var(--ink-3); font-size:14.5px; max-width:68ch}
+h3{margin:34px 0 10px; font-size:17.5px; font-weight:640; letter-spacing:-.01em}
+h4{margin:24px 0 6px; font-size:14px; font-weight:660; color:var(--ink-2);
+  font-family:var(--mono); letter-spacing:.02em}
+p{margin:0 0 14px; max-width:70ch; text-wrap:pretty}
+ul,ol{margin:0 0 14px; padding-left:20px; max-width:70ch}
+li{margin:0 0 6px}
+strong{font-weight:660}
+code{font-family:var(--mono); font-size:.885em; background:var(--paper-3);
+  padding:1px 5px; border-radius:2px; word-break:break-word}
+a{color:var(--signal)}
+
+.facts{display:grid; grid-template-columns:repeat(auto-fit,minmax(168px,1fr));
+  gap:1px; background:var(--rule); border:1px solid var(--rule); margin:0 0 28px}
+.facts div{background:var(--paper); padding:16px 18px}
+.facts dt{font-family:var(--mono); font-size:10.5px; letter-spacing:.11em;
+  text-transform:uppercase; color:var(--ink-3); margin:0 0 6px}
+.facts dd{margin:0; font-size:20px; font-weight:640; letter-spacing:-.01em;
+  font-variant-numeric:tabular-nums}
+.facts dd small{display:block; font-size:12px; font-weight:400; color:var(--ink-3);
+  letter-spacing:0; margin-top:3px; line-height:1.5}
+
+.note{border-left:2px solid var(--signal); background:var(--signal-soft);
+  padding:14px 18px; margin:20px 0; max-width:70ch}
+.note p{margin:0 0 8px} .note p:last-child{margin:0}
+.note .lbl{font-family:var(--mono); font-size:10.5px; letter-spacing:.12em;
+  text-transform:uppercase; color:var(--signal-2); display:block; margin-bottom:5px}
+
+pre{margin:16px 0; padding:15px 17px; overflow-x:auto;
+  background:var(--paper-2); border:1px solid var(--rule);
+  font-family:var(--mono); font-size:12.5px; line-height:1.68; color:var(--ink-2); tab-size:4}
+pre b{color:var(--ink); font-weight:600}
+pre i{color:var(--ink-3); font-style:normal}
+pre em{color:var(--signal); font-style:normal; font-weight:600}
+.cap{font-size:12.5px; color:var(--ink-3); margin:-8px 0 20px; font-family:var(--mono)}
+
+.tw{overflow-x:auto; margin:18px 0 22px; border:1px solid var(--rule)}
+table{border-collapse:collapse; width:100%; font-size:13.5px; min-width:560px}
+th,td{text-align:left; padding:9px 13px; border-bottom:1px solid var(--rule); vertical-align:top}
+thead th{background:var(--paper-2); font-family:var(--mono); font-size:10.5px;
+  letter-spacing:.09em; text-transform:uppercase; color:var(--ink-3);
+  font-weight:500; white-space:nowrap}
+tbody tr:last-child td{border-bottom:0}
+td code{background:transparent; padding:0; font-size:12.5px}
+.num{font-variant-numeric:tabular-nums; white-space:nowrap; text-align:right}
+th.num{text-align:right}
+
+ol.steps{list-style:none; padding:0; counter-reset:s; max-width:76ch}
+ol.steps>li{counter-increment:s; position:relative; padding:0 0 16px 40px;
+  border-left:1px solid var(--rule); margin:0 0 0 11px}
+ol.steps>li:last-child{border-left-color:transparent; padding-bottom:0}
+ol.steps>li::before{content:counter(s); position:absolute; left:-11px; top:0;
+  width:22px; height:22px; border-radius:50%; background:var(--paper);
+  border:1px solid var(--rule-2); color:var(--ink-3);
+  font-family:var(--mono); font-size:11px; display:grid; place-items:center}
+ol.steps>li b{display:block; margin-bottom:2px; font-weight:640}
+ol.steps>li p{margin:0; font-size:14.5px; color:var(--ink-2)}
+
+.opt{display:grid; gap:1px; background:var(--rule); border:1px solid var(--rule); margin:22px 0}
+.opt article{background:var(--paper); padding:18px 20px}
+.opt h4{margin:0 0 4px; font-family:var(--sans); font-size:16px; color:var(--ink);
+  letter-spacing:-.01em; font-weight:640}
+.opt .where{font-family:var(--mono); font-size:11px; color:var(--ink-3); margin:0 0 10px}
+.opt p{margin:0 0 9px; font-size:14.5px; max-width:none}
+.opt p:last-child{margin:0}
+.gain{display:inline-block; font-family:var(--mono); font-size:11.5px;
+  color:var(--signal-2); border:1px solid var(--signal); background:var(--signal-soft);
+  padding:1px 7px; border-radius:2px; margin-top:4px}
+.gain.no{color:var(--ink-3); border-color:var(--rule-2); background:var(--paper-2)}
+
+figure{margin:22px 0; padding:0}
+figure svg{display:block; width:100%; height:auto; max-width:100%}
+figcaption{font-size:12.5px; color:var(--ink-3); margin-top:8px; font-family:var(--mono)}
+.svgbox{border:1px solid var(--rule); background:var(--paper-2); padding:18px 16px; overflow-x:auto}
+
+.tag{font-family:var(--mono); font-size:11px; padding:1px 6px; border-radius:2px; white-space:nowrap}
+.t-ok{color:var(--ok); border:1px solid currentColor}
+.t-warn{color:var(--warn); border:1px solid currentColor}
+.t-bad{color:var(--bad); border:1px solid currentColor}
+
+/* ---------- before/after bar chart ---------- */
+.chart{border:1px solid var(--rule); background:var(--paper); padding:16px 18px; margin:18px 0}
+.chart + .chart{margin-top:-1px}
+.chart-h{font-size:14.5px; font-weight:640; color:var(--ink); margin:0 0 3px; letter-spacing:-.01em}
+.chart-h span{font-family:var(--mono); font-size:11px; font-weight:400; color:var(--ink-3); margin-left:7px; letter-spacing:0}
+.chart-note{font-size:12.5px; color:var(--ink-3); margin:0 0 13px; max-width:none}
+.crow{display:grid; grid-template-columns:minmax(118px,196px) 1fr 86px; gap:12px; align-items:center; margin:0 0 7px}
+.crow:last-of-type{margin-bottom:0}
+.crow .lbl{font-size:12.5px; color:var(--ink-2); line-height:1.35}
+.crow .lbl em{font-style:normal; font-family:var(--mono); font-size:11px; color:var(--ink-3)}
+.crow .track{background:var(--paper-3); height:19px; border:1px solid var(--rule); position:relative}
+.crow .bar{height:100%; display:block}
+.bar.before{background:var(--rule-2)}
+.bar.after{background:var(--signal)}
+.crow .val{font-family:var(--mono); font-size:12.5px; font-variant-numeric:tabular-nums;
+  color:var(--ink); text-align:right; white-space:nowrap}
+.crow.win .val{color:var(--signal-2); font-weight:600}
+.delta{margin-top:11px; padding-top:10px; border-top:1px solid var(--rule);
+  font-family:var(--mono); font-size:12px; color:var(--signal-2); line-height:1.6}
+.delta b{color:var(--ink); font-weight:600}
+
+footer{border-top:1px solid var(--rule); background:var(--paper-2)}
+footer .wrap{padding-block:26px 40px; font-size:13px; color:var(--ink-3)}
+
+@media (max-width:900px){
+  .shell{grid-template-columns:1fr; gap:0}
+  nav.toc{position:static; padding-block:32px 0; border-bottom:1px solid var(--rule)}
+  nav.toc ol{columns:2; column-gap:24px}
+  main{padding-block:32px 64px}
+}
+@media (max-width:620px){
+  .crow{grid-template-columns:1fr; gap:3px}
+  .crow .val{text-align:left}
+}
+@media (max-width:520px){
+  nav.toc ol{columns:1}
+  .top .wrap{padding-block:36px 28px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <p class="eyebrow">Windows IOCP · Session Engine · DLL</p>
+    <h1>IOCPNetwork</h1>
+    <p class="tagline">
+      IOCP 위에 올린 서버/클라이언트 네트워크 엔진. 세션 수명과 미완료 I/O 회계,
+      TLS 3계층 메모리 풀, 수신 백프레셔를 직접 구현했다.
+      최적화는 <strong>전용 하네스로 재고 나서</strong> 채택하거나 기각했다.
+    </p>
+    <ul class="chips">
+      <li>C++20</li><li>Winsock2 / MSWSock</li><li>IOCP</li>
+      <li>TLS memory pool</li><li>Lock-free block list</li>
+      <li>Recv backpressure</li><li>Session pool</li><li>x64 DLL</li>
+    </ul>
+  </div>
+</header>
+
+<div class="wrap shell">
+
+<nav class="toc" aria-label="목차">
+  <ol>
+    <li><a href="#s1">한눈에</a></li>
+    <li><a href="#s2">모듈의 범위</a></li>
+    <li><a href="#s3">코드 구조</a></li>
+    <li><a href="#s4">처리 파이프라인</a></li>
+    <li><a href="#s5">세션 수명과 I/O 회계</a></li>
+    <li><a href="#s6">동시성 모델</a></li>
+    <li><a href="#s7">3계층 메모리 풀</a></li>
+    <li><a href="#s8">수신 백프레셔</a></li>
+    <li><a href="#s9">개선 전후</a></li>
+    <li><a href="#s10">채택하지 않은 최적화</a></li>
+    <li><a href="#s11">예외와 장애 처리</a></li>
+    <li><a href="#s12">검증 하네스</a></li>
+    <li><a href="#s13">트레이드오프와 한계</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<!-- ============================= 1 ============================= -->
+<section id="s1">
+  <h2>한눈에</h2>
+  <p class="sub">전부 이 머신에서 하네스로 직접 잰 값이다 — 32 논리 코어, Release 빌드.</p>
+
+  <dl class="facts">
+    <div><dt>메모리 풀 (8 스레드)</dt><dd>44.5×<small>Slab 12.5 M → TLS 554 M ops/s</small></dd></div>
+    <div><dt>단일 스레드 할당</dt><dd>11.1 ns<small>왕복 · 이전 구현 20.8 ns</small></dd></div>
+    <div><dt>세션 1만 개 송신 메모리</dt><dd>5.0 MB<small>이전 구현 324.5 MB · 65×</small></dd></div>
+    <div><dt>잡 큐 왕복</dt><dd>49.7 ns<small>잡 처리 31.66 µs 대비 0.16%</small></dd></div>
+    <div><dt>엔드투엔드</dt><dd>138.7 MB/s<small>8 피어 · 256 B 패킷 · 0.57 M jobs/s</small></dd></div>
+    <div><dt>검증 하네스</dt><dd>23 개<small>회귀 · 부하 · 장애 주입 전용 도구</small></dd></div>
+  </dl>
+
+  <p>
+    이 엔진은 원격 데스크톱 스트리밍의 전송 계층이다. 한 서버가 여러 뷰어에게 영상을 밀고
+    뷰어는 제어 메시지만 보내는, <strong>비대칭 트래픽</strong>이 실제 사용 형태다.
+  </p>
+  <p>
+    구현에서 가장 많은 시간을 쓴 것은 처리량이 아니라 <strong>세션이 죽는 순간의 정합성</strong>이었다.
+    미완료 I/O 가 남은 채 세션이 반납되면 완료 통지가 이미 재사용된 세션에 도착한다 —
+    증상이 항상 다른 곳에서 나타나므로 추적이 가장 어려운 부류의 결함이다.
+    그 경로 하나를 위해 하네스를 여러 개 만들었다.
+  </p>
+</section>
+
+<!-- ============================= 2 ============================= -->
+<section id="s2">
+  <h2>모듈의 범위</h2>
+  <p class="sub">15,647 줄 (.h + .cpp, tools 제외). 무엇을 직접 만들었는가.</p>
+
+  <div class="tw">
+    <table>
+      <thead><tr><th>구성</th><th>역할</th><th class="num">줄 수</th></tr></thead>
+      <tbody>
+        <tr><td><code>Core/</code></td><td>IOCP 워커 루프, 서버·클라이언트 기동/종료, 하트비트, 클라이언트 워치독</td><td class="num">5,282</td></tr>
+        <tr><td><code>Session/</code></td><td>세션 수명, I/O 회계, 세션 풀, 잡 큐, 접속 정책</td><td class="num">4,718</td></tr>
+        <tr><td><code>Memory/</code></td><td>TLS 3계층 풀 · 전역 블록 풀 · 스레드 캐시 · (구) 슬랩 풀</td><td class="num">3,102</td></tr>
+        <tr><td><code>Buffer/</code></td><td>수신 링, 송신 큐, 공유 송신 패킷, 버퍼 설정</td><td class="num">1,195</td></tr>
+        <tr><td><code>Scheduler/</code></td><td>ready 세션 큐와 워커 풀</td><td class="num">593</td></tr>
+        <tr><td><code>Protocol/ HandlerTable/ Job/ Network/ Diagnostics/</code></td><td>패킷 헤더, 핸들러 테이블, 잡 정의, 소켓 옵션, 진단</td><td class="num">757</td></tr>
+        <tr><td><code>tools/</code></td><td>회귀·부하·장애 주입 하네스 23종 <em>(저장소에 커밋하지 않는다)</em></td><td class="num">—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>기성 라이브러리를 쓰지 않은 이유</h3>
+  <p>
+    Boost.Asio 나 libuv 로 대체할 수 있는 범위이긴 하다. 직접 만든 이유는 두 가지다.
+  </p>
+  <ul>
+    <li><strong>세션 수명을 엔진이 쥐어야 했다.</strong> 이 서비스는 세션이 끊길 때 인코더 상태,
+        구독 목록, 공유 텍스처 참조를 같이 정리해야 한다. 수명 훅이 라이브러리 추상화 뒤에
+        있으면 "언제 안전한가" 를 매번 추측하게 된다.</li>
+    <li><strong>메모리 거동을 관측할 수 있어야 했다.</strong> 풀의 빈별 peak / grow / acquireFail 이
+        운영 지표로 필요했다. 범용 할당기로는 "지금 몇 개가 밖에 나가 있는가" 를 답할 수 없다.</li>
+  </ul>
+</section>
+
+<!-- ============================= 3 ============================= -->
+<section id="s3">
+  <h2>코드 구조</h2>
+  <p class="sub">계층 다섯. 의존 방향이 위에서 아래로만 흐른다.</p>
+
+  <figure>
+    <div class="svgbox">
+      <svg viewBox="0 0 940 520" role="img" aria-label="IOCP 코어, 세션, 스케줄러, 버퍼, 메모리 다섯 계층의 블록 다이어그램과 그 사이 의존 방향">
+        <defs>
+          <marker id="ia" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0 0 L10 5 L0 10 z" fill="var(--ink-3)"/></marker>
+          <marker id="is" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0 0 L10 5 L0 10 z" fill="var(--signal)"/></marker>
+        </defs>
+        <g font-family="var(--mono)" font-size="11" fill="var(--ink-2)">
+
+          <text x="14" y="24" fill="var(--signal)" font-size="10.5" letter-spacing="1.3">APPLICATION</text>
+          <rect x="14" y="32" width="912" height="46" fill="var(--paper-3)" stroke="var(--rule-2)"/>
+          <text x="470" y="52" text-anchor="middle" fill="var(--ink)" font-size="12.5">서비스 — PacketHandlerTable 에 핸들러 등록 · ISessionEvent 로 접속/종료 통지</text>
+          <text x="470" y="70" text-anchor="middle">엔진은 세션 컨텍스트(SessionContext)만 들고 있고 내용은 서비스 것이다</text>
+
+          <text x="14" y="104" fill="var(--signal)" font-size="10.5" letter-spacing="1.3">CORE</text>
+          <rect x="14" y="112" width="446" height="92" fill="var(--paper)" stroke="var(--signal)"/>
+          <text x="237" y="133" text-anchor="middle" fill="var(--ink)" font-size="12.5">IOCPServer / IOCPClient  (IOCPCore)</text>
+          <text x="28" y="153">GQCS 워커 N개 — HandleCompletion</text>
+          <text x="28" y="169">AcceptEx 사전 게시 · 종료 코드 주입</text>
+          <text x="28" y="185">StartServer / StopServer 수명 전체</text>
+
+          <rect x="476" y="112" width="216" height="92" fill="var(--paper)" stroke="var(--rule-2)"/>
+          <text x="584" y="133" text-anchor="middle" fill="var(--ink)" font-size="12.5">HeartbeatThread</text>
+          <text x="490" y="153">주기적 생존 확인</text>
+          <text x="490" y="169">무응답 세션 표시</text>
+          <text x="490" y="185" fill="var(--ink-3)">ClientWatchdogThread (클라측)</text>
+
+          <rect x="708" y="112" width="218" height="92" fill="var(--paper)" stroke="var(--rule-2)"/>
+          <text x="817" y="133" text-anchor="middle" fill="var(--ink)" font-size="12.5">ReadySessionScheduler</text>
+          <text x="722" y="153">워커 M개 + ReadySessionQueue</text>
+          <text x="722" y="169">세션 단위 잡 드레인</text>
+          <text x="722" y="185" fill="var(--ink-3)">세션당 직렬화 보장</text>
+
+          <text x="14" y="230" fill="var(--signal)" font-size="10.5" letter-spacing="1.3">SESSION</text>
+          <rect x="14" y="238" width="912" height="104" fill="var(--paper)" stroke="var(--signal)"/>
+          <text x="470" y="259" text-anchor="middle" fill="var(--ink)" font-size="12.5">BaseSession — I/O 회계 · 상태 · 종료 사유 · 지연 반납</text>
+          <line x1="28" y1="268" x2="912" y2="268" stroke="var(--rule)"/>
+          <rect x="28" y="278" width="200" height="52" fill="var(--paper-3)" stroke="var(--rule)"/>
+          <text x="128" y="298" text-anchor="middle" fill="var(--ink)">ClientSession</text>
+          <text x="128" y="316" text-anchor="middle" font-size="10">수신 링 · 송신 큐 · 잡 큐</text>
+
+          <rect x="240" y="278" width="200" height="52" fill="var(--paper-3)" stroke="var(--rule)"/>
+          <text x="340" y="298" text-anchor="middle" fill="var(--ink)">AcceptSession</text>
+          <text x="340" y="316" text-anchor="middle" font-size="10">AcceptEx 슬롯 · m_slotOwned</text>
+
+          <rect x="452" y="278" width="220" height="52" fill="var(--paper-3)" stroke="var(--rule)"/>
+          <text x="562" y="298" text-anchor="middle" fill="var(--ink)">SessionPool ×2</text>
+          <text x="562" y="316" text-anchor="middle" font-size="10">Client / Accept · 프리리스트</text>
+
+          <rect x="684" y="278" width="228" height="52" fill="var(--paper-3)" stroke="var(--rule)"/>
+          <text x="798" y="298" text-anchor="middle" fill="var(--ink)">SessionManager</text>
+          <text x="798" y="316" text-anchor="middle" font-size="10">id → 세션 조회 · 전체 순회</text>
+
+          <text x="14" y="368" fill="var(--signal)" font-size="10.5" letter-spacing="1.3">BUFFER</text>
+          <rect x="14" y="376" width="446" height="60" fill="var(--paper)" stroke="var(--rule-2)"/>
+          <text x="237" y="397" text-anchor="middle" fill="var(--ink)" font-size="12.5">RecvPacketBuffer · SendPacketQueue · SharedSendPacket</text>
+          <text x="237" y="417" text-anchor="middle">세션당 수신 링 / 엔트리 연결 리스트 / 참조계수 브로드캐스트</text>
+
+          <rect x="476" y="376" width="450" height="60" fill="var(--signal-soft)" stroke="var(--signal)"/>
+          <text x="701" y="397" text-anchor="middle" fill="var(--ink)" font-size="12.5">TlsMemoryPool — 3계층</text>
+          <text x="701" y="417" text-anchor="middle">BinTable(상태없음) → ThreadBlockCache(락0) → GlobalBlockPool(SLIST)</text>
+
+          <text x="14" y="462" fill="var(--signal)" font-size="10.5" letter-spacing="1.3">OS</text>
+          <rect x="14" y="470" width="912" height="40" fill="var(--paper-2)" stroke="var(--rule-2)"/>
+          <text x="470" y="495" text-anchor="middle">Winsock2 / MSWSock (AcceptEx · WSARecv · WSASend · CancelIoEx) · IOCP · VirtualAlloc · SLIST</text>
+
+          <line x1="237" y1="80" x2="237" y2="108" stroke="var(--ink-3)" marker-end="url(#ia)"/>
+          <line x1="470" y1="208" x2="470" y2="234" stroke="var(--signal)" marker-end="url(#is)"/>
+          <line x1="237" y1="346" x2="237" y2="372" stroke="var(--signal)" marker-end="url(#is)"/>
+          <line x1="701" y1="346" x2="701" y2="372" stroke="var(--ink-3)" marker-end="url(#ia)"/>
+          <line x1="470" y1="440" x2="470" y2="466" stroke="var(--ink-3)" marker-end="url(#ia)"/>
+        </g>
+      </svg>
+    </div>
+    <figcaption>그림 1 — 계층 다섯. 세션은 자기를 담은 풀을 모르고, 풀은 스레드 캐시를 모른다.</figcaption>
+  </figure>
+
+  <h3>의존을 한 방향으로 고정한 두 자리</h3>
+  <ul>
+    <li><strong>세션 → 풀 참조가 없다.</strong> 세션이 자기 풀을 알면 풀 종류마다 세션 클래스가 갈라진다.
+        대신 풀이 마무리 절차를 <strong>함수 포인터로 맡긴다</strong> (<code>ReleaseReadyFunc</code>).</li>
+    <li><strong>GlobalBlockPool 은 ThreadBlockCache 를 모른다.</strong> 의존은 캐시 → 풀 한 방향뿐이라
+        캐시를 통째로 교체하거나 없애도 풀이 영향을 받지 않는다.</li>
+  </ul>
+</section>
+
+<!-- ============================= 4 ============================= -->
+<section id="s4">
+  <h2>처리 파이프라인</h2>
+  <p class="sub">바이트가 소켓에서 서비스 핸들러까지, 그리고 되돌아 나가는 길.</p>
+
+  <figure>
+    <div class="svgbox">
+      <svg viewBox="0 0 960 470" role="img" aria-label="수신 완료부터 핸들러 실행, 송신까지의 파이프라인과 각 단계를 담당하는 스레드">
+        <defs>
+          <marker id="pa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0 0 L10 5 L0 10 z" fill="var(--ink-3)"/></marker>
+          <marker id="ps" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0 0 L10 5 L0 10 z" fill="var(--signal)"/></marker>
+        </defs>
+        <g font-family="var(--mono)" font-size="11" fill="var(--ink-2)">
+
+          <text x="14" y="24" fill="var(--signal)" font-size="10" letter-spacing="1.3">IOCP WORKER (N)</text>
+          <rect x="10" y="32" width="596" height="128" fill="none" stroke="var(--signal)" stroke-dasharray="4 3"/>
+
+          <rect x="24" y="48" width="120" height="44" fill="var(--paper)" stroke="var(--rule-2)"/>
+          <text x="84" y="68" text-anchor="middle" fill="var(--ink)">GQCS</text>
+          <text x="84" y="84" text-anchor="middle" font-size="10">완료 통지 수령</text>
+
+          <rect x="160" y="48" width="130" height="44" fill="var(--paper)" stroke="var(--rule-2)"/>
+          <text x="225" y="68" text-anchor="middle" fill="var(--ink)">수신 링에 커밋</text>
+          <text x="225" y="84" text-anchor="middle" font-size="10">RecvPacketBuffer</text>
+
+          <rect x="306" y="48" width="130" height="44" fill="var(--paper)" stroke="var(--rule-2)"/>
+          <text x="371" y="68" text-anchor="middle" fill="var(--ink)">패킷 경계 분해</text>
+          <text x="371" y="84" text-anchor="middle" font-size="10">ReadPacket (풀에서)</text>
+
+          <rect x="452" y="48" width="140" height="44" fill="var(--signal-soft)" stroke="var(--signal)"/>
+          <text x="522" y="68" text-anchor="middle" fill="var(--ink)">Job 생성 · 큐 적재</text>
+          <text x="522" y="84" text-anchor="middle" font-size="10">SessionJobQueue</text>
+
+          <text x="24" y="118" fill="var(--ink-3)">여기까지는 바이트만 다룬다 — 서비스 코드가 한 줄도 실행되지 않는다.</text>
+          <text x="24" y="136" fill="var(--ink-3)">잡 깊이가 임계를 넘으면 다음 WSARecv 를 걸지 않는다 (백프레셔).</text>
+          <text x="24" y="154" fill="var(--ink-3)">세션을 ready 큐에 한 번만 밀어 넣는다 — 이미 들어 있으면 넣지 않는다.</text>
+
+          <line x1="146" y1="70" x2="156" y2="70" stroke="var(--ink-3)" marker-end="url(#pa)"/>
+          <line x1="292" y1="70" x2="302" y2="70" stroke="var(--ink-3)" marker-end="url(#pa)"/>
+          <line x1="438" y1="70" x2="448" y2="70" stroke="var(--ink-3)" marker-end="url(#pa)"/>
+
+          <rect x="630" y="48" width="140" height="44" fill="var(--paper)" stroke="var(--rule-2)"/>
+          <text x="700" y="68" text-anchor="middle" fill="var(--ink)">ReadySessionQueue</text>
+          <text x="700" y="84" text-anchor="middle" font-size="10">SRWLOCK + CV</text>
+          <line x1="596" y1="70" x2="624" y2="70" stroke="var(--signal)" marker-end="url(#ps)"/>
+
+          <text x="796" y="24" fill="var(--signal)" font-size="10" letter-spacing="1.3">SCHED (M)</text>
+          <rect x="792" y="32" width="158" height="128" fill="none" stroke="var(--signal)" stroke-dasharray="4 3"/>
+          <rect x="806" y="48" width="130" height="44" fill="var(--signal-soft)" stroke="var(--signal)"/>
+          <text x="871" y="68" text-anchor="middle" fill="var(--ink)">Job::Execute</text>
+          <text x="871" y="84" text-anchor="middle" font-size="10">서비스 핸들러</text>
+          <line x1="774" y1="70" x2="800" y2="70" stroke="var(--signal)" marker-end="url(#ps)"/>
+          <text x="806" y="118" fill="var(--ink-3)">세션 하나는</text>
+          <text x="806" y="134" fill="var(--ink-3)">한 워커만 잡는다</text>
+          <text x="806" y="150" fill="var(--ink-3)">→ 핸들러는 단일</text>
+
+          <!-- send path -->
+          <text x="14" y="212" fill="var(--signal)" font-size="10" letter-spacing="1.3">SEND PATH</text>
+          <rect x="10" y="220" width="940" height="110" fill="none" stroke="var(--rule-2)" stroke-dasharray="4 3"/>
+
+          <rect x="24" y="238" width="150" height="44" fill="var(--paper)" stroke="var(--rule-2)"/>
+          <text x="99" y="258" text-anchor="middle" fill="var(--ink)">SendPacket / 브로드캐스트</text>
+          <text x="99" y="274" text-anchor="middle" font-size="10">임의 스레드에서</text>
+
+          <rect x="196" y="238" width="150" height="44" fill="var(--paper)" stroke="var(--rule-2)"/>
+          <text x="271" y="258" text-anchor="middle" fill="var(--ink)">SendPacketQueue</text>
+          <text x="271" y="274" text-anchor="middle" font-size="10">엔트리 연결 리스트</text>
+
+          <rect x="368" y="238" width="170" height="44" fill="var(--signal-soft)" stroke="var(--signal)"/>
+          <text x="453" y="258" text-anchor="middle" fill="var(--ink)">m_sending 토큰 (CAS)</text>
+          <text x="453" y="274" text-anchor="middle" font-size="10">소비자를 한 명으로 고정</text>
+
+          <rect x="560" y="238" width="150" height="44" fill="var(--paper)" stroke="var(--rule-2)"/>
+          <text x="635" y="258" text-anchor="middle" fill="var(--ink)">BeginIO</text>
+          <text x="635" y="274" text-anchor="middle" font-size="10">취소 게이트 통과</text>
+
+          <rect x="732" y="238" width="204" height="44" fill="var(--paper)" stroke="var(--rule-2)"/>
+          <text x="834" y="258" text-anchor="middle" fill="var(--ink)">WSASend (버퍼 1개)</text>
+          <text x="834" y="274" text-anchor="middle" font-size="10">완료 시 다음 엔트리로</text>
+
+          <line x1="176" y1="260" x2="192" y2="260" stroke="var(--ink-3)" marker-end="url(#pa)"/>
+          <line x1="348" y1="260" x2="364" y2="260" stroke="var(--ink-3)" marker-end="url(#pa)"/>
+          <line x1="540" y1="260" x2="556" y2="260" stroke="var(--signal)" marker-end="url(#ps)"/>
+          <line x1="712" y1="260" x2="728" y2="260" stroke="var(--ink-3)" marker-end="url(#pa)"/>
+
+          <text x="24" y="306" fill="var(--ink-3)">생산자는 여럿, 소비자는 하나다. m_sending 을 CAS 로 잡은 스레드 하나만 WSASend 를 발행한다.</text>
+          <text x="24" y="322" fill="var(--ink-3)">큐가 가득 차면 즉시 false — 기다리지 않는다. 브로드캐스트는 SharedSendPacket 참조계수로 한 벌만 복사한다.</text>
+
+          <rect x="10" y="352" width="940" height="100" fill="var(--paper-2)" stroke="var(--rule)"/>
+          <text x="26" y="374" fill="var(--ink)" font-size="12.5">이 경로에서 메모리를 잡는 자리는 세 곳뿐이고 전부 풀에서 나온다</text>
+          <text x="26" y="396">· 수신 패킷 블록  (packetMemoryPool)   · Job 객체 64 B  (jobMemoryPool, align 64)</text>
+          <text x="26" y="414">· 송신 엔트리 40 B (sendQueueMemoryPool — 수신과 분리해 송신 버스트가 수신 실패로 번지지 않게 한다)</text>
+          <text x="26" y="438" fill="var(--ink-3)">패킷당 힙 할당 0 · 세션당 사전 할당 0 · 풀은 빈별 peak / grow / acquireFail 을 운영 지표로 낸다</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption>그림 2 — 수신은 IOCP 워커, 실행은 스케줄러 워커. 그 사이가 잡 큐다.</figcaption>
+  </figure>
+
+  <h3>왜 IOCP 워커에서 바로 핸들러를 부르지 않는가</h3>
+  <p>
+    부를 수도 있고 그러면 스레드 홉이 하나 사라진다. 그러지 않은 이유는
+    <strong>세션당 직렬화</strong> 때문이다. 같은 세션의 수신 완료가 서로 다른 워커에 도착할 수 있는데,
+    그 자리에서 핸들러를 부르면 <strong>같은 세션의 핸들러가 동시에 두 번 실행</strong>된다.
+    서비스가 그걸 매번 방어해야 한다면 엔진이 할 일을 미룬 것이다.
+  </p>
+  <p>
+    잡 큐를 거치면 세션 하나를 워커 하나가 집어 드레인하므로 <strong>핸들러는 언제나 단일 스레드</strong>다.
+    그 대가가 스레드 홉 한 번이고, 측정해 보니 잡 하나에 <strong>49.7 ns</strong> 다 —
+    잡 처리 자체가 <strong>31.66 µs</strong> 이므로 <strong>0.16%</strong>. 값을 치를 만하다.
+  </p>
+</section>
+
+<!-- ============================= 5 ============================= -->
+<section id="s5">
+  <h2>세션 수명과 I/O 회계</h2>
+  <p class="sub">이 엔진에서 가장 어려웠던 부분. 결함의 대부분이 여기서 나왔다.</p>
+
+  <p>
+    문제의 모양은 하나다. <strong>세션을 언제 반납해도 안전한가.</strong>
+    완료 통지가 하나라도 남아 있는데 반납하면, 그 통지가 이미 다른 접속에 재배포된
+    세션에 도착한다. 증상은 항상 엉뚱한 곳에서 나타난다.
+  </p>
+
+  <figure>
+    <div class="svgbox">
+      <svg viewBox="0 0 940 330" role="img" aria-label="I/O 카운트 증가와 감소, 반납 예약 플래그가 마지막 완료와 만나 세션을 반납하는 흐름">
+        <defs><marker id="la" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+          <path d="M0 0 L10 5 L0 10 z" fill="var(--ink-3)"/></marker>
+          <marker id="lb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+          <path d="M0 0 L10 5 L0 10 z" fill="var(--signal)"/></marker></defs>
+        <g font-family="var(--mono)" font-size="11" fill="var(--ink-2)">
+
+          <rect x="14" y="32" width="200" height="74" fill="var(--paper)" stroke="var(--rule-2)"/>
+          <text x="114" y="54" text-anchor="middle" fill="var(--ink)" font-size="12.5">BeginIO()</text>
+          <text x="28" y="74">먼저 올리고 나서 검사</text>
+          <text x="28" y="90" fill="var(--ink-3)">검사가 먼저면 통과한 채</text>
+
+          <rect x="248" y="32" width="200" height="74" fill="var(--paper-3)" stroke="var(--rule)"/>
+          <text x="348" y="54" text-anchor="middle" fill="var(--ink)" font-size="12.5">WSARecv / WSASend</text>
+          <text x="262" y="74">이 시점부터 완료 통지가</text>
+          <text x="262" y="90">반드시 온다</text>
+
+          <rect x="482" y="32" width="200" height="74" fill="var(--paper)" stroke="var(--rule-2)"/>
+          <text x="582" y="54" text-anchor="middle" fill="var(--ink)" font-size="12.5">DecrementIO()</text>
+          <text x="496" y="74">완료 핸들러 끝에서</text>
+          <text x="496" y="90" fill="var(--ink-3)">InterlockedDecrement</text>
+
+          <rect x="716" y="32" width="210" height="74" fill="var(--signal-soft)" stroke="var(--signal)"/>
+          <text x="821" y="54" text-anchor="middle" fill="var(--ink)" font-size="12.5">0 이 되는 순간</text>
+          <text x="730" y="74">releasePending 을 1→0 으로</text>
+          <text x="730" y="90">돌린 스레드가 마무리한다</text>
+
+          <line x1="216" y1="68" x2="244" y2="68" stroke="var(--ink-3)" marker-end="url(#la)"/>
+          <line x1="450" y1="68" x2="478" y2="68" stroke="var(--ink-3)" marker-end="url(#la)"/>
+          <line x1="684" y1="68" x2="712" y2="68" stroke="var(--signal)" marker-end="url(#lb)"/>
+
+          <rect x="14" y="134" width="440" height="82" fill="var(--paper)" stroke="var(--signal)"/>
+          <text x="234" y="156" text-anchor="middle" fill="var(--ink)" font-size="12.5">RequestRelease() — 예약이자 소유권 토큰</text>
+          <text x="28" y="178">InterlockedExchange(&amp;releasePending, 1)</text>
+          <text x="28" y="196">→ ioCount 를 읽어 0 이면 내가 마무리</text>
+          <text x="28" y="210" fill="var(--ink-3)">1→0 전이에 성공한 스레드 하나만 수행한다</text>
+
+          <rect x="486" y="134" width="440" height="82" fill="var(--paper)" stroke="var(--rule-2)"/>
+          <text x="706" y="156" text-anchor="middle" fill="var(--ink)" font-size="12.5">왜 기다리지 않는가</text>
+          <text x="500" y="178">완료 핸들러 안에서 카운트 0 을 기다리면</text>
+          <text x="500" y="196">자기가 든 몫 때문에 자기를 기다린다</text>
+          <text x="500" y="212" fill="var(--bad)">실측: bench 실행당 10초 타임아웃 200회 이상</text>
+
+          <rect x="14" y="240" width="912" height="76" fill="var(--paper-2)" stroke="var(--rule)"/>
+          <text x="28" y="262" fill="var(--ink)" font-size="12.5">StoreLoad 한 쌍 — 두 스레드가 서로를 못 보는 창을 막는 것이 이 구조의 핵심이다</text>
+          <text x="28" y="282">A  InterlockedExchange(releasePending, 1)  →  read(ioCount)</text>
+          <text x="28" y="298">B  InterlockedDecrement(ioCount)          →  read(releasePending)</text>
+          <text x="600" y="282" fill="var(--ink-3)">서로 다른 변수에 store 후 load 라</text>
+          <text x="600" y="298" fill="var(--ink-3)">순서를 세우는 것이 lock 접두 명령이다</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption>그림 3 — 반납 권한을 한 스레드에게만 주는 장치. 그 판정 근거가 <code>ioCount</code> 하나다.</figcaption>
+  </figure>
+
+  <h3>순서 하나가 결함이 된 세 자리</h3>
+
+  <h4>1. BeginIO — 검사보다 증가가 먼저다</h4>
+  <p>
+    반대로 두면 검사를 통과한 채 멈춘 스레드가 있는 동안 카운트가 0 에 도달할 수 있다.
+    그러면 취소 대기가 통과해 세션이 리셋되고, <strong>그 뒤에 그 스레드가 I/O 를 걸어
+    죽은 세션에 미완료 I/O 를 남긴다.</strong>
+  </p>
+  <p class="cap">실측 — 검사를 먼저 두었을 때 bench Phase 4 가 4회 중 1회, 위반 2건으로 실패</p>
+
+  <h4>2. 취소는 한 번으로 끝나지 않는다</h4>
+  <p>
+    <code>CancelIoEx</code> 는 <strong>부르는 그 순간 걸려 있던 것만</strong> 취소하는데, 완료 핸들러는
+    마지막에 늘 다음 I/O 를 건다. 막지 않으면 카운트가 0 으로 내려오지 않아
+    대기가 10초를 태우고 미완료 I/O 를 안은 세션이 리셋된다.
+  </p>
+  <p>
+    그래서 대기를 슬라이스로 쪼개고 <strong>슬라이스마다 <code>CancelIoEx</code> 를 다시 부른다.</strong>
+    게이트를 막 통과한 낙오는 수가 유한하므로 몇 번이면 전부 걷힌다.
+  </p>
+  <p class="cap">실측 — 재취소가 없던 판에서 bench Phase 4 반복 8회 전부 실패</p>
+
+  <h4>3. 아무도 내려주지 않는 카운트가 하나 있었다</h4>
+  <p>
+    <code>BeginIO</code> 가 올린 카운트는 완료 통지가 내려준다 — I/O 를 실제로 걸었으니 통지가 온다.
+    그런데 <strong>완료 통지가 아니라 다른 스레드의 행동이 내려주기로 되어 있는</strong> 카운트가 하나 있었다.
+    수신 백프레셔의 일시정지다. 멈춘 세션에는 걸린 I/O 가 없고, 그 카운트를 내리는 것은
+    잡을 드레인한 스레드뿐인데 <strong>종료 시에는 그 스레드가 이미 없다.</strong>
+  </p>
+  <p>
+    <code>ReleaseUnpostedIO()</code> 훅을 만들어, 취소 직후와 대기 슬라이스마다 파생 클래스에게
+    "지금 들고 있는 미발행 카운트를 놓아라" 고 알린다.
+  </p>
+  <p class="cap">실측 — tools/cshutdown 3/3 재현. 10초를 꽉 채우고 "io count still 1" 로 타임아웃했다</p>
+
+  <div class="note">
+    <span class="lbl">버려진 완료 통지가 그대로 위반이었다</span>
+    <p>워커 루프에 "정지 요청이면 그냥 나간다" 검사가 있었다. 이미 큐에서 꺼낸 통지를
+    처리하지 않고 나가면 그 I/O 의 <code>DecrementIO</code> 가 영영 실행되지 않는다.</p>
+    <p>로그에서 <strong>버려진 통지 수와 위반 수가 8:9, 9:10, 6:7, 12:13 으로 나란히 움직였다.</strong>
+    버린 통지가 그대로 그 위반이었다. 검사를 지우고, 막 꺼낸 통지는 반드시 처리하도록 바꿨다 —
+    GQCS 의 무한 대기를 깨우는 것은 그 검사가 아니라 종료 코드다.</p>
+  </div>
+</section>
+
+<!-- ============================= 6 ============================= -->
+<section id="s6">
+  <h2>동시성 모델</h2>
+  <p class="sub">스레드 네 종류. 무엇을 락으로 지키고 무엇을 원자 연산으로 지키는가.</p>
+
+  <div class="tw">
+    <table>
+      <thead><tr><th>스레드</th><th>수</th><th>하는 일</th><th>비고</th></tr></thead>
+      <tbody>
+        <tr><td>IOCP 워커</td><td class="num">N</td><td>GQCS · 완료 처리 · 패킷 분해 · 잡 적재</td><td>서비스 코드를 실행하지 않는다</td></tr>
+        <tr><td>스케줄러 워커</td><td class="num">M</td><td>세션 단위 잡 드레인 · 핸들러 실행</td><td>세션 하나는 한 워커만</td></tr>
+        <tr><td>하트비트</td><td class="num">1</td><td>주기적 생존 확인 · 무응답 표시</td><td>세션 상태를 쓴다</td></tr>
+        <tr><td>앱 스레드</td><td class="num">—</td><td>Start/Stop · 송신 · 브로드캐스트</td><td>엔진이 만들지 않는다</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>판단 기준</h3>
+  <p>
+    <strong>기다리는 것이 목적이면 커널 객체, 기다리면 지는 것이면 원자 연산.</strong>
+    락을 다 없애는 것이 목표가 아니라 경계를 긋는 것이 목표였다.
+  </p>
+
+  <div class="tw">
+    <table>
+      <thead><tr><th>대상</th><th>동기화</th><th>이유</th></tr></thead>
+      <tbody>
+        <tr><td><code>ReadySessionQueue</code></td><td>SRWLOCK + CV</td>
+            <td><strong>기다리는 것이 기능</strong>이다. 일이 없으면 워커는 자야 한다</td></tr>
+        <tr><td><code>SessionJobQueue</code></td><td>SRWLOCK</td>
+            <td>왕복 49.7 ns · 잡 처리 31.66 µs 대비 0.16% — 락프리로 바꿀 이유가 없다</td></tr>
+        <tr><td><code>SendPacketQueue</code></td><td>SRWLOCK</td>
+            <td>왕복 26.8 ns. 같은 판단</td></tr>
+        <tr><td>세션 I/O 카운트 · 상태 · 종료 사유</td><td>원자 연산</td>
+            <td>완료 핸들러가 여기서 막히면 IOCP 워커가 통째로 밀린다</td></tr>
+        <tr><td><code>m_sending</code> 송신 토큰</td><td>CAS</td>
+            <td>소비자를 한 명으로 고정. 실패하면 그냥 돌아간다</td></tr>
+        <tr><td><code>m_slotOwned</code> (AcceptSession)</td><td>CAS</td>
+            <td>두 스레드가 같은 슬롯을 비었다고 읽던 결함을 막는다</td></tr>
+        <tr><td>스레드 블록 캐시</td><td>없음 (TLS)</td>
+            <td>스레드 전용이라 동기화 자체가 없다 — 할당의 대부분이 여기서 끝난다</td></tr>
+        <tr><td>전역 블록 풀 묶음</td><td>Interlocked SLIST</td>
+            <td>캐시가 비었을 때만 닿는다</td></tr>
+        <tr><td>세그먼트 확장</td><td>SRWLOCK</td>
+            <td>정상 운영 중에는 호출되지 않는다</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>원자 읽기 관용구를 바꿨다</h3>
+  <p>
+    엔진 전체에서 원자 변수를 <code>InterlockedCompareExchange(&amp;v, 0, 0)</code> 로 읽고 있었다.
+    이건 <code>lock cmpxchg</code> — <strong>캐시 라인을 배타적으로 가져가고 양방향 펜스를 치는
+    read-modify-write</strong> 로 단순 읽기를 하는 것이다.
+    <strong>69 곳</strong>을 <code>::ReadAcquire</code> / <code>::ReadAcquire64</code> 로 바꿨다.
+  </p>
+  <p>
+    바꾸기 전에 <strong>진짜 CAS 14곳</strong>을 먼저 가려냈다 — <code>m_slotOwned</code>,
+    <code>m_sending</code>, <code>NoteDisconnectReason</code>, 풀 상태 전이 등.
+    그 14개를 모아 둔 파일에 변환기를 돌려 <strong>0건 매치</strong>를 확인한 뒤에 적용했다.
+  </p>
+
+  <div class="note">
+    <span class="lbl">한 곳은 일부러 남겼다</span>
+    <p><code>BaseSession::RequestRelease</code> 의 store 는 <code>InterlockedExchange</code> 여야 한다.
+    <strong>Dekker 패턴</strong>이라 StoreLoad 순서가 필요한데, 뒤따르는 읽기는 acquire 라
+    그 순서를 세우지 못한다. 세워주는 것은 <strong>바로 앞의 lock 접두 명령 하나뿐</strong>이다.</p>
+    <p>안전한 이유가 이웃 명령에 걸려 있어 취약하므로, "이 store 를 <code>WriteRelease</code> 로
+    바꾸면 깨진다" 는 주석을 코드에 남겼다.</p>
+  </div>
+</section>
+
+<!-- ============================= 7 ============================= -->
+<section id="s7">
+  <h2>3계층 메모리 풀</h2>
+  <p class="sub">이 엔진에서 가장 큰 성능 개선이 나온 자리.</p>
+
+  <figure>
+    <div class="svgbox">
+      <svg viewBox="0 0 940 300" role="img" aria-label="빈 계산, 스레드 캐시, 전역 블록 풀, 세그먼트로 이어지는 3계층 메모리 풀 구조">
+        <defs><marker id="ma" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0 0 L10 5 L0 10 z" fill="var(--signal)"/></marker></defs>
+        <g font-family="var(--mono)" font-size="11" fill="var(--ink-2)">
+          <rect x="14" y="30" width="170" height="60" fill="var(--paper)" stroke="var(--rule-2)"/>
+          <text x="99" y="52" text-anchor="middle" fill="var(--ink)" font-size="12.5">Acquire(size)</text>
+          <text x="99" y="72" text-anchor="middle" font-size="10">BinTable::BinOf</text>
+          <text x="99" y="86" text-anchor="middle" font-size="10" fill="var(--ink-3)">BitScanReverse 1회</text>
+
+          <rect x="216" y="30" width="216" height="60" fill="var(--signal-soft)" stroke="var(--signal)" stroke-width="1.5"/>
+          <text x="324" y="52" text-anchor="middle" fill="var(--ink)" font-size="12.5">ThreadBlockCache::Pop</text>
+          <text x="324" y="70" text-anchor="middle">스레드 전용 프리 리스트</text>
+          <text x="324" y="86" text-anchor="middle" fill="var(--signal-2)">락 0 · 대부분 여기서 끝난다</text>
+
+          <rect x="464" y="30" width="216" height="60" fill="var(--paper)" stroke="var(--rule-2)"/>
+          <text x="572" y="52" text-anchor="middle" fill="var(--ink)" font-size="12.5">GlobalBlockPool::PopChunk</text>
+          <text x="572" y="70" text-anchor="middle">묶음 단위로 가져간다</text>
+          <text x="572" y="86" text-anchor="middle" fill="var(--ink-3)">Interlocked SLIST</text>
+
+          <rect x="712" y="30" width="214" height="60" fill="var(--paper)" stroke="var(--rule-2)"/>
+          <text x="819" y="52" text-anchor="middle" fill="var(--ink)" font-size="12.5">세그먼트 확장</text>
+          <text x="819" y="70" text-anchor="middle">VirtualAlloc · stride 로 절단</text>
+          <text x="819" y="86" text-anchor="middle" fill="var(--ink-3)">SRWLOCK · 정상 운영엔 없음</text>
+
+          <line x1="188" y1="60" x2="212" y2="60" stroke="var(--signal)" marker-end="url(#ma)"/>
+          <line x1="436" y1="60" x2="460" y2="60" stroke="var(--signal)" marker-end="url(#ma)"/>
+          <line x1="684" y1="60" x2="708" y2="60" stroke="var(--signal)" marker-end="url(#ma)"/>
+          <text x="448" y="22" text-anchor="middle" fill="var(--ink-3)" font-size="10">캐시가 비었을 때만</text>
+          <text x="696" y="22" text-anchor="middle" fill="var(--ink-3)" font-size="10">재고가 없을 때만</text>
+
+          <rect x="14" y="120" width="912" height="72" fill="var(--paper-2)" stroke="var(--rule)"/>
+          <text x="30" y="142" fill="var(--ink)" font-size="12.5">왜 묶음(chunk) 단위로 오가는가</text>
+          <text x="30" y="162">블록 하나씩 주고받으면 전역 SLIST 를 블록마다 친다. 묶음으로 가져가면 그 횟수가 batch 분의 1 이 된다.</text>
+          <text x="30" y="180">캐시 상한을 넘으면 역시 묶음으로 되돌려 놓는다 — 한 스레드가 재고를 독점하지 못하게 하는 장치이기도 하다.</text>
+
+          <rect x="14" y="212" width="912" height="72" fill="var(--paper)" stroke="var(--signal)"/>
+          <text x="30" y="234" fill="var(--ink)" font-size="12.5">Job 이 align(64) 인 것이 계층을 바꾼 계기였다</text>
+          <text x="30" y="254">이전 구현(SlabMemoryPool)은 헤더 뒤에 페이로드를 붙이는 구조라 64바이트 정렬을 보장하지 못했다.</text>
+          <text x="30" y="272" fill="var(--bad)">실측: align(64) 요청 256개 중 <tspan font-weight="600">64개만</tspan> 정렬 — 나머지는 조용히 어긋난 주소였다</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption>그림 4 — 요청 하나가 지나는 길. 세 계층 중 두 번째에서 대부분 끝난다.</figcaption>
+  </figure>
+
+  <h3>왜 스레드 캐시가 결정적인가</h3>
+  <p>
+    이전 구현(<code>SlabMemoryPool</code>)은 크기별 프리 리스트 하나를 <strong>모든 스레드가 공유</strong>했다.
+    그래서 스레드가 늘수록 <strong>느려졌다</strong> — 1 스레드 44.1 M ops/s 에서 8 스레드 12.5 M ops/s 로.
+  </p>
+  <p>
+    TLS 캐시는 할당의 대부분을 <strong>동기화 없이</strong> 끝낸다. 그래서 스레드가 늘면 처리량도 늘어난다 —
+    79 M → 554 M ops/s. 8 스레드에서 <strong>44.5배</strong> 차이다.
+    숫자를 <a href="#s9">개선 전후</a>에 그려 뒀다.
+  </p>
+</section>
+
+<!-- ============================= 8 ============================= -->
+<section id="s8">
+  <h2>수신 백프레셔</h2>
+  <p class="sub">잡 큐에는 깊이 상한이 없다. 대신 TCP 에 속도 조절을 맡긴다.</p>
+
+  <p>
+    핸들러가 유입보다 느리면 잡이 무한히 쌓인다. 잡 하나가 패킷 하나를 붙들고 있으므로
+    메모리도 함께 자란다. 풀 커밋 상한이 그 끝을 막지만, <strong>상한에 닿는다는 것은 이미
+    패킷을 버리고 세션을 끊는다는 뜻</strong>이다. 그건 마지막 방어선이지 조절이 아니다.
+  </p>
+
+<pre><i>// 조절은 그 앞단에서 한다</i>
+
+잡 큐 깊이 &gt;= <b>recvPauseJobDepth</b>
+    → 다음 <b>WSARecv 를 걸지 않는다</b>
+    → 커널 수신 버퍼가 찬다
+    → <em>TCP 수신 윈도가 닫힌다</em>
+    → 보내는 쪽이 스스로 막힌다        <i>유실도 끊김도 없이 속도만 맞춰진다</i>
+
+잡 큐 깊이 &lt;= <b>recvResumeJobDepth</b>
+    → 다시 WSARecv 를 건다
+</pre>
+
+  <p>
+    두 수위를 벌려 두는 이유는 <strong>진동</strong>을 막기 위해서다. 경계가 하나면 그 근처에서
+    매 잡마다 멈춤/재개가 반복되고, 재개 한 번이 <code>WSARecv</code> 발행 한 번이므로
+    그 자체가 비용이다.
+  </p>
+
+  <div class="note">
+    <span class="lbl">이 기능이 낳은 결함</span>
+    <p>일시정지 중인 세션은 <strong>걸린 I/O 가 하나도 없는데 I/O 카운트를 하나 들고 있다.</strong>
+    그 카운트를 내리는 것은 잡을 드레인한 스레드뿐인데, 종료 경로에서는 스케줄러가 먼저
+    사라진다 — 아무도 내려주지 않는다.</p>
+    <p>기능 하나가 <a href="#s5">수명 관리</a>의 전제("올린 카운트는 완료 통지가 내려준다")를
+    깬 것이고, 그래서 <code>ReleaseUnpostedIO</code> 훅이 생겼다.
+    <strong>새 기능이 기존 불변식을 깨는지 보는 것이 기능 자체보다 어려웠다.</strong></p>
+  </div>
+</section>
+
+<!-- ============================= 9 ============================= -->
+<section id="s9">
+  <h2>개선 전후</h2>
+  <p class="sub">전부 <code>tools/</code> 하네스로 이 머신에서 잰 값이다 — 32 논리 코어, Release.</p>
+
+  <h3>메모리 풀 — Slab 에서 TLS 3계층으로</h3>
+
+  <div class="chart">
+    <div class="chart-h">단일 스레드 할당/해제 왕복 <span>ns/op · 낮을수록 좋음</span></div>
+    <p class="chart-note">경합 없는 순수 비용 · 200만 회</p>
+
+    <div class="crow"><div class="lbl">SlabMemoryPool <em>(개선 전)</em></div>
+      <div class="track"><span class="bar before" style="width:100%"></span></div><div class="val">20.8</div></div>
+    <div class="crow win"><div class="lbl">TlsMemoryPool</div>
+      <div class="track"><span class="bar after" style="width:53.4%"></span></div><div class="val">11.1</div></div>
+
+    <div class="delta"><b>1.87배</b> · 48.0 → 90.0 M ops/s — 경합이 없어도 계층이 얕아진 만큼 빨라진다</div>
+  </div>
+
+  <div class="chart">
+    <div class="chart-h">경합 상태 확장성 <span>M ops/s · 같은 풀에 N 스레드</span></div>
+    <p class="chart-note">스레드당 50만 회 · 이전 구현은 프리 리스트 하나를 모든 스레드가 공유했다</p>
+
+    <div class="crow"><div class="lbl">Slab · 1 스레드</div>
+      <div class="track"><span class="bar before" style="width:8.0%"></span></div><div class="val">44.1</div></div>
+    <div class="crow"><div class="lbl">Slab · 4 스레드</div>
+      <div class="track"><span class="bar before" style="width:3.1%"></span></div><div class="val">17.0</div></div>
+    <div class="crow"><div class="lbl">Slab · 8 스레드</div>
+      <div class="track"><span class="bar before" style="width:2.2%"></span></div><div class="val">12.5</div></div>
+    <div class="crow"><div class="lbl">TLS · 1 스레드</div>
+      <div class="track"><span class="bar after" style="width:14.3%"></span></div><div class="val">79.4</div></div>
+    <div class="crow"><div class="lbl">TLS · 4 스레드</div>
+      <div class="track"><span class="bar after" style="width:52.0%"></span></div><div class="val">288.1</div></div>
+    <div class="crow win"><div class="lbl">TLS · 8 스레드</div>
+      <div class="track"><span class="bar after" style="width:100%"></span></div><div class="val">553.8</div></div>
+
+    <div class="delta">8 스레드에서 <b>44.5배</b> · 방향이 반대라는 점이 핵심이다 —
+      이전 구현은 스레드가 늘수록 <b>느려지고</b>(44.1 → 12.5), TLS 는 <b>빨라진다</b>(79.4 → 553.8)</div>
+  </div>
+
+  <div class="chart">
+    <div class="chart-h">생산자/소비자 — 엔진의 실제 패턴 <span>M ops/s · 크로스 스레드 해제</span></div>
+    <p class="chart-note">IOCP 워커가 할당하고 스케줄러 워커가 해제한다. 캐시가 한쪽으로 쏠리는 최악 조건</p>
+
+    <div class="crow"><div class="lbl">Slab · 1P/1C <em>(개선 전)</em></div>
+      <div class="track"><span class="bar before" style="width:81.0%"></span></div><div class="val">8.82</div></div>
+    <div class="crow win"><div class="lbl">TLS · 1P/1C</div>
+      <div class="track"><span class="bar after" style="width:100%"></span></div><div class="val">10.89</div></div>
+    <div class="crow"><div class="lbl">Slab · 4P/4C</div>
+      <div class="track"><span class="bar before" style="width:32.3%"></span></div><div class="val">3.52</div></div>
+    <div class="crow win"><div class="lbl">TLS · 4P/4C</div>
+      <div class="track"><span class="bar after" style="width:48.5%"></span></div><div class="val">5.28</div></div>
+
+    <div class="delta"><b>1.23 ~ 1.50배</b> — 순수 경합(44.5배)보다 훨씬 작다.
+      할당과 해제가 다른 스레드에서 일어나면 캐시가 계속 비고 차므로 전역 SLIST 를 자주 친다.
+      <b>실제 이득은 이쪽 숫자로 보는 것이 맞다</b></div>
+  </div>
+
+  <div class="chart">
+    <div class="chart-h">align(64) 정렬 보장 <span>256 요청 중 정렬된 수</span></div>
+    <p class="chart-note">Job 객체가 <code>alignas(64)</code> 다. 성능이 아니라 정합성 문제였다</p>
+
+    <div class="crow"><div class="lbl">SlabMemoryPool <em>(개선 전)</em></div>
+      <div class="track"><span class="bar before" style="width:25%"></span></div><div class="val">64 / 256</div></div>
+    <div class="crow win"><div class="lbl">TlsMemoryPool</div>
+      <div class="track"><span class="bar after" style="width:100%"></span></div><div class="val">256 / 256</div></div>
+
+    <div class="delta"><b>75% 가 조용히 어긋난 주소</b>였다 — 크래시가 아니라 잘못된 공유로 나타나는 부류다</div>
+  </div>
+
+  <h3>송신 경로 — 고정 링 배열에서 엔트리 연결 리스트로</h3>
+
+  <div class="chart">
+    <div class="chart-h">세션 수에 따른 송신 메모리 <span>MB · 깊이 4096</span></div>
+    <p class="chart-note">이전에는 세션마다 깊이×8바이트 포인터 배열을 기동 시점에 전부 잡았다</p>
+
+    <div class="crow"><div class="lbl">64 세션 <em>(이전)</em></div>
+      <div class="track"><span class="bar before" style="width:4.3%"></span></div><div class="val">14.0</div></div>
+    <div class="crow"><div class="lbl">1,000 세션 <em>(이전)</em></div>
+      <div class="track"><span class="bar before" style="width:13.3%"></span></div><div class="val">43.2</div></div>
+    <div class="crow"><div class="lbl">10,000 세션 <em>(이전)</em></div>
+      <div class="track"><span class="bar before" style="width:100%"></span></div><div class="val">324.5</div></div>
+    <div class="crow win"><div class="lbl">세션 수와 무관 <em>(현재)</em></div>
+      <div class="track"><span class="bar after" style="width:1.5%"></span></div><div class="val">5.0</div></div>
+
+    <div class="delta">1만 세션에서 <b>65배</b> · 세션당 사전 할당이 <b>32 KB → 0</b> 이 되고,
+      엔트리 크기도 <b>192 → 40 바이트</b> 로 줄었다. 실제로 담긴 만큼만 풀에서 나온다</div>
+  </div>
+
+  <h3>원자 읽기 관용구</h3>
+
+  <div class="chart">
+    <div class="chart-h">원자 변수 읽기 한 번 <span>CPU 사이클 · 낮을수록 좋음</span></div>
+    <p class="chart-note">TSC 4.29 GHz · /O2 · 2억 회 중 최소값 · 엔진 전체 69곳을 바꿨다</p>
+
+    <div class="crow"><div class="lbl"><code>InterlockedCompareExchange(&amp;v,0,0)</code> <em>(개선 전)</em></div>
+      <div class="track"><span class="bar before" style="width:100%"></span></div><div class="val">14.78</div></div>
+    <div class="crow win"><div class="lbl"><code>ReadAcquire(&amp;v)</code></div>
+      <div class="track"><span class="bar after" style="width:5.1%"></span></div><div class="val">0.76</div></div>
+
+    <div class="delta">읽기 1회당 <b>14.03 사이클 절감</b> (19.6배) ·
+      경합 시(쓰기1+읽기3) 64.9 → 3,249.1 M reads/s 로 <b>50배</b></div>
+  </div>
+
+  <div class="note">
+    <span class="lbl">이 엔진에서는 절대량으로도 의미가 있다</span>
+    <p>NvCodec 같은 프레임 단위 파이프라인에서는 이 치환이 프레임 예산의 0.0003% 였다.
+    여기는 다르다 — <strong>세션 상태·I/O 카운트·종료 사유를 완료 통지마다 여러 번 읽고</strong>,
+    초당 수십만 건이 오간다.</p>
+    <p>엔드투엔드 측정에서 잡 하나에 CPU 31.66 µs 가 들고 그중 커널이 대부분이다.
+    읽기 관용구는 그 사용자 시간 쪽을 줄이므로, 코어 수를 늘렸을 때
+    <strong>확장이 꺾이는 지점을 뒤로 미는</strong> 효과가 있다.</p>
+  </div>
+</section>
+
+<!-- ============================= 10 ============================= -->
+<section id="s10">
+  <h2>채택하지 않은 최적화</h2>
+  <p class="sub">재고 나서 기각한 것들. 이쪽이 채택한 것만큼 중요하다고 본다.</p>
+
+  <div class="opt">
+    <article>
+      <h4>잡 큐를 락프리로</h4>
+      <p class="where">SessionJobQueue · tools/jobbench</p>
+      <p>SRWLOCK 을 MPSC 락프리 큐로 바꾸려 했다. 먼저 <strong>락의 비용부터 쟀다.</strong></p>
+      <p>단일 스레드 왕복 <strong>23.9 ns</strong>, SPSC <strong>49.7 ns</strong>, MPSC <strong>53.1 ns</strong>.
+      그런데 엔드투엔드에서 잡 하나에 드는 CPU 가 <strong>31.66 µs</strong> 다.
+      락을 완전히 없애도 <strong>0.16%</strong> 다.</p>
+      <p>락프리 MPSC 큐는 ABA 와 수명 문제를 함께 들여온다. 0.16% 를 위해 <strong>디버깅이 가장
+      어려운 부류의 버그를 살 이유가 없다.</strong></p>
+      <span class="gain no">기각 — 이득 0.16%</span>
+    </article>
+
+    <article>
+      <h4>송신 큐를 락프리로</h4>
+      <p class="where">SendPacketQueue · tools/sendbench</p>
+      <p>같은 이유로 기각했다. 경합 없는 큐 왕복이 <strong>26.8 ns</strong> 인데 패킷 하나를 내보내는
+      비용은 마이크로초 단위다.</p>
+      <p>다만 여기서는 다른 것을 발견했다. 생산자를 늘리며 재보니 <strong>포화율 90% 를 넘는
+      구간에서는 enqueue/s 가 소비자의 뽑는 속도를 재고 있었다</strong> — 큐 능력이 아니라
+      포화 상태의 락 배분을 재고 있던 것이다. 하네스 쪽을 먼저 고쳤다.</p>
+      <span class="gain no">기각 — 이득 1% 미만</span>
+    </article>
+
+    <article>
+      <h4>WSASend 분산 수집 (scatter-gather)</h4>
+      <p class="where">tools/gatherbench — 엔진을 쓰지 않고 생 Winsock 으로 측정</p>
+      <p>지금 엔진은 <strong>패킷 하나에 WSASend 한 번</strong>이다. 여러 패킷을 <code>WSABUF</code> 배열로
+      묶어 한 번에 보내면 syscall 이 줄어든다. 고칠 가치가 있는지 먼저 쟀다.</p>
+      <p>효과는 컸다 — 256 바이트 패킷 32개 묶음에서 <strong>29.2배</strong>(186 K → 5.44 M packets/s).
+      memcpy 로 합치는 방식과 성능이 같았으므로, 한다면 복사가 없는 분산 수집이 맞다.</p>
+      <p>그런데 <strong>이 서비스에는 해당하지 않는다.</strong> 영상을 32 KB 청크로 보내는데,
+      16 KB 패킷에서 이미 단일 전송이 <strong>2,414 MB/s</strong> 를 낸다. 목표 20 Mbps 의 <strong>천 배</strong>다.
+      작은 패킷을 초당 수십만 개 보내는 서비스라면 1순위 개선이지만 여기서는 아니다.</p>
+      <span class="gain no">보류 — 이 워크로드에는 무의미</span>
+    </article>
+
+    <article>
+      <h4>송신 엔트리 풀 샤딩</h4>
+      <p class="where">SendPacketEntry — 되돌린 변경</p>
+      <p>엔트리 풀을 프로세서 수만큼 샤드로 나누고 세션 아이디로 샤드를 고정 배정했다.
+      경합은 줄었는데 <strong>세션이 쓸 수 있는 엔트리가 "총량 ÷ 샤드 수" 로 줄었다.</strong></p>
+      <p>한 샤드가 고갈됐을 때 <strong>다른 샤드에 63,488개(97%)가 그대로 누워 있었다.</strong>
+      경합을 줄이려다 <strong>가용량을 97% 버린</strong> 셈이다. 되돌리고 TLS 캐시 방식으로 갔다.</p>
+      <span class="gain no">되돌림 — 가용량 97% 손실</span>
+    </article>
+  </div>
+
+  <div class="note">
+    <span class="lbl">기각의 공통 형태</span>
+    <p>넷 다 <strong>"부품의 비용"과 "전체에서 그 부품이 차지하는 몫"을 따로 쟀다.</strong>
+    부품만 보면 전부 개선 여지가 있어 보이고, 전체만 보면 부품이 병목인지 알 수 없다.
+    두 층을 다 재야 판단이 선다.</p>
+    <p>그래서 하네스를 계층별로 나눠 만들었다 — <code>poolbench</code>(풀),
+    <code>jobbench</code>(잡 큐), <code>sendbench</code>(송신 큐), <code>gatherbench</code>(syscall),
+    <code>streambench</code>(엔드투엔드).</p>
+  </div>
+</section>
+
+<!-- ============================= 11 ============================= -->
+<section id="s11">
+  <h2>예외와 장애 처리</h2>
+  <p class="sub">끊기는 경로가 정상 경로다. 그 사실을 구조에 반영했다.</p>
+
+  <h3>종료 사유는 먼저 쓴 값이 이긴다</h3>
+  <p>
+    종료는 연쇄로 일어난다. 프로토콜 위반으로 끊기로 하면 곧 소켓이 닫히고 걸려 있던
+    I/O 가 <code>10054</code> 로 실패한다. <strong>나중 것이 이기면 근본 원인이 매번
+    <code>SocketError</code> 로 덮인다.</strong>
+  </p>
+<pre><b>void</b> NoteDisconnectReason(DisconnectReason reason) {
+    <em>::InterlockedCompareExchange(&amp;m_disconnectReason,</em>
+        (LONG)reason, (LONG)DisconnectReason::<b>Unknown</b>);   <i>// Unknown 일 때만 쓴다</i>
+}
+</pre>
+  <p>
+    부르는 자리는 <strong>끊기로 결정한 곳</strong>이지 실제로 종료가 일어나는 곳이 아니다.
+    그 둘은 대개 다르다. 그리고 세션을 재사용하기 전에 반드시 되돌린다 —
+    남아 있으면 다음 접속의 종료가 지난 접속의 사유를 물려받는다.
+  </p>
+
+  <h3>실패 지점과 대응</h3>
+  <div class="tw">
+    <table>
+      <thead><tr><th>상황</th><th>엔진의 처리</th><th>서비스가 보는 것</th></tr></thead>
+      <tbody>
+        <tr><td>피어가 정상 종료</td><td>수신 0바이트 → 세션 정리</td><td><code>OnDisconnect</code> + 사유</td></tr>
+        <tr><td>피어 강제 종료 (10054)</td><td>같음. 사유는 먼저 기록된 것 유지</td><td>근본 원인이 보존된 사유</td></tr>
+        <tr><td>수신 패킷 크기 위반</td><td>프로토콜 위반으로 즉시 종료</td><td><code>ProtocolViolation</code></td></tr>
+        <tr><td>송신 큐 포화</td><td><strong>기다리지 않고 false</strong></td><td>호출부가 참조를 놓는다</td></tr>
+        <tr><td>패킷 풀 커밋 상한 도달</td><td><code>ReadPacket</code> 이 OutOfMemory · 세션 종료</td><td>폭주 차단기가 동작한 것</td></tr>
+        <tr><td>하트비트 무응답</td><td><code>HEARTBEAT_TIMEOUT</code> 표시 후 정리</td><td>죽은 피어 회수</td></tr>
+        <tr><td>종료 중 완료 통지 도착</td><td><strong>반드시 처리</strong>하고 카운트를 내린다</td><td>—</td></tr>
+        <tr><td>취소 후 재발행 낙오</td><td>슬라이스마다 <code>CancelIoEx</code> 재호출</td><td>—</td></tr>
+        <tr><td>미발행 카운트 잔류</td><td><code>ReleaseUnpostedIO</code> 훅으로 회수</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>진단은 카운터로 남긴다</h3>
+  <p>
+    풀은 빈마다 <code>peak</code> / <code>grow</code> / <code>acquireFail</code> 을 낸다.
+    <code>grow</code> 가 0 이 아니면 초기값이 모자랐다는 뜻이고,
+    <strong>그래도 할당이 실패하지 않았다는 것이 안전 구조의 차이</strong>다.
+    <code>peak</code> 는 동시 사용량의 상한이라 다음 배포의 초기값을 정하는 근거가 된다.
+  </p>
+</section>
+
+<!-- ============================= 12 ============================= -->
+<section id="s12">
+  <h2>검증 하네스</h2>
+  <p class="sub">도구 23개. 이 문서의 모든 숫자가 여기서 나왔다.</p>
+
+  <div class="tw">
+    <table>
+      <thead><tr><th>분류</th><th>도구</th><th>무엇을 가르는가</th></tr></thead>
+      <tbody>
+        <tr><td rowspan="2">부품 성능</td><td><code>poolbench</code></td>
+            <td>메모리 풀 4단계 — 단일/경합/생산소비/정렬. <strong>"TLS 로 바꿨더니 빨라졌다" 를 말할 근거</strong></td></tr>
+        <tr><td><code>jobbench</code> · <code>sendbench</code> · <code>gatherbench</code></td>
+            <td>잡 큐 / 송신 큐 / syscall 을 각각 떼어내 잰다. 전체 처리량으로는 병목을 못 가린다</td></tr>
+        <tr><td rowspan="2">엔드투엔드</td><td><code>streambench</code></td>
+            <td>서버 송신 경로 — MB/s, WSASend 당 바이트, 커널 CPU, p50/p99 지연</td></tr>
+        <tr><td><code>bench</code> · <code>recvtest</code> · <code>clientbench</code></td>
+            <td>에코 왕복 / 수신 경로 / 클라이언트 고유 경로</td></tr>
+        <tr><td rowspan="3">수명·정합성</td><td><code>cshutdown</code> · <code>restart</code> · <code>churnbp</code></td>
+            <td>종료 중 I/O 회계, 재기동, 백프레셔 상태에서의 접속 교체</td></tr>
+        <tr><td><code>authrace</code> · <code>policy</code> · <code>reason</code></td>
+            <td>인증 경쟁, 접속 정책, 종료 사유가 근본 원인을 보존하는가</td></tr>
+        <tr><td><code>latepool</code> · <code>bprepro</code> · <code>bpzombie</code></td>
+            <td>늦게 도착하는 반납, 백프레셔 재현, 멈춘 채 남은 세션</td></tr>
+        <tr><td>장애 주입</td><td><code>badpeer</code> · <code>deadsrv</code> · <code>saturate</code> · <code>crashrepro</code></td>
+            <td>악성 피어, 죽은 서버, 큐 포화 시 참조계수, 크래시 재현</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note">
+    <span class="lbl">하네스가 없으면 판단할 수 없었던 것</span>
+    <p><code>poolbench</code> 주석에 이렇게 적어 뒀다 —
+    <strong>"이 벤치가 없으면 'TLS 로 바꿨더니 빨라졌다' 를 말할 근거가 없다.
+    엔진 전체 pkt/s 는 병목이 메모리 풀이 아닐 수도 있어서 판단 근거가 되지 못한다."</strong></p>
+    <p>실제로 <a href="#s10">기각한 네 가지</a>는 전부 "전체 처리량으로는 차이가 안 보이는" 변경이었다.
+    부품 벤치가 없었다면 넷 다 <strong>구현하고 나서야 무의미했다는 것을 알았을 것</strong>이다.</p>
+  </div>
+
+  <p>
+    하네스는 <code>tools/</code> 아래에 있고 <strong>저장소에 커밋하지 않는다.</strong>
+    빌드 산출물과 대용량 로그가 함께 생기고, 엔진 본체와 수명이 다르기 때문이다.
+  </p>
+</section>
+
+<!-- ============================= 13 ============================= -->
+<section id="s13">
+  <h2>트레이드오프와 한계</h2>
+  <p class="sub">고르지 않은 것들, 그리고 남은 것.</p>
+
+  <h3>의도적으로 포기한 것</h3>
+  <ul>
+    <li><strong>분산 수집 송신</strong> — 측정까지 끝냈지만 이 워크로드(32 KB 청크)에서는 의미가 없다.
+        작은 패킷 서비스로 쓰려면 1순위 개선이다.</li>
+    <li><strong>락프리 큐</strong> — 잡 큐 0.16%, 송신 큐 1% 미만. ABA 와 수명 문제를 살 값이 아니다.</li>
+    <li><strong>IPv6 · UDP</strong> — TCP/IPv4 전용이다. 서비스가 요구하지 않았다.</li>
+    <li><strong>GetQueuedCompletionStatusEx</strong> — 한 번에 여러 통지를 꺼내는 확장형이 있는데
+        아직 단건 <code>GQCS</code> 를 쓴다. 코드에 메모만 남겨 뒀다.</li>
+  </ul>
+
+  <h3>남아 있는 것</h3>
+  <ul>
+    <li><strong>스케줄러 워커가 세션 하나에 묶이는 동안 다른 세션을 못 본다.</strong>
+        잡이 긴 세션이 워커를 오래 쥐면 다른 세션의 지연이 늘어난다.
+        잡 단위 양보(yield)를 넣을 수 있지만 그러면 세션당 직렬화 보장을 다시 설계해야 한다.</li>
+    <li><strong>풀 초기값은 여전히 손으로 정한다.</strong> <code>peak</code> 를 보고 다음 배포에
+        반영하는 방식이라, 첫 배포에서는 <code>grow</code> 가 뜨는 것이 정상이다.</li>
+    <li><strong>하트비트가 스레드 하나다.</strong> 세션이 수만 개가 되면 한 바퀴 도는 시간이
+        주기를 넘길 수 있다. 현재 규모에서는 문제되지 않는다.</li>
+  </ul>
+
+  <h3>이 모듈에서 얻은 것</h3>
+  <p>
+    가장 크게 배운 것은 <strong>수명 관리에서 "순서" 가 곧 정합성</strong>이라는 점이다.
+    <code>BeginIO</code> 의 증가와 검사, 취소와 재취소, 완료 통지를 버리지 않는 것 —
+    셋 다 코드량으로는 몇 줄인데, 뒤집으면 전부
+    <strong>"나중에 엉뚱한 곳에서 터지는" 결함</strong>이 된다.
+    그런 결함은 읽어서 찾을 수 없고 <strong>재현할 수 있는 하네스로만</strong> 찾을 수 있었다.
+  </p>
+  <p>
+    두 번째는 <strong>기각도 결과라는 것</strong>이다. 락프리 큐 두 개와 분산 수집,
+    샤딩까지 넷을 재고 물렀다. 재지 않았다면 넷 다 구현했을 것이고,
+    그중 셋은 복잡도만 늘린 채 남았을 것이다.
+    <strong>무엇을 하지 않을지 정하는 데 측정이 가장 값졌다.</strong>
+  </p>
+</section>
+
+</main>
+</div>
+
+<footer>
+  <div class="wrap">
+    IOCPNetwork · 기술 자료 · 측정 환경 32 논리 코어 / Release / 로컬 루프백 ·
+    하네스 <code>tools/</code> (커밋하지 않음)
+  </div>
+</footer>
+
+</body>
+</html>

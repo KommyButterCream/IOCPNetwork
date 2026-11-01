@@ -1,0 +1,254 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Buffer">
+      <UniqueIdentifier>{9e160026-3abe-4b3e-a9de-36e61c9e8e1e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Core">
+      <UniqueIdentifier>{57c9e6e2-6a27-4f00-a798-f69fe7a1dce5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Diagnostics">
+      <UniqueIdentifier>{49a7e324-a308-4ee2-98a5-a0e5ef104090}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="HandlerTable">
+      <UniqueIdentifier>{3fb79279-adb9-4cf1-ba45-24d018633a12}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Job">
+      <UniqueIdentifier>{bb4aecfc-5763-42a7-a188-f9042e6e08e1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Memory">
+      <UniqueIdentifier>{5469e2dc-8b2c-49fa-8b3a-62a90175d560}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Network">
+      <UniqueIdentifier>{4f2df080-7623-412b-ae15-dbb033322a41}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Protocol">
+      <UniqueIdentifier>{74c4babb-2bdd-4b1b-adfb-7c3b8102cfbf}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Scheduler">
+      <UniqueIdentifier>{6efae8bd-9849-4cc8-94f1-24d5411f3ab3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Session">
+      <UniqueIdentifier>{1d71657f-96ef-4f9e-b232-b5e366e79a7c}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\Buffer\RecvPacketBuffer.cpp">
+      <Filter>Buffer</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Buffer\SendPacketQueue.cpp">
+      <Filter>Buffer</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Core\ClientWatchdogThread.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Core\HeartbeatThread.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Core\IOCPClient.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Core\IOCPCore.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Core\IOCPServer.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="..\HandlerTable\PacketHandlerTable.cpp">
+      <Filter>HandlerTable</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Memory\SlabMemoryPool.cpp">
+      <Filter>Memory</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Memory\GlobalBlockPool.cpp">
+      <Filter>Memory</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Memory\ThreadBlockCache.cpp">
+      <Filter>Memory</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Memory\TlsMemoryPool.cpp">
+      <Filter>Memory</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Network\SocketOption.cpp">
+      <Filter>Network</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Scheduler\ClientSessionScheduler.cpp">
+      <Filter>Scheduler</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Scheduler\ReadySessionQueue.cpp">
+      <Filter>Scheduler</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Scheduler\ReadySessionScheduler.cpp">
+      <Filter>Scheduler</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Session\AcceptSession.cpp">
+      <Filter>Session</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Session\AcceptSessionPool.cpp">
+      <Filter>Session</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Diagnostics\EngineDiagnostics.cpp">
+      <Filter>Diagnostics</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Session\BaseSession.cpp">
+      <Filter>Session</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Session\ClientSession.cpp">
+      <Filter>Session</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Session\ClientSessionPool.cpp">
+      <Filter>Session</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Session\SessionJobQueue.cpp">
+      <Filter>Session</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Session\SessionManager.cpp">
+      <Filter>Session</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\Buffer\PreDefine.h">
+      <Filter>Buffer</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Buffer\RecvPacketBuffer.h">
+      <Filter>Buffer</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Buffer\SendPacketEntry.h">
+      <Filter>Buffer</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Buffer\SendPacketQueue.h">
+      <Filter>Buffer</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Buffer\SharedSendPacket.h">
+      <Filter>Buffer</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Core\ClientLivenessConfig.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Core\ClientWatchdogThread.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Core\HeartbeatConfig.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Core\HeartbeatThread.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Core\IOCPClient.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Core\IOCPCore.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Core\IOCPServer.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Diagnostics\EngineAssert.h">
+      <Filter>Diagnostics</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Diagnostics\EngineDiagnostics.h">
+      <Filter>Diagnostics</Filter>
+    </ClInclude>
+    <ClInclude Include="..\HandlerTable\PacketHandlerTable.h">
+      <Filter>HandlerTable</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Job\Job.h">
+      <Filter>Job</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Job\JobDefs.h">
+      <Filter>Job</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Memory\SlabMemoryPool.h">
+      <Filter>Memory</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Memory\EngineMemoryPool.h">
+      <Filter>Memory</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Memory\EngineMemoryPoolFwd.h">
+      <Filter>Memory</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Memory\EngineMemoryPoolHelper.h">
+      <Filter>Memory</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Memory\BlockLayout.h">
+      <Filter>Memory</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Memory\GlobalBlockPool.h">
+      <Filter>Memory</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Memory\SizeBin.h">
+      <Filter>Memory</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Memory\ThreadBlockCache.h">
+      <Filter>Memory</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Memory\TlsMemoryPool.h">
+      <Filter>Memory</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Network\OverlappedEx.h">
+      <Filter>Network</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Network\SocketOption.h">
+      <Filter>Network</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Protocol\PacketHeader.h">
+      <Filter>Protocol</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Protocol\PacketID.h">
+      <Filter>Protocol</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Protocol\SystemPacket.h">
+      <Filter>Protocol</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Scheduler\ClientSessionScheduler.h">
+      <Filter>Scheduler</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Scheduler\ReadySessionQueue.h">
+      <Filter>Scheduler</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Scheduler\ReadySessionScheduler.h">
+      <Filter>Scheduler</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Session\AcceptSession.h">
+      <Filter>Session</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Session\AcceptSessionPool.h">
+      <Filter>Session</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Session\BaseSession.h">
+      <Filter>Session</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Session\ClientSession.h">
+      <Filter>Session</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Session\ClientSessionPool.h">
+      <Filter>Session</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Session\DisconnectReason.h">
+      <Filter>Session</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Session\ISession.h">
+      <Filter>Session</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Session\ISessionEvent.h">
+      <Filter>Session</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Session\SessionContext.h">
+      <Filter>Session</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Session\SessionDefs.h">
+      <Filter>Session</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Session\SessionJobQueue.h">
+      <Filter>Session</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Session\SessionManager.h">
+      <Filter>Session</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Session\SessionNode.h">
+      <Filter>Session</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Memory\EnginePoolConfig.h" />
+    <ClInclude Include="..\Memory\EnginePoolBuilder.h" />
+  </ItemGroup>
+</Project>
