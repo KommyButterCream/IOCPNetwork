@@ -8,8 +8,9 @@
 #include "../Job/Job.h"
 #include "../Protocol/PacketHeader.h"
 #include "../Protocol/PacketID.h"
-
+#include "../Buffer/PacketHandle.h"
 #include <new>
+#include <memory> // for construct_at, destroy_at
 
 using namespace Core::Util;
 
@@ -36,6 +37,13 @@ namespace MEMORY_POOL
 		LOGT("packet acquire %p size %zu", memory, size);
 
 		return memory;
+	}
+
+	[[nodiscard]]
+	inline PacketHandle CreatePacketHandle(TlsMemoryPool& pool, size_t size)
+	{
+		// 메모리 풀에서 크기에 맞는 메모리를 찾아서 반환
+		return PacketHandle::Take(pool, CreatePacket(pool, size), size);
 	}
 
 	inline void ReleasePacket(TlsMemoryPool& packetPool, const void* memory)
@@ -77,6 +85,7 @@ namespace MEMORY_POOL
 
 		LOGT("send entry release %p", entry);
 
+		std::destroy_at(entry);
 		pool.Release(static_cast<const void*>(entry));
 	}
 
@@ -96,7 +105,7 @@ namespace MEMORY_POOL
 
 		LOGT("job acquire %p", memory);
 
-		return static_cast<Job*>(memory);
+		return std::construct_at(static_cast<Job*>(memory));
 	}
 
 	inline void ReleaseJob(TlsMemoryPool& pool, Job* job)
@@ -110,6 +119,7 @@ namespace MEMORY_POOL
 
 		LOGT("job release %p", job);
 
+		std::destroy_at(job);
 		pool.Release(static_cast<const void*>(job));
 	}
 }

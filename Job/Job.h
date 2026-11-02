@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "../Diagnostics/EngineAssert.h"
+#include "../Buffer/PacketHandle.h"
 #include "JobDefs.h"
 
 // Scheduler 가 Task 를 수행하기 위한 기본 단위
@@ -17,7 +18,7 @@ __declspec(align(64)) struct Job
 
 	union
 	{
-		PacketHandlerFunc packetFunc;
+		PacketHandlerFunc packetFunc = nullptr;
 		DBHandlerFunc dbFunc;
 		SystemHandlerFunc systemFunc;
 	};
@@ -27,6 +28,7 @@ __declspec(align(64)) struct Job
 	uint32_t size = 0;
 	uint16_t packetId = 0;
 	JobType jobType = JobType::NONE;
+
 
 	void SetPacketJob(JobType jobType, PacketHandlerFunc handlerFunc, ISession* session, const uint16_t packetId, const char* packetData, uint32_t packetSize, const HandlerContext& context)
 	{
@@ -78,4 +80,8 @@ __declspec(align(64)) struct Job
 			break;
 		}
 	}
+
+private:
+	PacketHandle m_packet;
+
 };

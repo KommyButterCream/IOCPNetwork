@@ -18,7 +18,10 @@
 #include "../Protocol/PacketHeader.h"
 #include "../Protocol/PacketID.h"
 #include "../Protocol/SystemPacket.h"
+#include "../Buffer/PacketHandle.h"
 
+#include <utility> // for std::move
+#include <memory> // for std::construct_at
 #pragma comment(lib, "ws2_32.lib") // for WinSock2
 
 using namespace Core::Util;
@@ -1086,6 +1089,80 @@ bool ClientSession::EnqueueSendPacket(void** packetData, uint32_t packetSize)
 	return true;
 }
 
+bool ClientSession::EnqueueSendPacket(PacketHandle&& packetHandle)
+{
+	SendPacketQueue* queue = GetSendPacketQueue();
+
+	if (!queue || !packetHandle)
+		return false;
+
+	if (packetHandle.Size() < sizeof(PACKET_HEADER) ||
+		packetHandle.Size() > PACKET_SIZE_LIMIT)
+	{
+		LOGE("session %u invalid packet size", GetSessionID());
+		return false;
+	}
+
+	// 위에서 범위를 확인했으므로 안전하게 변환할 수 있다.
+	const uint32_t packetSize = static_cast<uint32_t>(packetHandle.Size());
+
+	const PACKET_HEADER* header = reinterpret_cast<const PACKET_HEADER*>(packetHandle.View().data());
+
+	if (header->packetSize != packetSize)
+	{
+		LOGE("session %u packet size mismatch (header=%u, arg=%u)",
+			GetSessionID(), header->packetSize, packetSize);
+		return false;
+	}
+
+	if (packetSize > m_bufferConfig.maxSendPacketSize)
+	{
+		LOGE("session %u packet too large to send (%u bytes, max %u)",
+			GetSessionID(),
+			packetSize,
+			m_bufferConfig.maxSendPacketSize);
+		return false;
+	}
+
+	// 소유권 이전 후에는 패킷 메모리에 접근하지 않도록
+	// 필요한 값은 미리 보관한다.
+	const auto packetId = header->packetId;
+
+	if (!CanSendPacket(packetId))
+	{
+		uint32_t suppressed = 0;
+
+		if (ShouldLogSendReject(SendRejectReason::NotEstablished, suppressed))
+		{
+			LOGW("session %u packet send blocked before session established "
+				"(PacketID : %u, %u more suppressed in the last second)",
+				GetSessionID(), packetId, suppressed);
+		}
+
+		return false;
+	}
+
+	if (!queue->Enqueue(std::move(packetHandle)))
+	{
+		uint32_t suppressed = 0;
+
+		if (ShouldLogSendReject(SendRejectReason::SendQueueFull, suppressed))
+		{
+			LOGW("session %u send queue admission failed "
+				"(PacketID : %u, Size : %u, "
+				"%u more suppressed in the last second)",
+				GetSessionID(), packetId, packetSize, suppressed);
+		}
+
+		return false;
+	}
+
+	// 큐 등록 후에는 packet과 header로 데이터에 접근하지 않는다.
+	TrySendNext();
+
+	return true;
+}
+
 bool ClientSession::EnqueueSharedSendPacket(const void* packetData, uint32_t packetSize, SendPacketReleaseFunc releaseFunc, void* releaseContext)
 {
 	if (!packetData || packetSize == 0 || !releaseFunc || GetSendPacketQueue() == nullptr)
@@ -1373,29 +1450,23 @@ void ClientSession::MarkHeartbeatTimeout()
 
 bool ClientSession::SendSystemHeartbeatRequest()
 {
-	if (GetSessionRole() != SESSION_ROLE::SERVER || !IsEstablished())
+	if (GetSessionRole() != SESSION_ROLE::SERVER || !IsEstablished() || !m_packetMemoryPool)
 	{
 		return false;
 	}
 
-	void* packetMemory = MEMORY_POOL::CreatePacket(*m_packetMemoryPool, sizeof(SC_SYSTEM_HEARTBEAT_REQUEST_PACKET));
-	if (!packetMemory)
+	auto packetHandle = MEMORY_POOL::CreatePacketHandle(*m_packetMemoryPool, sizeof(SC_SYSTEM_HEARTBEAT_REQUEST_PACKET));
+
+	if (!packetHandle)
 	{
 		return false;
 	}
 
-	SC_SYSTEM_HEARTBEAT_REQUEST_PACKET* requestPacket = reinterpret_cast<SC_SYSTEM_HEARTBEAT_REQUEST_PACKET*>(packetMemory);
-	*requestPacket = SC_SYSTEM_HEARTBEAT_REQUEST_PACKET();
-	requestPacket->tick = ::GetTickCount64();
+	auto* request = std::construct_at(reinterpret_cast<SC_SYSTEM_HEARTBEAT_REQUEST_PACKET*>(packetHandle.MutableView().data()));
 
-	void* packetData = requestPacket;
-	if (!EnqueueSendPacket(&packetData, sizeof(SC_SYSTEM_HEARTBEAT_REQUEST_PACKET)))
-	{
-		MEMORY_POOL::ReleasePacket(*m_packetMemoryPool, requestPacket);
-		return false;
-	}
+	request->tick = ::GetTickCount64();
 
-	return true;
+	return EnqueueSendPacket(std::move(packetHandle));
 }
 
 bool ClientSession::SendSystemHeartbeatResponse(uint64_t requestTick)
@@ -1405,24 +1476,18 @@ bool ClientSession::SendSystemHeartbeatResponse(uint64_t requestTick)
 		return false;
 	}
 
-	void* packetMemory = MEMORY_POOL::CreatePacket(*m_packetMemoryPool, sizeof(CS_SYSTEM_HEARTBEAT_RESPONSE_PACKET));
-	if (!packetMemory)
+	auto packetHandle = MEMORY_POOL::CreatePacketHandle(*m_packetMemoryPool, sizeof(CS_SYSTEM_HEARTBEAT_RESPONSE_PACKET));
+
+	if (!packetHandle)
 	{
 		return false;
 	}
 
-	CS_SYSTEM_HEARTBEAT_RESPONSE_PACKET* responsePacket = reinterpret_cast<CS_SYSTEM_HEARTBEAT_RESPONSE_PACKET*>(packetMemory);
-	*responsePacket = CS_SYSTEM_HEARTBEAT_RESPONSE_PACKET();
-	responsePacket->tick = requestTick;
+	auto* response = std::construct_at(reinterpret_cast<CS_SYSTEM_HEARTBEAT_RESPONSE_PACKET*>(packetHandle.MutableView().data()));
 
-	void* packetData = responsePacket;
-	if (!EnqueueSendPacket(&packetData, sizeof(CS_SYSTEM_HEARTBEAT_RESPONSE_PACKET)))
-	{
-		MEMORY_POOL::ReleasePacket(*m_packetMemoryPool, responsePacket);
-		return false;
-	}
+	response->tick = requestTick;
 
-	return true;
+	return EnqueueSendPacket(std::move(packetHandle));
 }
 
 bool ClientSession::CanSendPacket(PACKET_ID_TYPE packetId) const

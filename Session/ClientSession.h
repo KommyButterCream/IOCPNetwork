@@ -19,6 +19,7 @@ class RecvPacketBuffer;
 class SendPacketQueue;
 class TlsMemoryPool;
 class ISessionEvent;
+class PacketHandle;
 
 #ifdef BUILD_IOCP_ENGINE_DLL
 #define IOCP_ENGINE_API __declspec(dllexport)
@@ -203,6 +204,11 @@ public:
 	bool EnqueueJob(Job* job, bool& wasEmpty);
 	bool SubmitJob(Job* job);
 	bool EnqueueSendPacket(void** packetData, uint32_t packetSize);
+	// 성공하면 packet은 비워지고 송신 큐가 소유한다.
+	// 실패하면 packet은 소유권을 유지한다.
+	[[nodiscard]]
+	bool EnqueueSendPacket(PacketHandle&& packetHandle);
+
 	bool EnqueueSharedSendPacket(const void* packetData, uint32_t packetSize, SendPacketReleaseFunc releaseFunc, void* releaseContext);
 
 	void HandleSocketError(int errorCode, IO_OPERATION ioOperation);

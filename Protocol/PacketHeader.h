@@ -8,7 +8,7 @@
 
 struct PACKET_HEADER
 {
-	uint16_t packetId = ToPacketID(PACKET_ID::NONE);
+	uint16_t packetId = ToInteger(PACKET_ID::NONE);
 	uint16_t packetSize = 0;
 
 	PACKET_HEADER() = default;
@@ -20,7 +20,7 @@ struct PACKET_HEADER
 	}
 
 	PACKET_HEADER(const PACKET_ID packetId, const uint16_t packetSize)
-		: packetId(ToPacketID(packetId))
+		: packetId(ToInteger(packetId))
 		, packetSize(packetSize)
 	{
 	}
@@ -29,7 +29,7 @@ struct PACKET_HEADER
 
 	void Reset()
 	{
-		packetId = ToPacketID(PACKET_ID::NONE);
+		packetId = ToInteger(PACKET_ID::NONE);
 		packetSize = 0;
 	}
 };

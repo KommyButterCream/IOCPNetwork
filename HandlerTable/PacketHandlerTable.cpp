@@ -18,7 +18,7 @@ bool PacketHandlerTable::Register(uint16_t packetId, PacketHandlerFunc handler)
 
 PacketHandlerFunc PacketHandlerTable::GetHandler(uint16_t packetId) const
 {
-	constexpr uint16_t maxPacketId = ToPacketID(PACKET_ID::MAX_PACKET_ID);
+	constexpr uint16_t maxPacketId = ToInteger(PACKET_ID::MAX_PACKET_ID);
 
 	if (packetId >= maxPacketId)
 		return nullptr;

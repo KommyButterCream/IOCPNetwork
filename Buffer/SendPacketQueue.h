@@ -62,6 +62,8 @@ public:
 	void Finalize();
 
 	bool Enqueue(void** packetData, uint32_t packetSize);
+	[[nodiscard]]
+	bool Enqueue(PacketHandle&& packetHandle);
 	bool EnqueueShared(const void* packetData, uint32_t packetSize, SendPacketReleaseFunc releaseFunc, void* releaseContext);
 	bool Dequeue(SendPacketEntry*& outEntry);
 

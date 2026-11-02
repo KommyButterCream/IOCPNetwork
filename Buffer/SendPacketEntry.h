@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <stdint.h>
+#include "PacketHandle.h"
 
 // 공유 패킷의 반납 진입점.
 //
@@ -45,9 +46,12 @@ struct SendPacketEntry
 	uint32_t packetSize = 0;
 	SendPacketReleaseFunc releaseFunc = nullptr;
 	void* releaseContext = nullptr;
+	PacketHandle packetHandle;
 
 	inline void Reset() noexcept
 	{
+		packetHandle.Reset();
+
 		next = nullptr;
 		packetData = nullptr;
 		packetSize = 0;

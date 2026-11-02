@@ -1,0 +1,5 @@
+root = true
+
+# Keep existing encoding and indentation; standardize line endings only.
+[*]
+end_of_line = crlf

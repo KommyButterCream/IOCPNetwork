@@ -7,6 +7,7 @@
 #include "../Protocol/PacketHeader.h"
 
 class TlsMemoryPool;
+class PacketHandle;
 
 // 링에서 패킷 하나를 꺼낸 결과.
 //
@@ -68,6 +69,9 @@ public:
 	// 패킷 추출
 	PacketReadResult ReadPacket(char*& outBuffer, uint32_t& outSize, uint16_t& outPacketId);
 
+	[[nodiscard]]
+	PacketReadResult ReadPacket(PacketHandle& packetHandle, uint16_t& packetId);
+	
 	// WSARecv 를 걸기 직전에 부른다. 링 끝에 붙어 있으면 앞으로 당겨서
 	// 한 번에 최대 패킷을 받을 수 있는 연속 공간을 만든다.
 	void PrepareWrite();

@@ -238,5 +238,8 @@
     </ClInclude>
     <ClInclude Include="..\Memory\EnginePoolConfig.h" />
     <ClInclude Include="..\Memory\EnginePoolBuilder.h" />
+    <ClInclude Include="..\Buffer\PacketHandle.h">
+      <Filter>Buffer</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

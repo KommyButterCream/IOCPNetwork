@@ -14,7 +14,7 @@
 class IOCP_ENGINE_API PacketHandlerTable
 {
 private:
-	PacketHandlerFunc m_handlerTable[ToPacketID(PACKET_ID::MAX_PACKET_ID)] = {};
+	PacketHandlerFunc m_handlerTable[ToInteger(PACKET_ID::MAX_PACKET_ID)] = {};
 
 public:
 	PacketHandlerTable() = default;

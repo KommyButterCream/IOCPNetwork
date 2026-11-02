@@ -4,6 +4,8 @@
 
 #include "../Memory/EngineMemoryPoolHelper.h"
 
+#include <utility> // for std::move
+
 SendPacketQueue::SendPacketQueue()
 {
 }
@@ -97,6 +99,51 @@ bool SendPacketQueue::Enqueue(void** packetData, uint32_t packetSize)
 	return true;
 }
 
+bool SendPacketQueue::Enqueue(PacketHandle&& packetHandle)
+{
+	if (!m_sendQueueMemoryPool)
+	{
+		return false;
+	}
+
+	if (!packetHandle ||
+		packetHandle.Size() == 0 ||
+		packetHandle.Size() > PACKET_SIZE_LIMIT)
+	{
+		return false;
+	}
+
+	SendPacketEntry* entry = MEMORY_POOL::CreateSendPacketEntry(*m_sendQueueMemoryPool);
+
+	if (!entry)
+	{
+		return false;
+	}
+
+	entry->packetSize = static_cast<uint32_t>(packetHandle.Size());
+
+	// 큐에 공개하기 전에 소유구너을 엔트리로 옮긴다.
+	entry->packetHandle = std::move(packetHandle);
+	entry->packetData = reinterpret_cast<const char*>(entry->packetHandle.View().data());
+
+	if (!PushBack(entry))
+	{
+		// 큐에 들어가지 않았으므로 호출자에게 소유권을 복구한다.
+
+		packetHandle = std::move(entry->packetHandle);
+
+		entry->Reset();
+
+		MEMORY_POOL::ReleaseSendPacketEntry(*m_sendQueueMemoryPool, entry);
+
+		return false;
+	}
+
+	// 여기서부터는 소비자가 엔트리를 꺼내서 반환했을 수도 있다.
+	// entry 에 다시 접근하면 안된다.
+	return true;
+}
+
 bool SendPacketQueue::EnqueueShared(const void* packetData, uint32_t packetSize, SendPacketReleaseFunc releaseFunc, void* releaseContext)
 {
 	if (!m_sendQueueMemoryPool || !m_packetMemoryPool)
@@ -180,10 +227,18 @@ bool SendPacketQueue::Dequeue(SendPacketEntry*& outEntry)
 void SendPacketQueue::ReleaseEntry(SendPacketEntry* entry)
 {
 	if (!entry)
-		return;
-
-	if (entry->packetData)
 	{
+		return;
+	}
+
+	if (entry->packetHandle)
+	{
+		// 핸들이 소유한 패킷은 핸들을 통해서만 반환한다.
+		entry->packetHandle.Reset();
+	}
+	else if (entry->packetData)
+	{
+		// 아직 전환하지 않은 원시 포인터 및 공유 송신 경로.
 		if (entry->releaseFunc)
 		{
 			entry->releaseFunc(entry->packetData, entry->releaseContext);

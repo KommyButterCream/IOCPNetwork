@@ -1,6 +1,7 @@
 ﻿#include "RecvPacketBuffer.h"
 
 #include "PreDefine.h"
+#include "PacketHandle.h"
 
 #include "../Diagnostics/EngineAssert.h"
 
@@ -280,3 +281,26 @@ PacketReadResult RecvPacketBuffer::ReadPacket(char*& outBuffer, uint32_t& outSiz
 	return PacketReadResult::Ok;
 }
 
+PacketReadResult RecvPacketBuffer::ReadPacket(PacketHandle& packetHandle, uint16_t& packetId)
+{
+	packetHandle.Reset();
+	packetId = ToInteger(PACKET_ID::NONE);
+
+	char* packetData = nullptr;
+	uint32_t packetSize = 0;
+	uint16_t packetIdTemp = 0;
+	
+	const PacketReadResult result = ReadPacket(packetData, packetSize, packetIdTemp);
+
+	if (result != PacketReadResult::Ok)
+	{
+		return result;
+	}
+
+	// 기존 ReadPacket 은 OK 일 때 유효한 풀에서 받은 메모리를 반환한다.
+	packetHandle = PacketHandle::Take(*m_packetMemoryPool, packetData, packetSize);
+
+	packetId = packetIdTemp;
+
+	return PacketReadResult::Ok;
+}

@@ -1,4 +1,6 @@
-* text=auto
+# Normalize text in Git; use CRLF in the working tree.
+# Binary files remain binary through automatic detection.
+* text=auto eol=crlf
 
 *.h text eol=crlf
 *.hpp text eol=crlf
