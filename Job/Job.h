@@ -16,7 +16,9 @@ __declspec(align(64)) struct Job
 {
 	Job* next = nullptr;
 	void* target = nullptr;
-	// Borrowed view for PACKET; ownership lives in m_packetHandle.
+	
+	// DB/System 작업에서 사용하는 데이터 주소.
+	// Packet 작업의 데이터는 m_packetHandle에서 읽는다.
 	const char* data = nullptr;
 
 	union
@@ -28,7 +30,10 @@ __declspec(align(64)) struct Job
 
 	const HandlerContext* context = nullptr;
 
+	// DB/System 작업의 데이터 크기
 	uint32_t size = 0;
+
+
 	uint16_t packetId = 0;
 	JobType jobType = JobType::NONE;
 
@@ -47,14 +52,10 @@ __declspec(align(64)) struct Job
 		this->target = session;
 		this->packetId = packetId;
 		this->context = &context;
-
-
-		this->data = reinterpret_cast<const char*>(m_packetHandle.View().data());
-		this->size = static_cast<uint32_t>(m_packetHandle.Size());
 	}
 
-	// 실행 중인 Packet Job에서 소유권을 꺼낸다.
-	// 호출 이후 기존 data 포인터는 Job이 소유하지 않는다.
+	// Packet Job의 소유권을 호출자에게 이전한다.
+	// 호출 후 Job의 핸들은 빈 상태가 된다.
 	[[nodiscard]]
 	PacketHandle TakePacket() noexcept
 	{
@@ -63,12 +64,8 @@ __declspec(align(64)) struct Job
 			return {};
 		}
 
-		data = nullptr;
-		size = 0;
-
 		return std::move(m_packetHandle);
 	}
-
 
 	void Execute()
 	{
@@ -84,13 +81,26 @@ __declspec(align(64)) struct Job
 		switch (jobType)
 		{
 		case JobType::PACKET:
+			if (!m_packetHandle)
+			{
+				LOGE("packet job for id %u has no packet, skipping", packetId);
+				break;
+			}
+
 			if (packetFunc)
 			{
-				bool result = packetFunc(reinterpret_cast<ISession*>(target), data, size, *context);
+				const auto bytes = m_packetHandle.View();
+				
+				bool result = packetFunc(
+					reinterpret_cast<ISession*>(target), 
+					reinterpret_cast<const char*>(bytes.data()),
+					static_cast<uint32_t>(bytes.size()),
+					*context);
+
+				// 핸들러가 패킷을 송신 큐로 옮겼을 수 있으므로,
+				// 호출 이후 bytes가 가리키는 메모리에 접근하지 않는다.
 				if (!result)
 				{
-					// 핸들러가 false 를 반환한 것은 정상적인 실패 표현이다.
-					// 이전에는 여기서 __debugbreak 로 프로세스를 죽였다.
 					LOGW("packet handler for id %u returned failure", packetId);
 				}
 			}
