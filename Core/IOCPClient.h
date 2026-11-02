@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 
+#include "../Buffer/PacketHandle.h"
 
 enum class IO_OPERATION;
 
@@ -221,14 +222,9 @@ public:
 
 
 protected:
-	// 받은 패킷을 세션의 Job 큐에 올린다. OnReceive 에서 부르는 것이 정상
-	// 사용이다. 계약은 IOCPServer::SubmitPacketJob 과 같다 —
-	// packetData 의 소유권은 성공/실패와 무관하게 이 함수가 가져간다.
-	//
-	// 클라이언트는 세션이 하나이고 소비자도 하나(ClientSessionScheduler)라
-	// ReadySessionQueue 도 처리 중 플래그도 쓰지 않는다. 큐에 넣는 것으로
-	// 끝이고, 잠들어 있는 소비자를 깨우는 일은 EnqueueJob 이 한다.
-	bool SubmitPacketJob(ISession* session, uint16_t packetId, const char* packetData, uint32_t packetSize);
+	// Consumes packetHandle on both success and failure.
+	// Success transfers ownership to the Job; failure returns the packet automatically.
+	bool SubmitPacketJob(ISession* session, uint16_t packetId, PacketHandle packetHandle);
 
 	virtual void OnClientConnect(ISession* session) {};
 	virtual void OnSessionEstablished(ISession* session) {};
@@ -255,7 +251,7 @@ protected:
 	// 못했다. StartClient 는 ConnectEx 를 건 시점에 true 를 돌려주므로,
 	// 실패를 알 방법도 재시도를 걸 근거도 없었다.
 	virtual void OnConnectFailed(int errorCode) {};
-	virtual void OnReceive(ISession* session, uint16_t packetId, const char* packetData, uint32_t packetSize) {};
+	virtual void OnReceive(ISession* session, uint16_t packetId, PacketHandle packetHandle) {};
 	virtual void OnSend(ISession* session, uint32_t bytesTransferred) {};
 };
 

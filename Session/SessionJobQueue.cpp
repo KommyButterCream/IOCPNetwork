@@ -153,7 +153,10 @@ void SessionJobQueue::Reset()
 	{
 		Job* nextJob = job->next;
 
-		if (job->data)
+		// Packet ownership is released by the Job destructor; preserve other job paths.
+
+
+		if (job->jobType != JobType::PACKET && job->data)
 		{
 			MEMORY_POOL::ReleasePacket(*m_packetMemoryPool, job->data);
 		}

@@ -220,7 +220,9 @@ public:
 	SessionContext* GetSessionContext() const;
 
 	void SetCurrentJob(Job* job);
-	void ClearCurrentJobData();
+	// Called only by the currently executing client packet handler.
+	[[nodiscard]]
+	PacketHandle TakeCurrentPacket();
 
 	void SetRemoteAddress(const char* ipAddress, uint16_t port);
 

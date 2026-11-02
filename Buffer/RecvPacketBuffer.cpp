@@ -13,6 +13,8 @@ using namespace Core::Util;
 #include <memory.h>
 #include <assert.h> // for assert
 #include <malloc.h> // for _aligned_malloc, _aligned_free
+#include <cstring> // for std::memcpy
+#include <utility> // for std::move
 
 RecvPacketBuffer::RecvPacketBuffer()
 {
@@ -209,98 +211,63 @@ void RecvPacketBuffer::Compact()
 	m_writePos = m_storedSize;
 }
 
-PacketReadResult RecvPacketBuffer::ReadPacket(char*& outBuffer, uint32_t& outSize, uint16_t& outPacketId)
-{
-	outSize = 0;
-	outPacketId = 0;
-	outBuffer = nullptr;
-
-	PACKET_HEADER header = {};
-
-	if (!PeekHeader(header))
-		return PacketReadResult::NeedMoreData;
-
-	// 피어가 규칙 밖의 크기를 적어 보냈다. 이걸 NeedMoreData 로 뭉개면 그
-	// 세션은 영원히 이 헤더에 막힌 채 살아남으므로 위반으로 올려 보낸다.
-	if (header.packetSize < sizeof(PACKET_HEADER) || header.packetSize > m_maxPacketSize)
-		return PacketReadResult::Invalid;
-
-	if (m_storedSize < header.packetSize)
-		return PacketReadResult::NeedMoreData; // 아직 패킷 전체 수신 안됨
-
-	if (!m_packetMemoryPool)
-		return PacketReadResult::OutOfMemory;
-
-	// 패킷 메모리 버퍼 풀로 부터
-	// RecvPacketBuffer 의 m_buffer 에 저장된 패킷 데이터를 카피한다.
-
-	char* packetMemory = reinterpret_cast<char*>(MEMORY_POOL::CreatePacket(*m_packetMemoryPool, header.packetSize));
-
-	//char* packetMemory = reinterpret_cast<char*>(m_packetMemoryPool->Acquire(header.packetSize));
-	if (!packetMemory)
-	{
-		// 패킷 풀에서 메모리를 못 얻었다. 구체적 원인은 TlsMemoryPool 이 남긴다.
-		//
-		// 위반이 아니라 오류로 남긴다.
-		//
-		// 예전에는 ENGINE_VIOLATION 이었다. 그때는 여기 오는 유일한 길이
-		// "OS 가 메모리를 거부했다" 여서 예외적 상황이 맞았다. 이제는 풀에
-		// 커밋 상한이 있고, 상한에 걸려 확장을 거부하는 것은 설계된 동작이다 —
-		// 소비자가 생산자보다 느릴 때 프로세스가 죽는 대신 패킷을 버리게
-		// 하려고 넣은 장치다.
-		//
-		// 그걸 위반으로 세면, 백프레셔가 제대로 동작하는 실행이 곧 "위반이
-		// 쏟아진 실행" 이 되어 계수기의 의미가 사라진다. 실측: 상한을 낮게
-		// 걸고 폭주시키자 위반 53건이 전부 이 경로였다.
-		//
-		// 호출부가 OutOfMemory 를 보고 세션을 정리하므로 정보는 이미 전달된다.
-		LOGE("failed to acquire %u bytes for an incoming packet, dropping the session",
-			header.packetSize);
-		return PacketReadResult::OutOfMemory;
-	}
-
-	uint32_t remainFirst = m_capacity - m_readPos;
-	if (header.packetSize <= remainFirst) [[likely]]
-	{
-		memcpy(packetMemory, m_buffer + m_readPos, header.packetSize);
-	}
-	else [[unlikely]]
-	{
-		// payload split
-		memcpy(packetMemory, m_buffer + m_readPos, remainFirst);
-		memcpy(packetMemory + remainFirst, m_buffer, header.packetSize - remainFirst);
-	}
-
-	outBuffer = packetMemory;
-	outSize = header.packetSize;
-	outPacketId = header.packetId;
-
-	m_readPos = (m_readPos + header.packetSize) & m_capacityMask;
-	m_storedSize -= header.packetSize;
-
-	return PacketReadResult::Ok;
-}
-
 PacketReadResult RecvPacketBuffer::ReadPacket(PacketHandle& packetHandle, uint16_t& packetId)
 {
 	packetHandle.Reset();
 	packetId = ToInteger(PACKET_ID::NONE);
 
-	char* packetData = nullptr;
-	uint32_t packetSize = 0;
-	uint16_t packetIdTemp = 0;
-	
-	const PacketReadResult result = ReadPacket(packetData, packetSize, packetIdTemp);
+	PACKET_HEADER header = {};
 
-	if (result != PacketReadResult::Ok)
+	if (!PeekHeader(header))
 	{
-		return result;
+		return PacketReadResult::NeedMoreData;
 	}
 
-	// 기존 ReadPacket 은 OK 일 때 유효한 풀에서 받은 메모리를 반환한다.
-	packetHandle = PacketHandle::Take(*m_packetMemoryPool, packetData, packetSize);
+	if (header.packetSize < sizeof(PACKET_HEADER) || header.packetSize > m_maxPacketSize)
+	{
+		return PacketReadResult::Invalid;
+	}
 
-	packetId = packetIdTemp;
+	if (m_storedSize < header.packetSize)
+	{
+		return PacketReadResult::NeedMoreData;
+	}
+
+	if (!m_packetMemoryPool)
+	{
+		return PacketReadResult::OutOfMemory;
+	}
+
+	auto packet = MEMORY_POOL::CreatePacketHandle(*m_packetMemoryPool, header.packetSize);
+
+	if (!packet)
+	{
+		LOGE("failed to acquire %u bytes for an incoming packet, "
+			"dropping the session",
+			header.packetSize);
+
+		return PacketReadResult::OutOfMemory;
+	}
+
+	auto* destination = packet.MutableView().data();
+	const uint32_t remainFirst = m_capacity - m_readPos;
+
+	if (header.packetSize <= remainFirst) [[likely]]
+	{
+		std::memcpy(destination, m_buffer + m_readPos, header.packetSize);
+	}
+	else [[unlikely]]
+	{
+		std::memcpy(destination, m_buffer + m_readPos, remainFirst);
+
+		std::memcpy(destination + remainFirst, m_buffer, header.packetSize - remainFirst);
+	}
+
+	m_readPos = (m_readPos + header.packetSize) & m_capacityMask;
+	m_storedSize -= header.packetSize;
+
+	packetId = header.packetId;
+	packetHandle = std::move(packet);
 
 	return PacketReadResult::Ok;
 }

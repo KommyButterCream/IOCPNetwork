@@ -151,7 +151,10 @@ void ReadySessionScheduler::WorkerThreadLoop(ReadySessionWorker& worker, uint32_
 			{
 				job->Execute();
 
-				if (job->data)
+				// Packet ownership is released by the Job destructor; preserve other job paths.
+
+
+				if (job->jobType != JobType::PACKET && job->data)
 				{
 					MEMORY_POOL::ReleasePacket(*m_packetMemoryPool, job->data);
 				}

@@ -6,6 +6,8 @@
 #include "../Buffer/PacketHandle.h"
 #include "JobDefs.h"
 
+#include <utility> // for std::move
+
 // Scheduler 가 Task 를 수행하기 위한 기본 단위
 // 각 Packet, DB 마다 별도의 Job 을 생성하지 않고
 // 아래에 구현된 Job 을 통합하여 사용한다.
@@ -14,6 +16,7 @@ __declspec(align(64)) struct Job
 {
 	Job* next = nullptr;
 	void* target = nullptr;
+	// Borrowed view for PACKET; ownership lives in m_packetHandle.
 	const char* data = nullptr;
 
 	union
@@ -30,16 +33,42 @@ __declspec(align(64)) struct Job
 	JobType jobType = JobType::NONE;
 
 
-	void SetPacketJob(JobType jobType, PacketHandlerFunc handlerFunc, ISession* session, const uint16_t packetId, const char* packetData, uint32_t packetSize, const HandlerContext& context)
+	void SetPacketJob(
+		PacketHandlerFunc handlerFunc,
+		ISession* session,
+		uint16_t packetId,
+		PacketHandle&& packetHandle,
+		const HandlerContext& context)
 	{
-		this->jobType = jobType;
+		m_packetHandle = std::move(packetHandle);
+
+		this->jobType = JobType::PACKET;
 		this->packetFunc = handlerFunc;
 		this->target = session;
 		this->packetId = packetId;
-		this->data = packetData;
-		this->size = packetSize;
 		this->context = &context;
+
+
+		this->data = reinterpret_cast<const char*>(m_packetHandle.View().data());
+		this->size = static_cast<uint32_t>(m_packetHandle.Size());
 	}
+
+	// 실행 중인 Packet Job에서 소유권을 꺼낸다.
+	// 호출 이후 기존 data 포인터는 Job이 소유하지 않는다.
+	[[nodiscard]]
+	PacketHandle TakePacket() noexcept
+	{
+		if (jobType != JobType::PACKET)
+		{
+			return {};
+		}
+
+		data = nullptr;
+		size = 0;
+
+		return std::move(m_packetHandle);
+	}
+
 
 	void Execute()
 	{
@@ -82,6 +111,6 @@ __declspec(align(64)) struct Job
 	}
 
 private:
-	PacketHandle m_packet;
+	PacketHandle m_packetHandle;
 
 };

@@ -1344,39 +1344,27 @@ SessionContext* ClientSession::GetSessionContext() const
 
 void ClientSession::SetCurrentJob(Job* job)
 {
-	// 스케쥴러가 처리 중인 Job 을 세션이 알도록 설정
-	// 필요에 따라 ClearCurrentJobData 로 Job 에 Link 되어 있는
-	// PacketData 에 대한 소유권을 포기하기 위해 작업 전에 설정.
+	// Borrowed while the client handler runs; TakeCurrentPacket moves ownership.
 	m_currentJob = job;
 }
 
-void ClientSession::ClearCurrentJobData()
+PacketHandle ClientSession::TakeCurrentPacket()
 {
-	// 지금 실행 중인 잡이 들고 있는 패킷의 소유권을 핸들러가 가져간다.
-	// 이걸 부르면 스케줄러가 그 패킷을 반납하지 않으므로, 부른 쪽이
-	// 반납할 책임을 진다.
-	//
-	// 클라이언트 역할 전용이다.
-	//
-	// 이 배선을 놓는 것은 ClientSessionScheduler 뿐이고
-	// ReadySessionScheduler(서버)는 SetCurrentJob 을 부르지 않는다. 그래서
-	// 서버 역할 세션에서는 m_currentJob 이 항상 널이고, 이 함수가 조용히
-	// 아무 일도 하지 않는다. 부른 쪽은 소유권을 가져갔다고 믿는데 스케줄러는
-	// 그대로 패킷을 반납하므로, 그 뒤 그 포인터는 이미 풀로 돌아간 블록이다.
-	// 침묵보다 위반으로 남기는 편이 낫다.
+	// 현재 Job을 연결하는 스케줄러는 클라이언트 쪽뿐이다.
 	if (GetSessionRole() != SESSION_ROLE::CLIENT)
 	{
-		ENGINE_VIOLATION("session %u ClearCurrentJobData is client-only but the role is %d. "
-			"the packet will still be released by the scheduler",
-			GetSessionID(), static_cast<int>(GetSessionRole()));
-		return;
+		ENGINE_VIOLATION(
+			"session %u TakeCurrentPacket is client-only",
+			GetSessionID());
+
+		return {};
 	}
 
 	// 잡 사이에는 널이다. 스케줄러가 반납 직전에 끊어 둔다.
 	if (!m_currentJob)
-		return;
+		return {};
 
-	m_currentJob->data = nullptr;
+	return m_currentJob->TakePacket();
 }
 
 void ClientSession::SetRemoteAddress(const char* ipAddress, uint16_t port)

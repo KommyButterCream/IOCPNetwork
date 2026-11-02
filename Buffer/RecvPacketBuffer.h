@@ -11,7 +11,7 @@ class PacketHandle;
 
 // 링에서 패킷 하나를 꺼낸 결과.
 //
-//   Ok           : outBuffer 에 패킷이 담겼다. 호출부가 풀에 반납할 책임을 진다
+//   Ok           : packetHandle owns the extracted packet.
 //   NeedMoreData : 아직 다 안 왔다. 다음 수신을 기다리면 된다
 //   Invalid      : 헤더가 규칙을 어겼다. 피어 잘못이므로 세션을 끊어야 한다
 //   OutOfMemory  : 패킷 풀이 고갈됐다. 우리 잘못이지만 역시 세션을 끊는다
@@ -67,8 +67,6 @@ public:
 	bool CommitWrite(const uint32_t bytesReceived);
 
 	// 패킷 추출
-	PacketReadResult ReadPacket(char*& outBuffer, uint32_t& outSize, uint16_t& outPacketId);
-
 	[[nodiscard]]
 	PacketReadResult ReadPacket(PacketHandle& packetHandle, uint16_t& packetId);
 	

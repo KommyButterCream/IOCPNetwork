@@ -36,6 +36,8 @@
 
 #include "../../Core/Util/Logger.h"
 
+#include <utility> // for std::move
+
 #pragma comment(lib, "ws2_32.lib") // for WinSock2
 #pragma comment(lib, "mswsock.lib") // for AcceptEX / ConnectEx
 
@@ -1027,11 +1029,10 @@ void IOCPServer::HandleRecv(OverlappedEx* overlappedEx, ClientSession* session, 
 	// 패킷 처리 루프
 	while (!recvBuf.IsEmpty())
 	{
-		uint32_t packetSize = 0;
+		PacketHandle packetHandle;
 		uint16_t packetId = 0;
-		char* packetDataByMemoryPool = nullptr;
 
-		const PacketReadResult readResult = recvBuf.ReadPacket(packetDataByMemoryPool, packetSize, packetId);
+		const PacketReadResult readResult = recvBuf.ReadPacket(packetHandle, packetId);
 
 		if (readResult == PacketReadResult::NeedMoreData)
 		{
@@ -1058,12 +1059,14 @@ void IOCPServer::HandleRecv(OverlappedEx* overlappedEx, ClientSession* session, 
 			break;
 		}
 
+		const uint32_t packetSize = static_cast<uint32_t>(packetHandle.Size());
+		const char* packetData = reinterpret_cast<const char*>(packetHandle.View().data());
+
 		if (!IsValidPacketId(packetId))
 		{
 			// 외부 입력으로 트리거 가능한 검증 실패다.
 			// 스트림이 어긋났거나 악의적인 입력이므로 디스패치하지 않고 세션을 끊는다.
 			// (이전에는 로그 없이 진행해서 잘못된 패킷ID 가 그대로 디스패치됐다)
-			MEMORY_POOL::ReleasePacket(*GetPacketMemoryPool(), packetDataByMemoryPool);
 			LOGE("session %u received an invalid packet id %u (size %u). dropping the session",
 				clientSession->GetSessionID(), packetId, packetSize);
 			clientSession->NoteDisconnectReason(DisconnectReason::ProtocolError);
@@ -1073,9 +1076,7 @@ void IOCPServer::HandleRecv(OverlappedEx* overlappedEx, ClientSession* session, 
 
 		if (IsSystemPacketId(packetId))
 		{
-			const SystemPacketResult systemResult = HandleSystemPacket(clientSession, packetId, packetDataByMemoryPool, packetSize);
-
-			MEMORY_POOL::ReleasePacket(*GetPacketMemoryPool(), packetDataByMemoryPool);
+			const SystemPacketResult systemResult = HandleSystemPacket(clientSession, packetId, packetData, packetSize);
 
 			if (systemResult == SystemPacketResult::Rejected)
 			{
@@ -1104,7 +1105,6 @@ void IOCPServer::HandleRecv(OverlappedEx* overlappedEx, ClientSession* session, 
 
 		if (!clientSession->IsEstablished())
 		{
-			MEMORY_POOL::ReleasePacket(*GetPacketMemoryPool(), packetDataByMemoryPool);
 			LOGW("session %u service packet received before session established (PacketID : %u)", clientSession->GetSessionID(), packetId);
 			clientSession->NoteDisconnectReason(DisconnectReason::UnexpectedPacket);
 			releaseSessionAfterHandling = true;
@@ -1112,7 +1112,7 @@ void IOCPServer::HandleRecv(OverlappedEx* overlappedEx, ClientSession* session, 
 		}
 
 		// 패킷 완성! 실제 처리 호출
-		OnReceive(clientSession, packetId, packetDataByMemoryPool, packetSize);
+		OnReceive(clientSession, packetId, std::move(packetHandle));
 	}
 
 	// 처리 도중 반납이 예약됐을 수 있다. 시스템 패킷 응답을 보내려다
@@ -1850,35 +1850,23 @@ const HandlerContext& IOCPServer::GetHandlerContext() const
 	return m_handlerContext;
 }
 
-bool IOCPServer::SubmitPacketJob(ISession* session, uint16_t packetId, const char* packetData, uint32_t packetSize)
+bool IOCPServer::SubmitPacketJob(ISession* session, uint16_t packetId, PacketHandle packetHandle)
 {
 	// recv 완료 키에 등록되는 것은 ClientSession 뿐이므로 이 경로의 세션은
 	// 항상 ClientSession 이다.
 	ClientSession* clientSession = static_cast<ClientSession*>(session);
 
-	// 어떤 이유로 거부하든 패킷은 여기서 회수한다. 아래 모든 실패 경로가
-	// 이 람다를 지난다 — 하나라도 빠지면 그게 곧 누수다.
-	auto dropPacket = [this, packetData]()
-		{
-			if (packetData && m_packetMemoryPool)
-			{
-				MEMORY_POOL::ReleasePacket(*m_packetMemoryPool, packetData);
-			}
-		};
-
-	if (!clientSession || !packetData)
+	if (!clientSession || !packetHandle)
 	{
 		ENGINE_VIOLATION("SubmitPacketJob called with session %p packet %p",
-			static_cast<const void*>(session), static_cast<const void*>(packetData));
-		dropPacket();
+			static_cast<const void*>(session), static_cast<const void*>(packetHandle.View().data()));
 		return false;
 	}
 
-	if (!m_packetHandlerTable || !m_jobMemoryPool || !m_readySessionQueue)
+	if (!m_packetHandlerTable || !m_jobMemoryPool || !m_readySessionQueue || !m_packetMemoryPool)
 	{
 		ENGINE_VIOLATION("session %u cannot submit a job : the server is not fully initialized",
 			clientSession->GetSessionID());
-		dropPacket();
 		return false;
 	}
 
@@ -1887,7 +1875,6 @@ bool IOCPServer::SubmitPacketJob(ISession* session, uint16_t packetId, const cha
 	{
 		LOGW("session %u received packet id %u with no registered handler, dropping it",
 			clientSession->GetSessionID(), packetId);
-		dropPacket();
 		return false;
 	}
 
@@ -1896,11 +1883,10 @@ bool IOCPServer::SubmitPacketJob(ISession* session, uint16_t packetId, const cha
 	{
 		LOGE("session %u could not allocate a job, dropping packet id %u",
 			clientSession->GetSessionID(), packetId);
-		dropPacket();
 		return false;
 	}
 
-	job->SetPacketJob(JobType::PACKET, handler, session, packetId, packetData, packetSize, m_handlerContext);
+	job->SetPacketJob(handler, session, packetId, std::move(packetHandle), m_handlerContext);
 
 	// wasEmpty 는 받지만 스케줄 판단에 쓰지 않는다. 이유는 아래에.
 	bool wasEmpty = false;
@@ -1909,12 +1895,12 @@ bool IOCPServer::SubmitPacketJob(ISession* session, uint16_t packetId, const cha
 		LOGE("session %u failed to enqueue a job for packet id %u",
 			clientSession->GetSessionID(), packetId);
 
-		dropPacket();
+		// Destroying the Job also returns its owned packet.
 		MEMORY_POOL::ReleaseJob(*m_jobMemoryPool, job);
 		return false;
 	}
 
-	// 여기부터 packetData 와 job 의 소유권은 큐에 있다.
+	// The queue now owns the Job and its packet handle.
 
 	// 스케줄 조건에서 wasEmpty 를 뺐다.
 	//

@@ -31,6 +31,8 @@
 
 #include "../../Core/Util/Logger.h"
 
+#include <utility> // for std::move
+
 #pragma comment(lib, "ws2_32.lib") // for WinSock2
 #pragma comment(lib, "mswsock.lib") // for AcceptEX / ConnectEx
 
@@ -710,11 +712,10 @@ void IOCPClient::HandleRecv(OverlappedEx* overlappedEx, ClientSession* session, 
 	// 패킷 처리 루프
 	while (!recvBuf.IsEmpty())
 	{
-		uint32_t packetSize = 0;
+		PacketHandle packetHandle;
 		uint16_t packetId = 0;
-		char* packetDataByMemoryPool = nullptr;
 
-		const PacketReadResult readResult = recvBuf.ReadPacket(packetDataByMemoryPool, packetSize, packetId);
+		const PacketReadResult readResult = recvBuf.ReadPacket(packetHandle, packetId);
 
 		if (readResult == PacketReadResult::NeedMoreData)
 		{
@@ -741,10 +742,12 @@ void IOCPClient::HandleRecv(OverlappedEx* overlappedEx, ClientSession* session, 
 			break;
 		}
 
+		const uint32_t packetSize = static_cast<uint32_t>(packetHandle.Size());
+		const char* packetData = reinterpret_cast<const char*>(packetHandle.View().data());
+
 		if (!IsValidPacketId(packetId))
 		{
 			// 스트림이 어긋났다. 디스패치하지 않고 연결을 끊는다.
-			MEMORY_POOL::ReleasePacket(*GetPacketMemoryPool(), packetDataByMemoryPool);
 			LOGE("session %u received an invalid packet id %u (size %u). dropping the connection",
 				clientSession->GetSessionID(), packetId, packetSize);
 			clientSession->NoteDisconnectReason(DisconnectReason::ProtocolError);
@@ -754,9 +757,7 @@ void IOCPClient::HandleRecv(OverlappedEx* overlappedEx, ClientSession* session, 
 
 		if (IsSystemPacketId(packetId))
 		{
-			const bool handled = HandleSystemPacket(clientSession, packetId, packetDataByMemoryPool, packetSize);
-
-			MEMORY_POOL::ReleasePacket(*GetPacketMemoryPool(), packetDataByMemoryPool);
+			const bool handled = HandleSystemPacket(clientSession, packetId, packetData, packetSize);
 
 			if (!handled)
 			{
@@ -775,7 +776,6 @@ void IOCPClient::HandleRecv(OverlappedEx* overlappedEx, ClientSession* session, 
 
 		if (!clientSession->IsEstablished())
 		{
-			MEMORY_POOL::ReleasePacket(*GetPacketMemoryPool(), packetDataByMemoryPool);
 			LOGW("session %u service packet received before session established (PacketID : %u)", clientSession->GetSessionID(), packetId);
 			clientSession->NoteDisconnectReason(DisconnectReason::UnexpectedPacket);
 			disconnectAfterHandling = true;
@@ -783,7 +783,7 @@ void IOCPClient::HandleRecv(OverlappedEx* overlappedEx, ClientSession* session, 
 		}
 
 		// 패킷 완성! 실제 처리 호출
-		OnReceive(clientSession, packetId, packetDataByMemoryPool, packetSize);
+		OnReceive(clientSession, packetId, std::move(packetHandle));
 	}
 
 	// 처리 도중 종료가 예약됐으면 다음 수신을 걸지 않는다.
@@ -1234,28 +1234,18 @@ const HandlerContext& IOCPClient::GetHandlerContext() const
 	return m_handlerContext;
 }
 
-bool IOCPClient::SubmitPacketJob(ISession* session, uint16_t packetId, const char* packetData, uint32_t packetSize)
+bool IOCPClient::SubmitPacketJob(ISession* session, uint16_t packetId, PacketHandle packetHandle)
 {
 	ClientSession* clientSession = ResolveOwnSession(session, "SubmitPacketJob");
 
-	auto dropPacket = [this, packetData]()
-		{
-			if (packetData && m_packetMemoryPool)
-			{
-				MEMORY_POOL::ReleasePacket(*m_packetMemoryPool, packetData);
-			}
-		};
-
-	if (!clientSession || !packetData)
+	if (!clientSession || !packetHandle)
 	{
-		dropPacket();
 		return false;
 	}
 
-	if (!m_packetHandlerTable || !m_jobMemoryPool)
+	if (!m_packetHandlerTable || !m_jobMemoryPool || !m_packetMemoryPool)
 	{
 		ENGINE_VIOLATION("cannot submit a job : the client is not fully initialized");
-		dropPacket();
 		return false;
 	}
 
@@ -1263,7 +1253,6 @@ bool IOCPClient::SubmitPacketJob(ISession* session, uint16_t packetId, const cha
 	if (!handler)
 	{
 		LOGW("received packet id %u with no registered handler, dropping it", packetId);
-		dropPacket();
 		return false;
 	}
 
@@ -1271,22 +1260,17 @@ bool IOCPClient::SubmitPacketJob(ISession* session, uint16_t packetId, const cha
 	if (!job)
 	{
 		LOGE("could not allocate a job, dropping packet id %u", packetId);
-		dropPacket();
 		return false;
 	}
 
-	job->SetPacketJob(JobType::PACKET, handler, session, packetId, packetData, packetSize, m_handlerContext);
+	job->SetPacketJob(handler, session, packetId, std::move(packetHandle), m_handlerContext);
 
-	// SubmitJob 이 실패하면 job 과 패킷의 소유권은 여기 그대로 남는다.
-	// 잡은 쪽이 반납한다 — 이쪽 풀은 위에서 유효성이 확인되어 있으므로
-	// 항상 되돌릴 수 있다. (사정은 ClientSession::SubmitJob 주석 참고)
-	//
-	// 서버 쪽 SubmitPacketJob 의 EnqueueJob 실패 자리와 구조가 같다.
+	// Submission failure leaves the Job here; destroying it returns the packet.
 	if (!clientSession->SubmitJob(job))
 	{
 		LOGE("failed to enqueue a job for packet id %u", packetId);
 
-		dropPacket();
+		// Destroying the Job also returns its owned packet.
 		MEMORY_POOL::ReleaseJob(*m_jobMemoryPool, job);
 		return false;
 	}
