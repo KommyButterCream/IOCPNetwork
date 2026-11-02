@@ -37,6 +37,7 @@
 #include "../../Core/Util/Logger.h"
 
 #include <utility> // for std::move
+#include <memory>  // for std::construct_at
 
 #pragma comment(lib, "ws2_32.lib") // for WinSock2
 #pragma comment(lib, "mswsock.lib") // for AcceptEX / ConnectEx
@@ -1947,30 +1948,31 @@ bool IOCPServer::SendSystemAuthResponse(ClientSession* session, SYSTEM_AUTH_RESU
 		return false;
 	}
 
-	void* memory = MEMORY_POOL::CreatePacket(*GetPacketMemoryPool(), sizeof(SC_SYSTEM_AUTH_RESPONSE_PACKET));
-	if (!memory)
+	auto* packetPool = GetPacketMemoryPool();
+	if (!packetPool)
 	{
 		return false;
 	}
 
-	SC_SYSTEM_AUTH_RESPONSE_PACKET* response = reinterpret_cast<SC_SYSTEM_AUTH_RESPONSE_PACKET*>(memory);
-	*response = SC_SYSTEM_AUTH_RESPONSE_PACKET();
+	auto packetHandle = MEMORY_POOL::CreatePacketHandle(*packetPool, sizeof(SC_SYSTEM_AUTH_RESPONSE_PACKET));
+
+	if (!packetHandle)
+	{
+		return false;
+	}
+
+	auto* response = std::construct_at(reinterpret_cast<SC_SYSTEM_AUTH_RESPONSE_PACKET*>(packetHandle.MutableView().data()));
+
 	response->authResult = static_cast<uint16_t>(authResult);
 
 	// 클라이언트의 유휴 타임아웃이 이 값에서 파생된다. 타임아웃이 0 이면
 	// 이 서버는 좀비 정리를 하지 않는다는 뜻이므로 주기도 알릴 필요가 없다.
-	response->heartbeatIntervalMs = (m_heartbeatConfig.timeout_ms != 0)
+	response->heartbeatIntervalMs = 
+		(m_heartbeatConfig.timeout_ms != 0)
 		? static_cast<uint32_t>(m_heartbeatConfig.checkInterval_ms)
 		: 0;
 
-	void* packetData = response;
-	if (!session->EnqueueSendPacket(&packetData, sizeof(SC_SYSTEM_AUTH_RESPONSE_PACKET)))
-	{
-		MEMORY_POOL::ReleasePacket(*GetPacketMemoryPool(), response);
-		return false;
-	}
-
-	return true;
+	return session->EnqueueSendPacket(std::move(packetHandle));
 }
 
 IOCPServer::SystemPacketResult IOCPServer::HandleSystemPacket(ClientSession* session, uint16_t packetId, const char* packetData, uint32_t packetSize)

@@ -58,10 +58,10 @@ public:
 
 	// maxCount 는 이 큐에 동시에 담을 수 있는 패킷 수의 상한이다.
 	// 2의 거듭제곱이 아니어도 된다.
-	bool Initialize(TlsMemoryPool* sendQueueMemoryPool, TlsMemoryPool* packetMemoryPool, uint32_t maxCount);
+	// Packet ownership stays with each handle or shared release callback.
+	bool Initialize(TlsMemoryPool* sendQueueMemoryPool, uint32_t maxCount);
 	void Finalize();
 
-	bool Enqueue(void** packetData, uint32_t packetSize);
 	[[nodiscard]]
 	bool Enqueue(PacketHandle&& packetHandle);
 	bool EnqueueShared(const void* packetData, uint32_t packetSize, SendPacketReleaseFunc releaseFunc, void* releaseContext);
@@ -99,5 +99,4 @@ private:
 	uint32_t m_maxCount = 0;
 
 	TlsMemoryPool* m_sendQueueMemoryPool = nullptr;
-	TlsMemoryPool* m_packetMemoryPool = nullptr;
 };

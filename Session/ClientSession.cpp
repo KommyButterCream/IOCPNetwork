@@ -336,7 +336,7 @@ bool ClientSession::InitializeMemoryPool(TlsMemoryPool* sendQueueMemoryPool, Tls
 
 	m_sendPacketQueue = new SendPacketQueue();
 	if (!m_sendPacketQueue ||
-		!m_sendPacketQueue->Initialize(sendQueueMemoryPool, packetMemoryPool, m_bufferConfig.sendQueueDepth))
+		!m_sendPacketQueue->Initialize(sendQueueMemoryPool, m_bufferConfig.sendQueueDepth))
 	{
 		ReleaseMemoryResources();
 		return false;
@@ -1021,70 +1021,6 @@ bool ClientSession::ShouldLogSendReject(SendRejectReason reason, uint32_t& outSu
 
 	outSuppressed = static_cast<uint32_t>(
 		::InterlockedExchange(&m_sendRejectSuppressed[index], 0));
-
-	return true;
-}
-
-bool ClientSession::EnqueueSendPacket(void** packetData, uint32_t packetSize)
-{
-	if (packetData == nullptr || packetSize <= 0 || GetSendPacketQueue() == nullptr)
-		return false;
-
-	const PACKET_HEADER* packetHeader = reinterpret_cast<const PACKET_HEADER*>(*packetData);
-	if (packetHeader == nullptr || packetSize < sizeof(PACKET_HEADER))
-	{
-		LOGE("session %u invalid packet header", GetSessionID());
-		return false;
-	}
-
-	if (packetHeader->packetSize != packetSize)
-	{
-		LOGE("session %u packet size mismatch (header=%u, arg=%u)", GetSessionID(), packetHeader->packetSize, packetSize);
-		return false;
-	}
-
-	// 받는 쪽은 자기 maxRecvPacketSize 를 넘는 헤더를 프로토콜 위반으로 보고
-	// 연결을 끊는다. 여기서 막지 않으면 보낸 쪽은 원인 모를 피어 끊김만
-	// 보게 되므로, 같은 상한을 송신 시점에 적용해 호출부에서 잡아준다.
-	if (packetSize > m_bufferConfig.maxSendPacketSize)
-	{
-		LOGE("session %u packet too large to send (%u bytes, max %u). the peer would drop the connection",
-			GetSessionID(), packetSize, m_bufferConfig.maxSendPacketSize);
-		return false;
-	}
-
-	if (!CanSendPacket(packetHeader->packetId))
-	{
-		uint32_t suppressed = 0;
-		if (ShouldLogSendReject(SendRejectReason::NotEstablished, suppressed))
-		{
-			LOGW("session %u packet send blocked before session established "
-				"(PacketID : %u, %u more suppressed in the last second)",
-				GetSessionID(), packetHeader->packetId, suppressed);
-		}
-		return false;
-	}
-
-	if (!GetSendPacketQueue()->Enqueue(packetData, packetSize))
-	{
-		// 송신 큐가 가득 찬 상태.
-		// 여기서 대기하면 호출 스레드(브로드캐스트 팬아웃 스레드, 로직 스레드 등)가
-		// 느린 피어 하나 때문에 묶이므로, 즉시 실패를 반환하고
-		// 드롭/재시도/연결 종료 같은 정책 판단은 호출자에게 맡긴다.
-		//
-		// 실패 시 Enqueue 는 *packetData 를 nullptr 로 만들지 않으므로
-		// 패킷 메모리의 소유권은 호출자가 계속 보유한다. 호출자가 해제해야 한다.
-		uint32_t suppressed = 0;
-		if (ShouldLogSendReject(SendRejectReason::SendQueueFull, suppressed))
-		{
-			LOGW("session %u send queue full, packet dropped "
-				"(PacketID : %u, Size : %u, %u more suppressed in the last second)",
-				GetSessionID(), packetHeader->packetId, packetSize, suppressed);
-		}
-		return false;
-	}
-
-	TrySendNext();
 
 	return true;
 }

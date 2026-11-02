@@ -203,7 +203,6 @@ public:
 
 	bool EnqueueJob(Job* job, bool& wasEmpty);
 	bool SubmitJob(Job* job);
-	bool EnqueueSendPacket(void** packetData, uint32_t packetSize);
 	// 성공하면 packet은 비워지고 송신 큐가 소유한다.
 	// 실패하면 packet은 소유권을 유지한다.
 	[[nodiscard]]

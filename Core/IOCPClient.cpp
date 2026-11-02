@@ -32,6 +32,7 @@
 #include "../../Core/Util/Logger.h"
 
 #include <utility> // for std::move
+#include <memory>  // for std::construct_at
 
 #pragma comment(lib, "ws2_32.lib") // for WinSock2
 #pragma comment(lib, "mswsock.lib") // for AcceptEX / ConnectEx
@@ -1306,48 +1307,32 @@ bool IOCPClient::SendSystemAuthRequest(ClientSession* session)
 		return false;
 	}
 
-	void* memory = MEMORY_POOL::CreatePacket(*GetPacketMemoryPool(), sizeof(CS_SYSTEM_AUTH_REQUEST_PACKET));
-	if (!memory)
+	auto* m_packetMemoryPool = GetPacketMemoryPool();
+
+	if (!m_packetMemoryPool)
 	{
 		return false;
 	}
 
-	CS_SYSTEM_AUTH_REQUEST_PACKET* request = reinterpret_cast<CS_SYSTEM_AUTH_REQUEST_PACKET*>(memory);
-	*request = CS_SYSTEM_AUTH_REQUEST_PACKET();
+	auto packetHandle = MEMORY_POOL::CreatePacketHandle(*m_packetMemoryPool, sizeof(CS_SYSTEM_AUTH_REQUEST_PACKET));
 
-	// 상태를 보내기 '전' 에 올린다.
-	//
-	// 순서가 반대였다. 큐에 넣고 나서 AUTH_PENDING 을 썼는데, EnqueueSendPacket 은
-	// 그 자리에서 WSASend 까지 발행한다. 루프백이면 서버가 요청을 받아 응답을
-	// 돌려주는 왕복이 마이크로초 단위로 끝나고, 그 응답을 처리하는 것은 이
-	// 스레드가 아니라 클라의 '다른' GQCS 워커다 (접속 완료와 수신 완료는 서로
-	// 다른 완료 통지다).
-	//
-	// 그래서 저쪽이 ESTABLISHED 를 쓴 뒤에 이쪽이 AUTH_PENDING 으로 덮어쓸 수
-	// 있었다. 그러면 세션은 영원히 AUTH_PENDING 에 남는다 — ESTABLISHED 를 다시
-	// 쓰는 경로가 없기 때문이다. 그 뒤로는
-	//   서비스 패킷 송신이 "established 전" 으로 거부되고,
-	//   서버가 보낸 에코가 도착하면 "service packet received before session
-	//   established" 로 판정해 클라가 스스로 연결을 끊는다.
-	// 읽지 않은 데이터를 안은 채 소켓이 닫히므로 RST 가 나가고, 서버의 걸려
-	// 있던 WSASend 가 10054 로 실패해 서버도 그 세션을 잃는다.
-	//
-	// 실측: bench Phase 6 이 93회 중 1회 이 경로로 세션을 잃었다. 창을 넓혀
-	// (이 자리에 Sleep(1)) 확인하면 40개 세션 전부가 AUTH_PENDING 으로
-	// 되돌아갔다. (tools/authrace)
-	//
-	// 먼저 올려 두면 덮어쓸 것이 없다. 시스템 패킷 송신은 IsTransportConnected
-	// 만 보므로(CanSendPacket) AUTH_PENDING 상태에서도 이 요청은 나간다.
+	if (!packetHandle)
+	{
+		return false;
+	}
+
+	std::construct_at(reinterpret_cast<CS_SYSTEM_AUTH_REQUEST_PACKET*>(packetHandle.MutableView().data()));
+
+	// 송신 직후 다른 IOCP 워커가 인증 응답을 처리할 수 있다.
+	// 응답 처리가 설정한 상태를 덮어쓰지 않도록 송신 전에 변경한다.
 	session->SetClientSessionState(ClientSessionState::AUTH_PENDING);
 
-	void* packetData = request;
-	if (!session->EnqueueSendPacket(&packetData, sizeof(CS_SYSTEM_AUTH_REQUEST_PACKET)))
+	if (!session->EnqueueSendPacket(std::move(packetHandle)))
 	{
-		// 보내지 못했으니 되돌린다. 나간 것이 없으므로 응답이 올 수도 없고,
-		// 따라서 이 쓰기가 ESTABLISHED 를 덮을 일도 없다.
+		// 큐 등록에 실패했으므로 요청은 전달되지 않았다.
+	   // 패킷은 지역 핸들이 자동 반환한다.
 		session->SetClientSessionState(ClientSessionState::CONNECTED);
 
-		MEMORY_POOL::ReleasePacket(*GetPacketMemoryPool(), request);
 		return false;
 	}
 
