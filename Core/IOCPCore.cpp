@@ -87,10 +87,15 @@ void IOCPCore::Stop()
 
 	LOGI("IOCP core shutting down");
 
-	RequestIOCPThreadTerminate();
-	DestroyIOCPWorkerthread();
+	StopCompletionWorkers();
 	FinalizeIOCPHandle();
 	FinalizeWinsock();
+}
+
+void IOCPCore::StopCompletionWorkers()
+{
+	RequestIOCPThreadTerminate();
+	DestroyIOCPWorkerthread();
 }
 
 HANDLE IOCPCore::GetIOCPHandle() const noexcept

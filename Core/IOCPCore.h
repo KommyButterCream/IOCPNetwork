@@ -85,6 +85,9 @@ public:
 	IOCP_ENGINE_API static unsigned int GetEngineLogSinks();
 
 protected:
+	// I/O 취소 대기 후 완료 워커만 조인합니다. 소켓 정리를 위해 Winsock은 유지합니다.
+	void StopCompletionWorkers();
+
 	// 서버, 클라이언트에서 override 필수!
 	// GQCS 에 통지 받은 IO 처리
 	virtual void HandleCompletion(ULONG_PTR completionKey, LPOVERLAPPED overlapped, DWORD bytesTransferred, BOOL completionStatus) = 0;

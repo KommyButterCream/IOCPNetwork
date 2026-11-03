@@ -33,9 +33,15 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\Buffer\PacketHandle.cpp"><Filter>Buffer</Filter></ClCompile>
-    <ClCompile Include="..\Buffer\SharedPacketHandle.cpp"><Filter>Buffer</Filter></ClCompile>
-    <ClCompile Include="..\Job\HandlerContext.cpp"><Filter>Job</Filter></ClCompile>
+    <ClCompile Include="..\Buffer\PacketHandle.cpp">
+      <Filter>Buffer</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Buffer\SharedPacketHandle.cpp">
+      <Filter>Buffer</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Job\HandlerContext.cpp">
+      <Filter>Job</Filter>
+    </ClCompile>
     <ClCompile Include="..\Job\Job.cpp">
       <Filter>Job</Filter>
     </ClCompile>
@@ -78,13 +84,10 @@
     <ClCompile Include="..\Network\SocketOption.cpp">
       <Filter>Network</Filter>
     </ClCompile>
-    <ClCompile Include="..\Scheduler\ClientSessionScheduler.cpp">
+    <ClCompile Include="..\Scheduler\ClientJobWorker.cpp">
       <Filter>Scheduler</Filter>
     </ClCompile>
-    <ClCompile Include="..\Scheduler\ReadySessionQueue.cpp">
-      <Filter>Scheduler</Filter>
-    </ClCompile>
-    <ClCompile Include="..\Scheduler\ReadySessionScheduler.cpp">
+    <ClCompile Include="..\Scheduler\ServerJobScheduler.cpp">
       <Filter>Scheduler</Filter>
     </ClCompile>
     <ClCompile Include="..\Session\AcceptSession.cpp">
@@ -110,6 +113,9 @@
     </ClCompile>
     <ClCompile Include="..\Session\SessionManager.cpp">
       <Filter>Session</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Scheduler\ServerReadySessionQueue.cpp">
+      <Filter>Scheduler</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -191,13 +197,13 @@
     <ClInclude Include="..\Protocol\SystemPacket.h">
       <Filter>Protocol</Filter>
     </ClInclude>
-    <ClInclude Include="..\Scheduler\ClientSessionScheduler.h">
+    <ClInclude Include="..\Scheduler\ClientJobWorker.h">
       <Filter>Scheduler</Filter>
     </ClInclude>
-    <ClInclude Include="..\Scheduler\ReadySessionQueue.h">
+    <ClInclude Include="..\Scheduler\ServerReadySessionQueue.h">
       <Filter>Scheduler</Filter>
     </ClInclude>
-    <ClInclude Include="..\Scheduler\ReadySessionScheduler.h">
+    <ClInclude Include="..\Scheduler\ServerJobScheduler.h">
       <Filter>Scheduler</Filter>
     </ClInclude>
     <ClInclude Include="..\Session\AcceptSession.h">
@@ -243,7 +249,9 @@
     <ClInclude Include="..\Memory\EnginePoolBuilder.h" />
     <ClInclude Include="..\EngineApi.h" />
     <ClInclude Include="..\IOCPNetwork.h" />
-    <ClInclude Include="..\Job\HandlerContext.h"><Filter>Job</Filter></ClInclude>
+    <ClInclude Include="..\Job\HandlerContext.h">
+      <Filter>Job</Filter>
+    </ClInclude>
     <ClInclude Include="..\Buffer\PacketHandle.h">
       <Filter>Buffer</Filter>
     </ClInclude>

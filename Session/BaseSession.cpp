@@ -64,6 +64,10 @@ void BaseSession::ResetSession()
 	//
 	// 카운트를 그대로 두면 늦게 도착한 DecrementIO 가 정상적으로 0 으로 내려간다.
 	// 0 이 아닌 상태로 여기 도달한 것 자체가 버그이므로 크게 남긴다.
+	if (::ReadAcquire(&m_lifetimeReferences) != 0)
+	{
+		ENGINE_VIOLATION("session %u cleaned up with outstanding lifetime references", GetSessionID());
+	}
 	const LONG remainingIo = ::ReadAcquire(&m_ioCount);
 	if (remainingIo != 0)
 	{
@@ -101,6 +105,10 @@ void BaseSession::Finalize()
 	// 통지는 버려진다. 그러면 그 몫의 DecrementIO 가 영영 실행되지 않아
 	// 카운트가 0 이 아닌 상태로 여기 도달한다.
 	// 종료 경로이므로 치명적이지 않다. 남기고 계속 진행한다.
+	if (::ReadAcquire(&m_lifetimeReferences) != 0)
+	{
+		ENGINE_VIOLATION("session %u cleaned up with outstanding lifetime references", GetSessionID());
+	}
 	const LONG remainingIo = ::ReadAcquire(&m_ioCount);
 	if (remainingIo != 0)
 	{
@@ -133,54 +141,50 @@ void BaseSession::Finalize()
 	m_destroyFlag = true;
 }
 
+void BaseSession::AddLifetimeReference()
+{
+	::InterlockedIncrement(&m_lifetimeReferences);
+}
+
+void BaseSession::ReleaseLifetimeReference()
+{
+	// 마지막 참조 반환 후에는 세션이 재사용될 수 있어 콜백 정보를 먼저 읽습니다.
+	const auto callback = m_releaseReadyFunc;
+	void* context = m_releaseReadyContext;
+	const LONG remaining = ::InterlockedDecrement(&m_lifetimeReferences);
+	if (remaining < 0)
+	{
+		ENGINE_VIOLATION("session lifetime reference count went negative (%ld)", remaining);
+		return;
+	}
+	if (remaining == 0 && ::InterlockedExchange(&m_releasePending, 0) == 1 && callback)
+	{
+		callback(context, this);
+	}
+}
+
 void BaseSession::IncrementIO()
 {
+	AddLifetimeReference();
 	::InterlockedIncrement(&m_ioCount);
 }
 
 void BaseSession::DecrementIO()
 {
-	// 아래에서 마무리 콜백을 부르고 나면 이 세션은 이미 풀에 돌아가 다른
-	// 접속에 재배포될 수 있다. 그래서 콜백에 필요한 값은 지금 읽어 둔다.
-	// (지금은 초기화 이후 바뀌지 않는 값이지만, 여기 순서에 기대는 코드가
-	//  생기지 않도록 읽는 시점을 못박아 둔다)
-	ReleaseReadyFunc releaseReadyFunc = m_releaseReadyFunc;
-	void* releaseReadyContext = m_releaseReadyContext;
-
 	const LONG ioCount = ::InterlockedDecrement(&m_ioCount);
-
 	if (ioCount < 0)
 	{
-		// IncrementIO 없이 DecrementIO 가 불렸거나, 카운터가 외부에서 리셋됐다.
-		// ResetSession 이 더 이상 카운터를 강제로 0 으로 만들지 않으므로
-		// 이제 이 로그가 뜨면 Increment/Decrement 짝이 실제로 맞지 않는다는 뜻이다.
-		ENGINE_VIOLATION("session %u IO count went negative (%ld). an Increment/Decrement pair is unbalanced",
-			GetSessionID(), ioCount);
+		ENGINE_VIOLATION("session %u IO count went negative (%ld)", GetSessionID(), ioCount);
 		return;
 	}
 
-	if (ioCount != 0)
+	// I/O 취소 완료와 세션 반환은 다릅니다. Job 워커가 남아 있어도 I/O 대기는 끝납니다.
+	if (ioCount == 0 && ::ReadAcquire(&m_cancelIo) == 1 && m_ioCancelCompleteEvent)
 	{
-		return;
-	}
-
-	// 여기부터는 마지막 I/O 소유권을 방금 내려놓은 스레드다.
-
-	if (::ReadAcquire(&m_cancelIo) == 1 && m_ioCancelCompleteEvent)
-	{
-		LOGI("session %u all pending IO cancelled", GetSessionID());
 		::SetEvent(m_ioCancelCompleteEvent);
 	}
-
-	// 예약된 반납이 있으면 여기서 마무리한다.
-	//
-	// 토큰을 1 -> 0 으로 바꾸는 데 성공한 스레드만 부른다. RequestRelease 를
-	// 부른 스레드가 "카운트 0" 을 보는 것과 이 스레드가 "예약됨" 을 보는 것이
-	// 겹칠 수 있어, 둘 중 하나만 골라야 두 번 반납되지 않는다.
-	if (::InterlockedExchange(&m_releasePending, 0) == 1 && releaseReadyFunc)
-	{
-		releaseReadyFunc(releaseReadyContext, this);
-	}
+	// 이 호출 뒤에는 세션을 참조하지 않습니다.
+	ReleaseLifetimeReference();
 }
 
 void BaseSession::SetReleaseReadyFunc(ReleaseReadyFunc releaseReadyFunc, void* context)
@@ -191,30 +195,13 @@ void BaseSession::SetReleaseReadyFunc(ReleaseReadyFunc releaseReadyFunc, void* c
 
 bool BaseSession::RequestRelease()
 {
-	// 예약을 먼저 세우고 카운트를 읽는다.
-	//
-	// 순서를 바꾸면, 카운트를 읽은 뒤 예약을 세우기 전에 마지막
-	// DecrementIO 가 지나가 버리는 창이 생긴다. 그 스레드는 예약을 보지
-	// 못해 그냥 돌아가고, 이쪽은 "남은 I/O 가 있으니 저쪽이 하겠지" 로
-	// 판단해 돌아간다. 아무도 반납하지 않는 세션이 남는다.
-	//
-	// 이 store 는 InterlockedExchange 여야 한다. 아래 읽기는 ReadAcquire 라
-	// StoreLoad 를 막지 못하고, 그 순서를 세워 주는 것이 이 lock 접두 명령
-	// 하나뿐이다. WriteRelease 같은 것으로 바꾸면 아래 읽기가 이 store 앞으로
-	// 올라갈 수 있고, 그러면 양쪽이 서로를 못 보는 창이 열린다.
-	// (반대편 DecrementIO 도 같은 이유로 InterlockedDecrement 여야 한다)
+	// 예약을 먼저 공개한 뒤 참조 수를 확인합니다. 마지막 참조 반환과 겹쳐도
+	// 예약 토큰을 가져간 한 스레드만 실제 반납을 수행합니다.
 	::InterlockedExchange(&m_releasePending, 1);
-
-	if (::ReadAcquire(&m_ioCount) != 0)
+	if (::ReadAcquire(&m_lifetimeReferences) != 0)
 	{
-		// 아직 완료되지 않은 I/O 가 있다. 이 시점에 카운트가 0 이 아니었다면
-		// 0 으로 내리는 DecrementIO 가 반드시 이 뒤에 오고, 그 스레드는
-		// 위에서 세운 예약을 본다. 여기서 기다릴 이유가 없다.
 		return false;
 	}
-
-	// 카운트가 0 이다. 다만 위 두 줄 사이에 마지막 DecrementIO 가 지나갔다면
-	// 그쪽도 "0 이고 예약됨" 을 본다. 토큰을 집은 쪽만 마무리한다.
 	return (::InterlockedExchange(&m_releasePending, 0) == 1);
 }
 
@@ -415,7 +402,7 @@ bool BaseSession::BeginIO()
 {
 	// 증가가 먼저다. 이유는 헤더 주석 참고 —
 	// 이 카운트가 곧 "대기가 통과하지 못하게 하는 장벽" 이다.
-	::InterlockedIncrement(&m_ioCount);
+	IncrementIO();
 
 	if (::ReadAcquire(&m_cancelIo) == 0)
 	{

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <stdint.h>
 
@@ -14,7 +14,7 @@
 //     - 하트비트는 서버 -> 클라 단방향이라 클라는 받아서 답만 했다
 //     - 클라 소켓에는 TCP keepalive 도 걸지 않았다 (서버는 걸고 있었다)
 //     - 클라에는 시간을 재는 스레드 자체가 없었다
-//       (ClientSessionScheduler 는 잡 큐에 무한 블록한다)
+//       (ClientJobWorker 는 잡 큐에 무한 블록한다)
 //
 // 두 장치를 함께 쓴다. 겹치는 것이 아니라 잡는 대상이 다르다.
 //

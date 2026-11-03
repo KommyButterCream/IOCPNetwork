@@ -13,7 +13,7 @@
 #include "../Memory/EngineMemoryPoolHelper.h"
 #include "../../Core/Util/Logger.h"
 
-#include "../Scheduler/ClientSessionScheduler.h"
+#include "../Scheduler/ClientJobWorker.h"
 #include "../Job/Job.h"
 #include "../Protocol/PacketHeader.h"
 #include "../Protocol/PacketID.h"

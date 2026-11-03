@@ -11,7 +11,7 @@
 
 
 #include "../Job/Job.h"
-#include "../Scheduler/ClientSessionScheduler.h"
+#include "../Scheduler/ClientJobWorker.h"
 #include "../HandlerTable/PacketHandlerTable.h"
 
 #include "../Network/SocketOption.h"
@@ -258,11 +258,11 @@ bool IOCPClient::StartClient(const char* serverIp, const uint16_t port, const Se
 	m_session->SetClientSocket(m_clientSocket);
 
 	// 세션 잡큐의 Job 을 처리 하기 위한 스케쥴러/스레드 생성
-	m_clientSessionScheduler = new ClientSessionScheduler;
-	if (!m_clientSessionScheduler)
+	m_clientJobWorker = new ClientJobWorker;
+	if (!m_clientJobWorker)
 		return false;
 
-	if (!m_clientSessionScheduler->Initialize(m_session))
+	if (!m_clientJobWorker->Initialize(m_session, m_packetMemoryPool))
 	{
 		LOGE("failed to initialize the client session scheduler");
 		return false;
@@ -315,10 +315,10 @@ void IOCPClient::StopClient()
 		m_clientWatchdog = nullptr;
 	}
 
-	if (m_clientSessionScheduler)
+	if (m_clientJobWorker)
 	{
-		delete m_clientSessionScheduler;
-		m_clientSessionScheduler = nullptr;
+		delete m_clientJobWorker;
+		m_clientJobWorker = nullptr;
 	}
 
 	// [1] I/O 취소 요청 및 취소 완료 대기.

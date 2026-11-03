@@ -36,9 +36,9 @@
     <ClCompile Include="..\Memory\ThreadBlockCache.cpp" />
     <ClCompile Include="..\Memory\TlsMemoryPool.cpp" />
     <ClCompile Include="..\Network\SocketOption.cpp" />
-    <ClCompile Include="..\Scheduler\ClientSessionScheduler.cpp" />
-    <ClCompile Include="..\Scheduler\ReadySessionQueue.cpp" />
-    <ClCompile Include="..\Scheduler\ReadySessionScheduler.cpp" />
+    <ClCompile Include="..\Scheduler\ClientJobWorker.cpp" />
+    <ClCompile Include="..\Scheduler\ServerReadySessionQueue.cpp" />
+    <ClCompile Include="..\Scheduler\ServerJobScheduler.cpp" />
     <ClCompile Include="..\Diagnostics\EngineDiagnostics.cpp" />
     <ClCompile Include="..\Session\AcceptSession.cpp" />
     <ClCompile Include="..\Session\AcceptSessionPool.cpp" />
@@ -82,9 +82,9 @@
     <ClInclude Include="..\Protocol\PacketHeader.h" />
     <ClInclude Include="..\Protocol\PacketID.h" />
     <ClInclude Include="..\Protocol\SystemPacket.h" />
-    <ClInclude Include="..\Scheduler\ClientSessionScheduler.h" />
-    <ClInclude Include="..\Scheduler\ReadySessionQueue.h" />
-    <ClInclude Include="..\Scheduler\ReadySessionScheduler.h" />
+    <ClInclude Include="..\Scheduler\ClientJobWorker.h" />
+    <ClInclude Include="..\Scheduler\ServerReadySessionQueue.h" />
+    <ClInclude Include="..\Scheduler\ServerJobScheduler.h" />
     <ClInclude Include="..\Session\AcceptSession.h" />
     <ClInclude Include="..\Session\AcceptSessionPool.h" />
     <ClInclude Include="..\Session\BaseSession.h" />

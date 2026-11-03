@@ -157,13 +157,8 @@ bool AcceptSessionPool::WaitForAllAcceptIOCancelComplete(const uint32_t timeout_
 
 	// [2] Accept 세션의 IO 취소 완료 대기
 	// 모든 I/O 가 취소되기를 기다린다.
-	// 세션 내부의 IO Count 를 체크해서
-	// 0 개가 되면 이벤트가 Set 된다.
-	//
-	// 한 세션이 시간을 넘겨도 즉시 돌아가지 않는다. 예전에는 여기서
-	// return false 를 해서 뒤쪽 세션은 대기도, ResetSession 도 받지 못했다.
-	// 그렇게 남은 세션은 ACCEPT_READY 가 아닌 상태로 남아 소멸자의 두 번째
-	// 대기에 걸렸고, 그 대기는 이미 만족될 수 없는 상태였다.
+	// I/O 취소만 기다립니다. 완료 스레드가 반환 중일 수 있으므로 여기서
+	// 세션을 초기화하지 않습니다. IOCP Join 이후 풀 소멸자가 자원을 정리합니다.
 	bool allCompleted = true;
 
 	for (uint32_t i = 0; i < m_capacity; ++i)
@@ -185,10 +180,6 @@ bool AcceptSessionPool::WaitForAllAcceptIOCancelComplete(const uint32_t timeout_
 			ENGINE_VIOLATION("accept session %u IO cancel did not complete within %u ms", session->GetSessionID(), timeout_ms);
 			allCompleted = false;
 		}
-
-		// 대기가 실패했더라도 리셋한다. 어차피 이 세션은 곧 풀과 함께
-		// 사라지고, 리셋을 건너뛰면 소멸자가 다시 기다리게 된다.
-		session->ResetSession();
 	}
 
 	return allCompleted;

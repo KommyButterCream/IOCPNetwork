@@ -15,7 +15,7 @@ public:
 	BaseSession();
 	~BaseSession() override;
 
-	// 남은 I/O 가 0 이 되는 순간 부를 마무리 콜백.
+	// I/O와 준비 큐·워커의 수명 참조가 모두 반환된 뒤 부를 마무리 콜백.
 	//
 	// 세션은 자기를 담은 풀을 모른다(알면 풀 종류마다 세션이 갈라진다).
 	// 그래서 풀이 자기 마무리 절차를 함수 포인터로 맡긴다.
@@ -64,13 +64,15 @@ protected:
 
 	volatile LONG m_closing = 0;
 	volatile LONG m_ioCount = 0;
+	// I/O와 준비 큐·워커의 참조를 함께 셉니다. 모두 반환되기 전에는 세션을 재사용하지 않습니다.
+	volatile LONG m_lifetimeReferences = 0;
 	volatile LONG m_cancelIo = 0;
 
-	// 반납 예약. 1 이면 "남은 I/O 가 다 끝나는 대로 이 세션을 반납하라".
+	// 반납 예약. 1 이면 "I/O와 작업 수명 참조가 모두 끝나는 대로 이 세션을 반납하라".
 	//
 	// 이 플래그는 예약이면서 동시에 소유권 토큰이다. 1 -> 0 전이에
 	// 성공한 스레드 하나만 마무리를 수행한다. RequestRelease 를 부른
-	// 스레드와 마지막 DecrementIO 를 하는 스레드가 동시에 "내가 마지막"
+	// 스레드와 마지막 ReleaseLifetimeReference를 하는 스레드가 동시에 "내가 마지막"
 	// 이라고 판단할 수 있어, 둘 중 하나만 고르는 장치가 필요하다.
 	volatile LONG m_releasePending = 0;
 
@@ -176,6 +178,10 @@ public:
 	// --- I/O 수명 ---
 	//
 	// 엔진 내부 전용. ISession 에는 없다 (이유는 그쪽 주석).
+	// 이미 유효한 세션 참조를 가진 호출자만 추가할 수 있습니다.
+	void AddLifetimeReference();
+	// 마지막 참조라면 세션이 반환될 수 있으므로 호출 후 세션에 접근하지 않습니다.
+	void ReleaseLifetimeReference();
 	void IncrementIO();
 	void DecrementIO();
 
@@ -228,9 +234,9 @@ public:
 	void SetReleaseReadyFunc(ReleaseReadyFunc releaseReadyFunc, void* context);
 
 	// 반납을 예약한다.
-	//   true  : 남은 I/O 가 없고 마무리 권한을 이 스레드가 잡았다.
+	//   true  : 남은 수명 참조가 없고 마무리 권한을 이 스레드가 잡았다.
 	//           부르는 쪽이 그 자리에서 마무리해야 한다.
-	//   false : 아직 완료되지 않은 I/O 가 있거나, 다른 스레드가 이미
+	//   false : 아직 I/O 또는 작업 참조가 남아 있거나, 다른 스레드가 이미
 	//           권한을 잡았다. 부르는 쪽은 즉시 돌아간다.
 	bool RequestRelease();
 
@@ -239,9 +245,8 @@ public:
 
 	// --- 진단 ---
 	//
-	// 지금 이 세션이 소유권을 주장 중인 I/O 수. 0 이면 어떤 스레드도
-	// 완료 핸들러 안에서 이 세션을 만지고 있지 않다는 뜻이고, 반납이
-	// 안전하다는 판정의 근거가 이 값 하나다.
+	// 미완료 I/O 수입니다. 0이어도 준비 큐·Job 워커가 세션을 사용할 수 있습니다.
+	// 실제 세션 반환은 전체 수명 참조가 0일 때만 허용합니다.
 	// 하네스가 시나리오마다 회계를 검사하려면 밖에서 읽을 수 있어야 한다.
 	LONG GetOutstandingIOCount() const;
 

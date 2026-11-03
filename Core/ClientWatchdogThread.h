@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <stdint.h>
 
@@ -11,7 +11,7 @@ class ClientSession;
 //
 // 왜 별도 스레드여야 하는가
 //   클라이언트에는 시간을 재는 주체가 없었다. 가진 스레드는 GQCS 워커와
-//   ClientSessionScheduler 둘뿐인데, 워커는 완료 통지가 와야 깨어나고
+//   ClientJobWorker 둘뿐인데, 워커는 완료 통지가 와야 깨어나고
 //   (서버가 죽으면 영영 오지 않는다) 스케줄러는 잡 큐에 무한 블록한다.
 //   그래서 "아무것도 오지 않는다" 를 관측할 수 있는 자리가 없었다.
 //

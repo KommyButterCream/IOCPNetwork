@@ -22,8 +22,8 @@ class ClientSession;
 class AcceptSession;
 class PacketHandlerTable;
 class SessionManager;
-class ReadySessionQueue;
-class ReadySessionScheduler;
+class ServerReadySessionQueue;
+class ServerJobScheduler;
 class TlsMemoryPool;
 class HeartbeatThread;
 
@@ -69,8 +69,8 @@ private:
 	SOCKET m_serverSocket = INVALID_SOCKET;
 
 	SessionManager* m_sessionManager = nullptr;
-	ReadySessionQueue* m_readySessionQueue = nullptr;
-	ReadySessionScheduler* m_readySessionScheduler = nullptr;
+	ServerReadySessionQueue* m_serverReadySessionQueue = nullptr;
+	ServerJobScheduler* m_serverJobScheduler = nullptr;
 	HeartbeatThread* m_heartbeatThread = nullptr;
 	PacketHandlerTable* m_packetHandlerTable = nullptr;
 	TlsMemoryPool* m_jobMemoryPool = nullptr;

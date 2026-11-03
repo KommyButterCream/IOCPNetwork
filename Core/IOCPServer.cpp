@@ -13,8 +13,8 @@
 #include "IOCPCore.h"
 
 #include "../Job/Job.h"
-#include "../Scheduler/ReadySessionQueue.h"
-#include "../Scheduler/ReadySessionScheduler.h"
+#include "../Scheduler/ServerReadySessionQueue.h"
+#include "../Scheduler/ServerJobScheduler.h"
 #include "../HandlerTable/PacketHandlerTable.h"
 
 #include "../Memory/TlsMemoryPool.h"
@@ -184,12 +184,12 @@ bool IOCPServer::StartServer(const char* ipAddress, const uint16_t port, const u
 	m_packetMemoryPool = pools.packet;
 	m_sharedPacketMemoryPool = pools.sharedPacket;
 
-	m_readySessionQueue = new ReadySessionQueue;
-	if (!m_readySessionQueue)
+	m_serverReadySessionQueue = new ServerReadySessionQueue;
+	if (!m_serverReadySessionQueue)
 		return false;
 
 	const uint32_t sessionQueueBufferCount = maxConnectionCount/* * 2*/;
-	if (!m_readySessionQueue->Initialize(sessionQueueBufferCount))
+	if (!m_serverReadySessionQueue->Initialize(sessionQueueBufferCount))
 	{
 		LOGE("failed to initialize the ready session queue");
 		return false;
@@ -203,8 +203,8 @@ bool IOCPServer::StartServer(const char* ipAddress, const uint16_t port, const u
 	if (!m_packetHandlerTable)
 		return false;
 
-	m_readySessionScheduler = new ReadySessionScheduler;
-	if (!m_readySessionScheduler)
+	m_serverJobScheduler = new ServerJobScheduler;
+	if (!m_serverJobScheduler)
 		return false;
 
 	uint32_t sessionProcessorThreadCount = ::GetMaximumProcessorCount(ALL_PROCESSOR_GROUPS);
@@ -212,7 +212,7 @@ bool IOCPServer::StartServer(const char* ipAddress, const uint16_t port, const u
 		sessionProcessorThreadCount = ::GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
 	if (sessionProcessorThreadCount == 0)
 		sessionProcessorThreadCount = 1;
-	if (!m_readySessionScheduler->Initialize(sessionProcessorThreadCount, m_readySessionQueue, m_packetMemoryPool))
+	if (!m_serverJobScheduler->Initialize(sessionProcessorThreadCount, m_serverReadySessionQueue, m_packetMemoryPool))
 	{
 		LOGE("failed to initialize the ready session scheduler");
 		return false;
@@ -304,8 +304,7 @@ void IOCPServer::StopServer()
 		LOGI("shutdown 4/6 : waiting for recv/send cancellation");
 		m_sessionManager->WaitForAllRecvSendIOCancelComplete(10'000);
 
-		LOGI("shutdown 5/6 : closing all client sockets");
-		m_sessionManager->DisconnectAllSessions();
+		// 세션 초기화는 Job 워커 종료와 준비 큐 참조 반환 뒤에 수행합니다.
 	}
 
 	// 서버 소켓의 모든 Accept I/O 를 취소시킨다.
@@ -332,31 +331,30 @@ void IOCPServer::StopServer()
 	// 연결 되어 있는 세션을 강제로 Disconnect 하고 클라이언트 소켓을 닫는다.
 	LOGI("forcing the remaining sessions to disconnect");
 
+	// I/O 개수가 0이어도 완료 함수의 마지막 반환 처리가 남아 있을 수 있습니다.
+	// 생산자인 완료 워커를 먼저 조인하되, 소켓 정리를 위해 Winsock은 유지합니다.
+	StopCompletionWorkers();
+
+	// 실행 중인 Job이 끝난 뒤에만 준비 큐와 세션을 정리합니다.
+	if (m_serverJobScheduler)
+	{
+		delete m_serverJobScheduler;
+		m_serverJobScheduler = nullptr;
+	}
+
+	// 준비 큐에 남은 참조도 세션 풀이 살아 있을 때 반환합니다.
+	if (m_serverReadySessionQueue)
+	{
+		m_serverReadySessionQueue->Finalize();
+	}
+
+	if (m_sessionManager)
+	{
+		m_sessionManager->DisconnectAllSessions();
+	}
+
 	LOGI("shutting down the IOCP core");
 	IOCPCore::Stop();
-
-	// 세션을 만지는 스레드를 먼저 전부 없앤 뒤에 세션을 지운다.
-	//
-	// 예전에는 세션 매니저를 먼저 지웠다. IOCPCore::Stop() 이 조인하는 것은
-	// GQCS 워커뿐이고 ReadySessionWorker 는 그대로 살아 있으므로, 그 순서에서는
-	// 워커가 들고 있던 세션이 발밑에서 사라진다.
-	//
-	//   worker : session = m_readySessionQueue->Pop()   유효한 세션을 집는다
-	//   main   : delete m_sessionManager                ~ClientSession 이 잡 큐까지 지운다
-	//   worker : session->GetJobQueue().DequeueJob()    해제된 SRWLOCK
-	//            job->Execute()                         서비스 핸들러에 죽은 ISession*
-	//            session->UpdateProcessingFlag(0)       해제된 메모리에 Interlocked
-	//
-	// 유휴 상태에서는 워커가 Pop 에 잠들어 세션 포인터를 들고 있지 않으므로
-	// 드러나지 않는다. 부하가 걸린 채로 종료할 때만 창이 열린다.
-	//
-	// 클라이언트 쪽(StopClient)은 원래부터 이 순서였다. 같은 종료 절차가 두 곳에
-	// 따로 구현되어 있어서 한쪽만 맞은 상태로 남아 있었다.
-	if (m_readySessionScheduler)
-	{
-		delete m_readySessionScheduler;
-		m_readySessionScheduler = nullptr;
-	}
 
 	if (m_sessionManager)
 	{
@@ -365,12 +363,12 @@ void IOCPServer::StopServer()
 	}
 
 	// 준비 큐는 스케줄러보다 뒤에 지운다.
-	// ReadySessionScheduler::Finalize 가 워커를 깨우려고 이 큐의 WakeAll 을
+	// ServerJobScheduler::Finalize 가 워커를 깨우려고 이 큐의 WakeAll 을
 	// 부르므로, 조인이 끝날 때까지 살아 있어야 한다.
-	if (m_readySessionQueue)
+	if (m_serverReadySessionQueue)
 	{
-		delete m_readySessionQueue;
-		m_readySessionQueue = nullptr;
+		delete m_serverReadySessionQueue;
+		m_serverReadySessionQueue = nullptr;
 	}
 
 	if (m_packetHandlerTable)
@@ -1835,7 +1833,7 @@ bool IOCPServer::SubmitPacketJob(ISession* session, uint16_t packetId, PacketHan
 		return false;
 	}
 
-	if (!m_packetHandlerTable || !m_jobMemoryPool || !m_readySessionQueue || !m_packetMemoryPool)
+	if (!m_packetHandlerTable || !m_jobMemoryPool || !m_serverReadySessionQueue || !m_packetMemoryPool)
 	{
 		ENGINE_VIOLATION("session %u cannot submit a job : the server is not fully initialized",
 			clientSession->GetSessionID());
@@ -1880,14 +1878,14 @@ bool IOCPServer::SubmitPacketJob(ISession* session, uint16_t packetId, PacketHan
 	// 스케줄 조건에서 wasEmpty 를 뺐다.
 	//
 	// 예전 규약은 "큐가 비어 있었을 때만 스케줄한다" 였다. 대개는 맞지만
-	// 복구 불가 상태를 하나 만든다 — ReadySessionQueue::Push 가 실패하면
+	// 복구 불가 상태를 하나 만든다 — ServerReadySessionQueue::Enqueue 가 실패하면
 	// 큐에는 Job 이 남고 스케줄은 되지 않은 상태가 된다. 그 뒤에 오는
 	// 패킷은 wasEmpty == false 를 보고 스케줄을 건너뛰므로, 그 세션은
 	// 영구히 스케줄되지 않는다.
 	//
-	// 중복 Push 를 실제로 막는 것은 아래 CAS 다. wasEmpty 는 그 CAS 를
+	// 중복 Enqueue 를 실제로 막는 것은 아래 CAS 다. wasEmpty 는 그 CAS 를
 	// 아끼는 최적화였을 뿐이고, 그 최적화가 위 상태를 복구 불가로 만든다.
-	// CAS 만 남기면 패킷마다 다시 시도하므로 일시적 Push 실패가 스스로
+	// CAS 만 남기면 패킷마다 다시 시도하므로 일시적 Enqueue 실패가 스스로
 	// 복구된다. 값은 원자 연산 하나(패킷당 수십 cycle)이고, 실측된 잡당
 	// 비용(약 32us)에 비하면 무시할 수준이다.
 	if (!clientSession->IsProcessingReady())
@@ -1897,7 +1895,7 @@ bool IOCPServer::SubmitPacketJob(ISession* session, uint16_t packetId, PacketHan
 		return true;
 	}
 
-	if (!m_readySessionQueue->Push(clientSession))
+	if (!m_serverReadySessionQueue->Enqueue(clientSession))
 	{
 		// 반드시 되돌린다. 그러지 않으면 이 세션은 처리 중으로 표시된 채
 		// 아무도 처리하지 않는 상태가 된다.

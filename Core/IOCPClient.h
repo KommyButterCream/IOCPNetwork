@@ -22,7 +22,7 @@ class ISession;
 class BaseSession;
 class ClientSession;
 class TlsMemoryPool;
-class ClientSessionScheduler;
+class ClientJobWorker;
 class ClientWatchdogThread;
 class PacketHandlerTable;
 class SessionContext;
@@ -64,7 +64,7 @@ public:
 	//
 	// 조절할 수 있게 연 이유는 그 콜백이 무거운 서비스가 있기 때문이다.
 	// 다만 늘린다고 처리량이 비례해 늘지는 않는다 — 클라의 진짜 상한은
-	// 잡을 실행하는 ClientSessionScheduler 스레드 하나다.
+	// 잡을 실행하는 ClientJobWorker 스레드 하나다.
 	//
 	// poolConfig 의 사정은 IOCPServer::StartServer 의 같은 인자 주석과 같다.
 	//
@@ -112,7 +112,7 @@ private:
 
 	// 공유 패킷 참조 제어 객체용 풀입니다.
 	TlsMemoryPool* m_sharedPacketMemoryPool = nullptr;
-	ClientSessionScheduler* m_clientSessionScheduler = nullptr;
+	ClientJobWorker* m_clientJobWorker = nullptr;
 
 	// 서버가 조용해진 것을 알아차리는 감시 스레드.
 	// 왜 잡 스케줄러가 아니라 별도 스레드인지는 ClientWatchdogThread 주석.
