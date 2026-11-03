@@ -19,6 +19,8 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\Job\Job.cpp" />
+    <ClCompile Include="..\Job\JobHandle.cpp" />
     <ClCompile Include="..\Buffer\RecvPacketBuffer.cpp" />
     <ClCompile Include="..\Buffer\SendPacketQueue.cpp" />
     <ClCompile Include="..\Core\ClientWatchdogThread.cpp" />
@@ -49,7 +51,7 @@
     <ClInclude Include="..\Buffer\RecvPacketBuffer.h" />
     <ClInclude Include="..\Buffer\SendPacketEntry.h" />
     <ClInclude Include="..\Buffer\SendPacketQueue.h" />
-    <ClInclude Include="..\Buffer\SharedSendPacket.h" />
+    <ClInclude Include="..\Buffer\SharedPacketHandle.h" />
     <ClInclude Include="..\Core\ClientLivenessConfig.h" />
     <ClInclude Include="..\Core\ClientWatchdogThread.h" />
     <ClInclude Include="..\Core\HeartbeatConfig.h" />
@@ -62,6 +64,7 @@
     <ClInclude Include="..\HandlerTable\PacketHandlerTable.h" />
     <ClInclude Include="..\Job\Job.h" />
     <ClInclude Include="..\Job\JobDefs.h" />
+    <ClInclude Include="..\Job\JobHandle.h" />
     <ClInclude Include="..\Memory\EngineMemoryPoolHelper.h" />
     <ClInclude Include="..\Memory\EnginePoolConfig.h" />
     <ClInclude Include="..\Memory\EnginePoolBuilder.h" />

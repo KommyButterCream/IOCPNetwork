@@ -9,7 +9,7 @@ using namespace Core::Util;
 
 #include "../Job/Job.h"
 #include "../Memory/EngineMemoryPoolHelper.h"
-
+#include "../Job/JobHandle.h"
 
 SessionJobQueue::SessionJobQueue(SESSION_ROLE sessionRole, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool)
 {
@@ -23,19 +23,36 @@ SessionJobQueue::~SessionJobQueue()
 	Reset();
 }
 
-bool SessionJobQueue::EnqueueJob(Job* job, bool& wasEmpty)
+bool SessionJobQueue::EnqueueJob(JobHandle&& jobHandle, bool& wasEmpty)
 {
-	if (job == nullptr)
+	wasEmpty = false;
+
+	if (!jobHandle)
+	{
 		return false;
+	}
+
+	// 큐는 꺼내기와 정리 시 자신의 Job 풀로 반환한다.
+	if (jobHandle.get_deleter().GetPool() != m_jobMemoryPool)
+	{
+		ENGINE_VIOLATION("cannot enqueue a job allocated from a different pool");
+
+		return false;
+	}
 
 	::AcquireSRWLockExclusive(&m_srwLock);
 
 	wasEmpty = (m_head == nullptr);
-	job->next = nullptr;
+
+	// 유효한 Job은 이 지점부터 실패 없이 큐에 연결된다.
+	// 소비자가 접근하기 전에 호출자의 핸들을 비운다.
+	Job* job = jobHandle.release();
+
+	job->m_next = nullptr;
 
 	if (m_tail)
 	{
-		m_tail->next = job;
+		m_tail->m_next = job;
 		m_tail = job;
 	}
 	else
@@ -58,35 +75,41 @@ bool SessionJobQueue::EnqueueJob(Job* job, bool& wasEmpty)
 	return true;
 }
 
-bool SessionJobQueue::DequeueJob(Job*& outJob)
+JobHandle SessionJobQueue::DequeueJob()
 {
+	JobHandle result(nullptr, JobDeleter{ *m_jobMemoryPool });
+
 	if (m_sessionRole != SESSION_ROLE::SERVER)
 	{
 		// DequeueJob 은 서버 역할 전용이다. 클라이언트 역할은 WaitDequeueJob 을 쓴다.
 		ENGINE_VIOLATION("DequeueJob called on a session whose role is %d, not SERVER", static_cast<int>(m_sessionRole));
+
+		return result;
 	}
 
 	::AcquireSRWLockExclusive(&m_srwLock);
 
-	if (m_head == nullptr)
+	if (m_head)
 	{
-		outJob = nullptr;
-		::ReleaseSRWLockExclusive(&m_srwLock);
-		return false;
+		Job* job = m_head;
+		m_head = job->m_next;
+
+		if (!m_head)
+		{
+			m_tail = nullptr;
+		}
+
+		--m_count;
+
+		job->m_next = nullptr;
+
+		// 큐에서 분리한 Job을 반환용 핸들이 소유한다.
+		result.reset(job);
 	}
-
-	outJob = m_head;
-	m_head = m_head->next;
-
-	if (m_head == nullptr)
-	{
-		m_tail = nullptr;
-	}
-
-	--m_count;
 
 	::ReleaseSRWLockExclusive(&m_srwLock);
-	return true;
+
+	return result;
 }
 
 void SessionJobQueue::WakeUp()
@@ -109,39 +132,47 @@ void SessionJobQueue::WakeUp()
 	::WakeConditionVariable(&m_cv);
 }
 
-bool SessionJobQueue::WaitDequeueJob(Job*& outJob)
+JobHandle SessionJobQueue::WaitDequeueJob()
 {
+	JobHandle result(nullptr, JobDeleter{ *m_jobMemoryPool });
+
 	if (m_sessionRole != SESSION_ROLE::CLIENT)
 	{
 		// WaitDequeueJob 은 클라이언트 역할 전용이다. 서버 역할은 DequeueJob 을 쓴다.
 		ENGINE_VIOLATION("WaitDequeueJob called on a session whose role is %d, not CLIENT", static_cast<int>(m_sessionRole));
+
+		return result;
 	}
 
 	::AcquireSRWLockExclusive(&m_srwLock);
 
-	while (m_head == nullptr)
+	while (!m_head)
 	{
 		if (m_stopFlag)
 		{
 			::ReleaseSRWLockExclusive(&m_srwLock);
-			return false;
+			return result;
 		}
 
 		::SleepConditionVariableSRW(&m_cv, &m_srwLock, INFINITE, 0);
 	}
 
-	outJob = m_head;
-	m_head = m_head->next;
+	Job* job = m_head;
+	m_head = job->m_next;
 
-	if (m_head == nullptr)
+	if (!m_head)
 	{
 		m_tail = nullptr;
 	}
 
 	--m_count;
 
+	job->m_next = nullptr;
+	result.reset(job);
+
 	::ReleaseSRWLockExclusive(&m_srwLock);
-	return true;
+
+	return result;
 }
 
 void SessionJobQueue::Reset()
@@ -151,18 +182,18 @@ void SessionJobQueue::Reset()
 	Job* job = m_head;
 	while (job)
 	{
-		Job* nextJob = job->next;
+		JobHandle jobHandle(job, JobDeleter{ *m_jobMemoryPool });
 
-		// Packet ownership is released by the Job destructor; preserve other job paths.
+		// 현재 Job을 반환하기 전에 다른 Job의 주소를 확보한다.
+		job = jobHandle->m_next;
 
+		// 현재 Job을 연결 목록에서 분리한다.
+		jobHandle->m_next = nullptr;
 
-		if (job->jobType != JobType::PACKET && job->data)
+		if (const char* data = jobHandle->GetNonPacketData())
 		{
-			MEMORY_POOL::ReleasePacket(*m_packetMemoryPool, job->data);
+			MEMORY_POOL::ReleasePacket(*m_packetMemoryPool, data);
 		}
-
-		MEMORY_POOL::ReleaseJob(*m_jobMemoryPool, job);
-		job = nextJob;
 	}
 
 	m_head = nullptr;

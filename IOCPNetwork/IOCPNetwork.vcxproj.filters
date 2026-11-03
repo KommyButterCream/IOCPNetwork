@@ -33,6 +33,12 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\Job\Job.cpp">
+      <Filter>Job</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Job\JobHandle.cpp">
+      <Filter>Job</Filter>
+    </ClCompile>
     <ClCompile Include="..\Buffer\RecvPacketBuffer.cpp">
       <Filter>Buffer</Filter>
     </ClCompile>
@@ -116,7 +122,7 @@
     <ClInclude Include="..\Buffer\SendPacketQueue.h">
       <Filter>Buffer</Filter>
     </ClInclude>
-    <ClInclude Include="..\Buffer\SharedSendPacket.h">
+    <ClInclude Include="..\Buffer\SharedPacketHandle.h">
       <Filter>Buffer</Filter>
     </ClInclude>
     <ClInclude Include="..\Core\ClientLivenessConfig.h">
@@ -240,6 +246,9 @@
     <ClInclude Include="..\Memory\EnginePoolBuilder.h" />
     <ClInclude Include="..\Buffer\PacketHandle.h">
       <Filter>Buffer</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Job\JobHandle.h">
+      <Filter>Job</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

@@ -42,7 +42,7 @@ public:
 	~ReadySessionScheduler();
 
 public:
-	bool Initialize(uint32_t workerCount, ReadySessionQueue* readySessionQueue, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool);
+	bool Initialize(uint32_t workerCount, ReadySessionQueue* readySessionQueue, TlsMemoryPool* packetMemoryPool);
 	void Finalize();
 
 	// ReadySessionWorker 가 호출한다. 정지 판정은 워커의 정지 이벤트로 한다.
@@ -52,7 +52,6 @@ private:
 	ReadySessionWorker** m_workers = nullptr;
 	uint32_t m_workerCount = 0;
 	ReadySessionQueue* m_readySessionQueue = nullptr;
-	TlsMemoryPool* m_jobMemoryPool = nullptr;
 	TlsMemoryPool* m_packetMemoryPool = nullptr;
 
 	void DestroyWorkers();

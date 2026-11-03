@@ -11,8 +11,8 @@
 #include "../Protocol/PacketID.h"
 #include "../Buffer/SendPacketEntry.h"
 #include "../Buffer/SessionBufferConfig.h"
-
-struct Job;
+#include "../Job/JobHandle.h"
+class Job;
 
 class SessionJobQueue;
 class RecvPacketBuffer;
@@ -20,6 +20,7 @@ class SendPacketQueue;
 class TlsMemoryPool;
 class ISessionEvent;
 class PacketHandle;
+class SharedPacketHandle;
 
 #ifdef BUILD_IOCP_ENGINE_DLL
 #define IOCP_ENGINE_API __declspec(dllexport)
@@ -201,12 +202,23 @@ public:
 	bool PostCurrentSend();
 	bool OnSendCompleted(const DWORD bytesTransferred);
 
-	bool EnqueueJob(Job* job, bool& wasEmpty);
-	bool SubmitJob(Job* job);
+
+	// 성공하면 핸들이 비워지고 큐가 소유한다.
+	// 실패하면 호출자가 소유권을 유지한다.
+	[[nodiscard]]
+	bool EnqueueJob(JobHandle&& jobHandle, bool& wasEmpty);
+
+	[[nodiscard]]
+	bool SubmitJob(JobHandle&& jobHandle);
+
 	// 성공하면 packet은 비워지고 송신 큐가 소유한다.
 	// 실패하면 packet은 소유권을 유지한다.
 	[[nodiscard]]
 	bool EnqueueSendPacket(PacketHandle&& packetHandle);
+
+	// Consumes this reference on both success and failure.
+	[[nodiscard]]
+	bool EnqueueSharedSendPacket(SharedPacketHandle packetHandle);
 
 	bool EnqueueSharedSendPacket(const void* packetData, uint32_t packetSize, SendPacketReleaseFunc releaseFunc, void* releaseContext);
 

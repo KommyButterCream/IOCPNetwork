@@ -5,25 +5,11 @@
 #include "../../Core/Util/Logger.h"
 
 #include "../Buffer/SendPacketEntry.h"
-#include "../Job/Job.h"
-#include "../Protocol/PacketHeader.h"
-#include "../Protocol/PacketID.h"
 #include "../Buffer/PacketHandle.h"
-#include <new>
-#include <memory> // for construct_at, destroy_at
+#include <new> // for placement new
+#include <memory> // for std::destroy_at
 
 using namespace Core::Util;
-
-// 주의
-// 이 파일의 함수들은 패킷/Job 하나당 호출된다.
-// 즉 초당 수십만~수백만 번 실행되는 경로이므로 여기에 로그를 남기면
-// 그것만으로 처리량이 한 자리 수로 떨어진다.
-// (실측: 로그 억제 221k pkt/s -> 로그 켜짐 13k pkt/s)
-//
-// 그래서 개별 할당/해제는 LOGT(릴리스에서 컴파일 제거) 로만 남기고,
-// 실제 운영 지표는 TlsMemoryPool 이 누적하는 카운터로 본다.
-//   TlsMemoryPool::LogStats() -> 빈별 peak / 확장 횟수 / 미반환 수
-// 실패 원인 로그도 TlsMemoryPool::Acquire 안에서 남긴다.
 
 namespace MEMORY_POOL
 {
@@ -89,37 +75,4 @@ namespace MEMORY_POOL
 		pool.Release(static_cast<const void*>(entry));
 	}
 
-	// Utility helpers for Job objects
-
-	inline Job* CreateJob(TlsMemoryPool& pool)
-	{
-		// Job 메모리 버퍼를 버퍼풀로부터 반환
-		void* memory = pool.Acquire(sizeof(Job));
-
-		if (!memory)
-		{
-			// 실패의 구체적 원인(슬랩 고갈 / 크기 초과)은 Acquire 가 남긴다.
-			LOGE("failed to acquire a Job block (size %zu)", sizeof(Job));
-			return nullptr;
-		}
-
-		LOGT("job acquire %p", memory);
-
-		return std::construct_at(static_cast<Job*>(memory));
-	}
-
-	inline void ReleaseJob(TlsMemoryPool& pool, Job* job)
-	{
-		// 사용이 끝난 Job 메모리 버퍼를 버퍼풀에 반환
-		if (!job)
-		{
-			LOGE("ReleaseJob called with nullptr");
-			return;
-		}
-
-		LOGT("job release %p", job);
-
-		std::destroy_at(job);
-		pool.Release(static_cast<const void*>(job));
-	}
 }

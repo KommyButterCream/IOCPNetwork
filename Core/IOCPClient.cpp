@@ -25,7 +25,7 @@
 #include "../Buffer/PreDefine.h"
 #include "../Protocol/PacketID.h"
 #include "../Protocol/SystemPacket.h"
-
+#include "../Job/JobHandle.h"
 #include "../Session/ClientSession.h"
 #include "../Session/SessionManager.h"
 
@@ -264,7 +264,7 @@ bool IOCPClient::StartClient(const char* serverIp, const uint16_t port, const Se
 	if (!m_clientSessionScheduler)
 		return false;
 
-	if (!m_clientSessionScheduler->Initialize(m_session, m_jobMemoryPool, m_packetMemoryPool))
+	if (!m_clientSessionScheduler->Initialize(m_session))
 	{
 		LOGE("failed to initialize the client session scheduler");
 		return false;
@@ -1257,22 +1257,24 @@ bool IOCPClient::SubmitPacketJob(ISession* session, uint16_t packetId, PacketHan
 		return false;
 	}
 
-	Job* job = MEMORY_POOL::CreateJob(*m_jobMemoryPool);
-	if (!job)
+	auto jobHandle = MEMORY_POOL::CreateJobHandle(*m_jobMemoryPool);
+
+	if (!jobHandle)
 	{
 		LOGE("could not allocate a job, dropping packet id %u", packetId);
 		return false;
 	}
 
-	job->SetPacketJob(handler, session, packetId, std::move(packetHandle), m_handlerContext);
+	if (!jobHandle->SetPacketJob(handler, session, packetId, std::move(packetHandle), m_handlerContext))
+	{
+		LOGE("failed to configure a packet job for id %u", packetId);
+		return false;
+	}
 
-	// Submission failure leaves the Job here; destroying it returns the packet.
-	if (!clientSession->SubmitJob(job))
+	// Success transfers ownership to the queue; failure keeps it in this handle.
+	if (!clientSession->SubmitJob(std::move(jobHandle)))
 	{
 		LOGE("failed to enqueue a job for packet id %u", packetId);
-
-		// Destroying the Job also returns its owned packet.
-		MEMORY_POOL::ReleaseJob(*m_jobMemoryPool, job);
 		return false;
 	}
 

@@ -33,7 +33,7 @@
 #include "../Session/ClientSession.h"
 #include "../Session/AcceptSession.h"
 #include "../Session/SessionJobQueue.h"
-
+#include "../Job/JobHandle.h"
 #include "../../Core/Util/Logger.h"
 
 #include <utility> // for std::move
@@ -213,7 +213,7 @@ bool IOCPServer::StartServer(const char* ipAddress, const uint16_t port, const u
 		sessionProcessorThreadCount = ::GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
 	if (sessionProcessorThreadCount == 0)
 		sessionProcessorThreadCount = 1;
-	if (!m_readySessionScheduler->Initialize(sessionProcessorThreadCount, m_readySessionQueue, m_jobMemoryPool, m_packetMemoryPool))
+	if (!m_readySessionScheduler->Initialize(sessionProcessorThreadCount, m_readySessionQueue, m_packetMemoryPool))
 	{
 		LOGE("failed to initialize the ready session scheduler");
 		return false;
@@ -1879,25 +1879,28 @@ bool IOCPServer::SubmitPacketJob(ISession* session, uint16_t packetId, PacketHan
 		return false;
 	}
 
-	Job* job = MEMORY_POOL::CreateJob(*m_jobMemoryPool);
-	if (!job)
+	auto jobHandle = MEMORY_POOL::CreateJobHandle(*m_jobMemoryPool);
+
+	if (!jobHandle)
 	{
 		LOGE("session %u could not allocate a job, dropping packet id %u",
 			clientSession->GetSessionID(), packetId);
 		return false;
 	}
 
-	job->SetPacketJob(handler, session, packetId, std::move(packetHandle), m_handlerContext);
+	if (!jobHandle->SetPacketJob(handler, session, packetId, std::move(packetHandle), m_handlerContext))
+	{
+		LOGE("failed to configure a packet job for id %u", packetId);
+		return false;
+	}
 
-	// wasEmpty 는 받지만 스케줄 판단에 쓰지 않는다. 이유는 아래에.
 	bool wasEmpty = false;
-	if (!clientSession->GetJobQueue().EnqueueJob(job, wasEmpty))
+
+	if (!clientSession->GetJobQueue().EnqueueJob(std::move(jobHandle), wasEmpty))
 	{
 		LOGE("session %u failed to enqueue a job for packet id %u",
 			clientSession->GetSessionID(), packetId);
 
-		// Destroying the Job also returns its owned packet.
-		MEMORY_POOL::ReleaseJob(*m_jobMemoryPool, job);
 		return false;
 	}
 

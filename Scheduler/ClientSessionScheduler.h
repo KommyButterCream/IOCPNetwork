@@ -9,7 +9,6 @@
 
 #include "../../Core/Concurrency/ThreadBase.h"
 
-class TlsMemoryPool;
 class ClientSession;
 
 // 세션 1개의 JobQueue 를 처리하는 전용 스레드.
@@ -22,14 +21,12 @@ public:
 	~ClientSessionScheduler() override;
 
 public:
-	bool Initialize(ClientSession* clientSession, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool);
+	bool Initialize(ClientSession* clientSession);
 	void Finalize();
 
 protected:
 	void Run() override;
 
 private:
-	TlsMemoryPool* m_jobMemoryPool = nullptr;
 	ClientSession* m_clientSession = nullptr;
-	TlsMemoryPool* m_packetMemoryPool = nullptr;
 };

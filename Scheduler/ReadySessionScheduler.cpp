@@ -8,7 +8,7 @@
 #include "../Session/ClientSession.h"
 #include "../Session/SessionJobQueue.h"
 #include "../Memory/EngineMemoryPoolHelper.h"
-
+#include "../Job/JobHandle.h"
 #include "../../Core/Util/Logger.h"
 
 using namespace Core::Util;
@@ -30,16 +30,15 @@ ReadySessionScheduler::~ReadySessionScheduler()
 	Finalize();
 }
 
-bool ReadySessionScheduler::Initialize(uint32_t workerCount, ReadySessionQueue* readySessionQueue, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool)
+bool ReadySessionScheduler::Initialize(uint32_t workerCount, ReadySessionQueue* readySessionQueue, TlsMemoryPool* packetMemoryPool)
 {
-	if (workerCount == 0 || readySessionQueue == nullptr || jobMemoryPool == nullptr)
+	if (workerCount == 0 || readySessionQueue == nullptr)
 	{
-		LOGE("invalid arguments (workerCount %u, queue %p, jobPool %p)", workerCount, readySessionQueue, jobMemoryPool);
+		LOGE("invalid scheduler arguments");
 		return false;
 	}
 
 	m_readySessionQueue = readySessionQueue;
-	m_jobMemoryPool = jobMemoryPool;
 	m_packetMemoryPool = packetMemoryPool;
 
 	m_workers = static_cast<ReadySessionWorker**>(
@@ -104,7 +103,6 @@ void ReadySessionScheduler::Finalize()
 	LOGI("ready session scheduler stopped");
 
 	m_readySessionQueue = nullptr;
-	m_jobMemoryPool = nullptr;
 	m_packetMemoryPool = nullptr;
 }
 
@@ -143,28 +141,14 @@ void ReadySessionScheduler::WorkerThreadLoop(ReadySessionWorker& worker, uint32_
 
 		ClientSession* session = static_cast<ClientSession*>(popped);
 
-		Job* job = nullptr;
-
-		while (session->GetJobQueue().DequeueJob(job))
+		while (auto jobHandle = session->GetJobQueue().DequeueJob())
 		{
-			if (job)
+			jobHandle->Execute();
+
+			// DB/System 데이터의 기존 반환 정책은 유지한다.
+			if (const char* data = jobHandle->GetNonPacketData())
 			{
-				job->Execute();
-
-				// Packet ownership is released by the Job destructor; preserve other job paths.
-
-
-				if (job->jobType != JobType::PACKET && job->data)
-				{
-					MEMORY_POOL::ReleasePacket(*m_packetMemoryPool, job->data);
-				}
-
-				MEMORY_POOL::ReleaseJob(*m_jobMemoryPool, job);
-			}
-			else
-			{
-				LOGE("DequeueJob reported success but returned a null job (session %u)", session->GetSessionID());
-				break;
+				MEMORY_POOL::ReleasePacket(*m_packetMemoryPool, data);
 			}
 		}
 

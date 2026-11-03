@@ -53,7 +53,7 @@ namespace ENGINE_POOL
 	//
 	// 왜 지우지 않는가
 	//   엔진은 풀 포인터를 밖으로 내보낸다. HandlerContext 에 실려 서비스
-	//   핸들러로 가고, GetPacketMemoryPool() 로도 나가고, SharedSendPacket 은
+	//   핸들러로 가고, GetPacketMemoryPool() 로도 나가고, SharedPacketHandle 은
 	//   아예 그 포인터를 들고 다니며 마지막 참조가 반납을 수행한다.
 	//
 	//   그 상태에서 Stop 이 풀을 delete 하면, 늦게 도착한 반납 하나가
@@ -63,7 +63,7 @@ namespace ENGINE_POOL
 	//
 	//   "서비스가 Stop 전에 다 정리하면 된다" 로 넘길 수 없다. 브로드캐스트
 	//   팬아웃의 마지막 참조가 언제 떨어지는지는 송신 완료 시점이 정하고,
-	//   그건 종료와 경합한다. SharedSendPacket 이 서버가 아니라 풀을 직접
+	//   그건 종료와 경합한다. SharedPacketHandle 이 서버가 아니라 풀을 직접
 	//   드는 것도 원래 이 문제를 피하려던 것이었는데, 그 풀 자체가 지워지니
 	//   의도한 보호가 성립하지 않았다.
 	//

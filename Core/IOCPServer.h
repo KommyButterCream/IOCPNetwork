@@ -64,7 +64,7 @@ private:
 	// 메모리 풀 객체를 실제로 지운다.
 	//
 	// StopServer 는 Finalize 까지만 한다. 풀 포인터가 서비스 핸들러와
-	// SharedSendPacket 으로 나가 있어서, 늦게 도착하는 반납이 해제된 객체를
+	// SharedPacketHandle 으로 나가 있어서, 늦게 도착하는 반납이 해제된 객체를
 	// 만질 수 있기 때문이다. (사정은 ENGINE_POOL::FinalizePools 주석)
 	//
 	// 그래서 지우는 자리는 소멸자와, 다시 기동하기 직전 두 곳뿐이다.
@@ -261,7 +261,7 @@ protected:
 
 	// 송신 경로 부기용 풀. 64바이트 빈 하나를 갖고 있다.
 	//
-	// 브로드캐스트에서 SharedSendPacket 을 담을 곳이 필요해서 열었다.
+	// 브로드캐스트에서 SharedPacketHandle 을 담을 곳이 필요해서 열었다.
 	// packet 풀은 수신 경로와 공유하므로 작은 송신 부기 객체는 여기에 둔다.
 	// (분리 이유는 m_sendQueueMemoryPool 선언부 주석 참고)
 	TlsMemoryPool* GetSendQueueMemoryPool() const;

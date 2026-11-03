@@ -3,9 +3,9 @@
 #include "../Job/Job.h"
 #include "../Session/ClientSession.h"
 #include "../Session/SessionJobQueue.h"
-#include "../Memory/EngineMemoryPoolHelper.h"
 
 #include "../../Core/Util/Logger.h"
+#include "../Job/JobHandle.h"
 
 using namespace Core::Util;
 
@@ -19,17 +19,15 @@ ClientSessionScheduler::~ClientSessionScheduler()
 	Finalize();
 }
 
-bool ClientSessionScheduler::Initialize(ClientSession* clientSession, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool)
+bool ClientSessionScheduler::Initialize(ClientSession* clientSession)
 {
-	if (clientSession == nullptr || jobMemoryPool == nullptr)
+	if (clientSession == nullptr)
 	{
-		LOGE("invalid arguments (session %p, jobPool %p)", clientSession, jobMemoryPool);
+		LOGE("client session is null");
 		return false;
 	}
 
 	m_clientSession = clientSession;
-	m_jobMemoryPool = jobMemoryPool;
-	m_packetMemoryPool = packetMemoryPool;
 
 	if (!Start())
 	{
@@ -63,30 +61,28 @@ void ClientSessionScheduler::Finalize()
 
 	LOGI("client session scheduler stopped");
 
-	m_jobMemoryPool = nullptr;
 	m_clientSession = nullptr;
-	m_packetMemoryPool = nullptr;
 }
 
 void ClientSessionScheduler::Run()
 {
 	while (!IsStopRequested())
 	{
-		Job* job = nullptr;
-		const bool gotJob = m_clientSession->GetJobQueue().WaitDequeueJob(job);
-
-		if (!gotJob)
-			break;
-
-		if (job)
 		{
-			m_clientSession->SetCurrentJob(job);
-			job->Execute();
+			auto jobHandle = m_clientSession->GetJobQueue().WaitDequeueJob();
 
-			// Clear the borrowed Job pointer before its destructor returns the packet.
+			if (!jobHandle)
+			{
+				break;
+			}
+
+			// 세션은 실행 중인 Job을 잠시 참조한다.
+			m_clientSession->SetCurrentJob(jobHandle.get());
+
+			jobHandle->Execute();
+
+			// 소유자인 핸들이 사라지기 전에 빌린 주소를 비운다.
 			m_clientSession->SetCurrentJob(nullptr);
-
-			MEMORY_POOL::ReleaseJob(*m_jobMemoryPool, job);
 		}
 
 		// 백프레셔 해제. 서버 쪽 ReadySessionScheduler 와 같은 자리다.

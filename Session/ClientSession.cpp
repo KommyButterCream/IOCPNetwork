@@ -19,6 +19,7 @@
 #include "../Protocol/PacketID.h"
 #include "../Protocol/SystemPacket.h"
 #include "../Buffer/PacketHandle.h"
+#include "../Buffer/SharedPacketHandle.h"
 
 #include <utility> // for std::move
 #include <memory> // for std::construct_at
@@ -932,13 +933,26 @@ bool ClientSession::OnSendCompleted(const DWORD bytesTransferred)
 	return true;
 }
 
-bool ClientSession::EnqueueJob(Job* job, bool& wasEmpty)
+bool ClientSession::EnqueueJob(JobHandle&& jobHandle, bool& wasEmpty)
 {
-	if (job == nullptr)
-		return false;
+	wasEmpty = false;
 
+	if (!jobHandle)
+	{
+		return false;
+	}
+
+	if (!m_jobQueue)
+	{
+		ENGINE_VIOLATION(
+			"session %u cannot enqueue a job : "
+			"the session job queue is not initialized",
+			GetSessionID());
+
+		return false;
+	}
 	// 세션 JobQueue에 enqueue
-	if (!GetJobQueue().EnqueueJob(job, wasEmpty))
+	if (!m_jobQueue->EnqueueJob(std::move(jobHandle), wasEmpty))
 	{
 		LOGE("session %u failed to enqueue a job", GetSessionID());
 
@@ -950,43 +964,13 @@ bool ClientSession::EnqueueJob(Job* job, bool& wasEmpty)
 	return true;
 }
 
-// 잡을 이 세션의 큐에 올린다.
-//
-// 소유권
-//   성공하면 큐가 Job을 소유한다.
-//   실패하면 호출자가 Job을 반환해야 한다.
-//   Packet Job은 내부 핸들이 패킷을 소유하므로,
-//   ReleaseJob()으로 Job을 소멸시키면 패킷도 함께 반환된다.
-//
-// 예전에는 이 함수가 실패 경로에서 직접 반납했다. 그런데 반납에 쓰는 풀이
-// 세션의 멤버라, 초기화를 지나지 않은(또는 이미 정리된) 세션에서는 전부
-// null 이었다. 그러면 맨 앞의 검사에 걸려 아무것도 반납하지 않은 채 false 만
-// 돌아갔고, job 과 패킷이 조용히 샜다. 부르는 쪽은 계약상 소유권을 넘긴
-// 것으로 알고 있으므로 아무도 회수하지 않는다.
-//
-// 그래서 반납을 그 메모리를 잡은 쪽으로 되돌린다. 부르는 쪽
-// (IOCPClient::SubmitPacketJob)의 풀은 잡기 직전에 유효성이 확인되어 있어
-// 항상 되돌릴 수 있다. 서버 쪽 SubmitPacketJob 이 원래 그 형태다.
-bool ClientSession::SubmitJob(Job* job)
+// 성공하면 큐가 Job을 소유하고 호출자의 핸들은 비워진다.
+// 실패하면 호출자의 핸들이 소유권을 유지한다.
+bool ClientSession::SubmitJob(JobHandle&& jobHandle)
 {
-	if (!job)
-		return false;
-
-	// EnqueueJob 이 GetJobQueue() 를 역참조하는데 그쪽에는 null 검사가 없다.
-	// 큐가 없는 세션에서는 곧바로 null 역참조가 되므로 여기서 막는다.
-	//
-	// 예전의 풀 검사가 이 시점을 우연히 같이 가리고 있었다 — 큐와 풀이
-	// InitializeMemoryPool 에서 함께 설정되기 때문이다. 막아야 할 대상은
-	// 큐이므로 검사도 큐를 본다.
-	if (!m_jobQueue)
-	{
-		ENGINE_VIOLATION("session %u cannot submit a job : the session job queue is not initialized",
-			GetSessionID());
-		return false;
-	}
-
 	bool wasEmpty = false;
-	return EnqueueJob(job, wasEmpty);
+
+	return EnqueueJob(std::move(jobHandle), wasEmpty);
 }
 
 // 이유별로 1초에 한 줄만 통과시킨다. 자세한 사정은 헤더의 선언 주석 참고.
@@ -1156,6 +1140,34 @@ bool ClientSession::EnqueueSharedSendPacket(const void* packetData, uint32_t pac
 
 	return true;
 }
+
+bool ClientSession::EnqueueSharedSendPacket(SharedPacketHandle packetHandle)
+{
+	if (!packetHandle || packetHandle.Size() == 0 || packetHandle.Size() > PACKET_SIZE_LIMIT)
+	{
+		return false;
+	}
+
+	const auto bytes = packetHandle.View();
+
+	const bool queued = EnqueueSharedSendPacket(
+		bytes.data(),
+		static_cast<uint32_t>(bytes.size()),
+		SharedPacketHandle::ReleaseCallback,
+		packetHandle.m_control);
+
+	if (!queued)
+	{
+		return false;
+	}
+
+	// 성공하면 큐의 콜백이 이 참조를 반환한다.
+	// 제어 객체를 읽지 않고 지역 핸들의 포인터만 비운다.
+	packetHandle.DetachForQueue();
+
+	return true;
+}
+
 
 void ClientSession::HandleSocketError(int errorCode, IO_OPERATION ioOperation)
 {
