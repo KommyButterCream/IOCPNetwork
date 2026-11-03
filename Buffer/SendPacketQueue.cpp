@@ -167,7 +167,7 @@ bool SendPacketQueue::EnqueueHandle(Handle&& packetHandle)
 		if (m_count < m_maxCount)
 		{
 			// 등록이 확정된 뒤에만 소유권을 이동합니다.
-			node->packet = SendPacket(std::move(packetHandle));
+			node->packet.SetPacket(std::move(packetHandle));
 
 			if (m_tail)
 			{

@@ -75,6 +75,17 @@ public:
 			m_packetHandle);
 	}
 
+	// 기존 패킷을 반환하고 전달받은 핸들을 내부에 직접 생성합니다.
+	void SetPacket(PacketHandle&& packetHandle) noexcept
+	{
+		m_packetHandle.emplace<PacketHandle>(std::move(packetHandle));
+	}
+
+	void SetPacket(SharedPacketHandle&& packetHandle) noexcept
+	{
+		m_packetHandle.emplace<SharedPacketHandle>(std::move(packetHandle));
+	}
+
 	// 현재 패킷을 반환하고 빈 단독 소유 핸들로 초기화합니다.
 	void Reset() noexcept
 	{
