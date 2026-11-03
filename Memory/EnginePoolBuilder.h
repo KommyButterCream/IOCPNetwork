@@ -24,7 +24,7 @@
 #include "TlsMemoryPool.h"
 #include "EnginePoolConfig.h"
 
-#include "../Buffer/SendPacketEntry.h"
+#include "../Buffer/SendPacketQueue.h"
 #include "../Job/Job.h"
 
 #include "../../Core/Util/Logger.h"
@@ -199,7 +199,7 @@ namespace ENGINE_POOL
 		}
 
 		outPools.sendQueue = Detail::CreateReservePool(
-			config.sendQueue, static_cast<uint32_t>(sizeof(SendPacketEntry)), "sendQueue");
+			config.sendQueue, static_cast<uint32_t>(SendPacketQueue::GetNodeSize()), "sendQueue");
 		if (!outPools.sendQueue)
 		{
 			DestroyPools(outPools);

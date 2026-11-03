@@ -5,64 +5,158 @@
 #endif
 
 #include <Windows.h>
-#include <stdint.h>
-#include "PreDefine.h"
-#include "SendPacketEntry.h"
+#include <cstdint> // for uint32_t
+
+#include "PacketHandle.h"
+#include "SharedPacketHandle.h"
+
+#include <cstddef> // for std::byte, std::size_t
+#include <span>    // for std::span
+#include <utility> // for std::move
+#include <variant> // for std::variant, std::visit
 
 class TlsMemoryPool;
 
-// 엔진 내부 FIFO 송신 큐입니다. 엔트리는 패킷 소유권 또는 반환 콜백을 보관합니다.
+// 송신할 패킷의 소유권을 보관합니다.
+// 단독 소유 패킷과 공유 패킷 중 하나만 보유합니다.
+// 연결 리스트의 노드 정보는 포함하지 않습니다.
+class SendPacket final
+{
+public:
+	SendPacket() noexcept = default;
+	~SendPacket() = default;
+
+	SendPacket(const SendPacket&) = delete;
+	SendPacket& operator=(const SendPacket&) = delete;
+
+	SendPacket(SendPacket&&) noexcept = default;
+	SendPacket& operator=(SendPacket&&) noexcept = default;
+
+	explicit SendPacket(PacketHandle&& packetHandle) noexcept
+		: m_packetHandle(std::move(packetHandle))
+	{
+	}
+
+	explicit SendPacket(SharedPacketHandle&& packetHandle) noexcept
+		: m_packetHandle(std::move(packetHandle))
+	{
+	}
+
+	[[nodiscard]]
+	explicit operator bool() const noexcept
+	{
+		return std::visit(
+			[](const auto& handle) noexcept
+			{
+				return static_cast<bool>(handle);
+			},
+			m_packetHandle);
+	}
+
+	[[nodiscard]]
+	std::span<const std::byte> View() const noexcept
+	{
+		return std::visit(
+			[](const auto& handle) noexcept
+			{
+				return handle.View();
+			},
+			m_packetHandle);
+	}
+
+	[[nodiscard]]
+	std::size_t Size() const noexcept
+	{
+		return std::visit(
+			[](const auto& handle) noexcept
+			{
+				return handle.Size();
+			},
+			m_packetHandle);
+	}
+
+	// 현재 패킷을 반환하고 빈 단독 소유 핸들로 초기화합니다.
+	void Reset() noexcept
+	{
+		m_packetHandle.emplace<PacketHandle>();
+	}
+
+private:
+	std::variant<PacketHandle, SharedPacketHandle> m_packetHandle;
+};
+
+// 엔진 내부 FIFO 송신 큐입니다.
+// 노드는 SendPacket으로 단독 또는 공유 패킷을 소유합니다.
 // 여러 생산자가 동시에 등록할 수 있으며, ClientSession이 소비를 직렬화합니다.
+// Initialize/Finalize는 생산자와 소비자가 접근하지 않는 상태에서 호출합니다.
 class SendPacketQueue
 {
 public:
-	SendPacketQueue();
+	SendPacketQueue() noexcept = default;
 	~SendPacketQueue();
 
+	SendPacketQueue(const SendPacketQueue&) = delete;
+	SendPacketQueue& operator=(const SendPacketQueue&) = delete;
+
+	SendPacketQueue(SendPacketQueue&&) = delete;
+	SendPacketQueue& operator=(SendPacketQueue&&) = delete;
+
 	// maxCount 는 이 큐에 동시에 담을 수 있는 패킷 수의 상한이다.
-	// 2의 거듭제곱이 아니어도 된다.
-	// Packet ownership stays with each handle or shared release callback.
+	// 패킷 소유권은 각 노드의 SendPacket이 관리합니다.
+	[[nodiscard]]
 	bool Initialize(TlsMemoryPool* sendQueueMemoryPool, uint32_t maxCount);
 	void Finalize();
 
+	// 성공할 때만 소유권을 이동합니다. 실패하면 호출자의 핸들은 유지됩니다.
 	[[nodiscard]]
 	bool Enqueue(PacketHandle&& packetHandle);
-	bool EnqueueShared(const void* packetData, uint32_t packetSize, SendPacketReleaseFunc releaseFunc, void* releaseContext);
-	bool Dequeue(SendPacketEntry*& outEntry);
 
-	// Dequeue 로 꺼낸 엔트리를 패킷과 함께 반납한다.
-	//
-	// 예전에는 꺼낸 쪽이 "패킷 반납" 과 "서술자 반납" 을 각각 불러야 했고,
-	// 그 두 줄이 ClientSession 안에 네 군데(OnSendCompleted, PostCurrentSend,
-	// HandleSocketError, ResetSession/Finalize) 복제되어 있었다. 한쪽만 빠진
-	// 사본이 곧 누수였다. 큐가 준 것은 큐가 회수한다.
-	void ReleaseEntry(SendPacketEntry* entry);
+	// 값으로 받은 참조 하나를 등록합니다. 실패하면 그 참조는 반환됩니다.
+	[[nodiscard]]
+	bool EnqueueShared(SharedPacketHandle packetHandle);
+
+	// 대기 패킷의 소유권을 반환합니다. 큐가 비어 있으면 빈 값을 반환합니다.
+	// 패킷을 보관하던 노드는 함수 안에서 풀로 반환합니다.
+	[[nodiscard]]
+	SendPacket Dequeue();
 
 	void Reset();
 
 	// 락을 획득해서 확인한다. 락을 보유하지 않은 외부 경로에서 사용한다.
+	[[nodiscard]]
 	bool IsEmpty() const;
 
-	// 지금 담겨 있는 개수 / 설정된 상한. 진단과 부품 벤치용이다.
+	// 대기 중인 패킷 수 / 대기 큐의 상한입니다. 이미 꺼낸 송신 중 패킷은 제외합니다.
+	[[nodiscard]]
 	uint32_t GetCount() const;
-	uint32_t GetMaxCount() const
-	{ 
-		return m_maxCount;
-	}
+
+	[[nodiscard]]
+	uint32_t GetMaxCount() const noexcept { return m_maxCount; }
+
+	// 엔진 초기화 시 송신 큐 풀의 블록 크기를 결정하는 데 사용합니다.
+	[[nodiscard]]
+	static std::size_t GetNodeSize() noexcept;
 
 private:
-	// 성공하면 엔트리 소유권이 큐로 넘어간다. 상한에 걸리면 false 다.
-	bool PushBack(SendPacketEntry* entry);
+	struct Node;
 
-private:
+	template<typename Handle>
+	[[nodiscard]]
+	bool EnqueueHandle(Handle&& packetHandle);
+
+	[[nodiscard]]
+	Node* CreateNode();
+
+	// 큐 내부 노드를 소멸시키고 풀에 반환합니다.
+	void ReleaseNode(Node* entry);
+
 	mutable SRWLOCK m_srwLock = SRWLOCK_INIT;
 
-	SendPacketEntry* m_head = nullptr;
-	SendPacketEntry* m_tail = nullptr;
-	uint32_t m_count = 0;
-
-	// 예전에는 컴파일 타임 상수였다. 역할마다 적정 깊이가 달라 런타임으로 옮겼다.
-	uint32_t m_maxCount = 0;
-
 	TlsMemoryPool* m_sendQueueMemoryPool = nullptr;
+
+	Node* m_head = nullptr;
+	Node* m_tail = nullptr;
+
+	uint32_t m_count = 0;
+	uint32_t m_maxCount = 0;
 };

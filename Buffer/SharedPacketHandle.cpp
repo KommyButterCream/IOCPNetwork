@@ -93,8 +93,3 @@ void SharedPacketHandle::Release(Control* control) noexcept
     std::destroy_at(control);
     pool->Release(control);
 }
-
-void SharedPacketHandle::ReleaseCallback(const void*, void* context) noexcept
-{
-    Release(static_cast<Control*>(context));
-}

@@ -21,7 +21,6 @@
 #include "../Memory/EnginePoolBuilder.h"
 
 #include "../Buffer/RecvPacketBuffer.h"
-#include "../Buffer/SendPacketEntry.h"
 #include "../Buffer/PreDefine.h"
 #include "../Protocol/PacketID.h"
 #include "../Protocol/SystemPacket.h"

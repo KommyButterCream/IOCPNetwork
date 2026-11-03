@@ -23,7 +23,7 @@
 //   데이터라 크기 분포를 아는 쪽이 서비스뿐이다.
 //
 //   잡 풀과 송신 큐 엔트리 풀은 개수와 상한만 연다. 그쪽 블록 크기는
-//   sizeof(Job) / sizeof(SendPacketEntry) 로 엔진이 정하는 값이고,
+//   Job 크기 / 송신 큐가 제공하는 내부 노드 크기로 엔진이 정하는 값이고,
 //   서비스가 고를 수 있는 것처럼 보이게 두면 틀린 값을 넣을 자리만 생긴다.
 //   (Job 은 alignas(64) 라 정렬 요구까지 따라붙는다)
 
@@ -120,7 +120,7 @@ struct EnginePoolConfig
 	// Job 객체. 블록 크기는 엔진이 sizeof(Job) 으로 정한다.
 	PoolReserveConfig job;
 
-	// SendPacketEntry. 블록 크기는 엔진이 sizeof(SendPacketEntry) 로 정한다.
+	// 송신 큐 노드용 풀. 블록 크기는 송신 큐가 제공하는 내부 노드 크기로 정합니다.
 	PoolReserveConfig sendQueue;
 
 	bool IsValid() const

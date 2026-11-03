@@ -141,11 +141,7 @@ void ClientSession::ResetSession()
 	// 전송 중이던 엔트리를 반환한다.
 	// 포인터만 버리면 패킷 메모리와 엔트리가 함께 누수된다.
 	// (RST 등으로 전송 도중에 세션이 정리되는 경로에서 실제로 발생한다)
-	if (m_currentSendPacket && m_sendPacketQueue)
-	{
-		m_sendPacketQueue->ReleaseEntry(m_currentSendPacket);
-	}
-	m_currentSendPacket = nullptr;
+	m_currentSendPacket.Reset();
 	m_sendOffset = 0;
 
 	if (m_jobQueue)
@@ -189,11 +185,7 @@ void ClientSession::Finalize()
 	// 전송 중이던 엔트리를 반환한다. (ResetSession 과 같은 이유)
 	// 반드시 ReleaseMemoryResources 보다 먼저 해야 한다. 그쪽이 송신 큐를
 	// 지우고, 엔트리를 되돌릴 수 있는 것은 그 큐뿐이다.
-	if (m_currentSendPacket && m_sendPacketQueue)
-	{
-		m_sendPacketQueue->ReleaseEntry(m_currentSendPacket);
-	}
-	m_currentSendPacket = nullptr;
+	m_currentSendPacket.Reset();
 	m_sendOffset = 0;
 
 	// 송신 큐 / 잡 큐 / 수신 링.
@@ -784,7 +776,9 @@ bool ClientSession::TrySendNext()
 
 		if (!m_currentSendPacket)
 		{
-			if (!GetSendPacketQueue()->Dequeue(m_currentSendPacket))
+			m_currentSendPacket = GetSendPacketQueue()->Dequeue();
+
+			if (!m_currentSendPacket)
 			{
 				// 보낼 패킷이 없는 경우
 				// Idle 상태로 플래그를 다시 변경 해준다.
@@ -818,21 +812,27 @@ bool ClientSession::TrySendNext()
 bool ClientSession::PostCurrentSend()
 {
 	if (!m_currentSendPacket)
+	{
 		return false;
+	}
 
-	const DWORD remainingBytes = m_currentSendPacket->packetSize - m_sendOffset;
+	const DWORD packetSize = static_cast<DWORD>(m_currentSendPacket.Size());
+
+	const DWORD remainingBytes = packetSize - m_sendOffset;
 
 	if (remainingBytes == 0)
 	{
-		// 패킷 + 엔트리 반환
-		m_sendPacketQueue->ReleaseEntry(m_currentSendPacket);
-		m_currentSendPacket = nullptr;
+		m_currentSendPacket.Reset();
+		m_sendOffset = 0;
+
 		::InterlockedExchange(&m_sending, 0);
 
 		return false;
 	}
 
-	m_sendOverlapped.ResetForNextIO(GetSessionID(),	const_cast<char*>(m_currentSendPacket->packetData + m_sendOffset), remainingBytes);
+	const auto bytes = m_currentSendPacket.View();
+
+	m_sendOverlapped.ResetForNextIO(GetSessionID(), const_cast<char*>(reinterpret_cast<const char*>(bytes.data() + m_sendOffset)), remainingBytes);
 
 	DWORD flags = 0;
 	DWORD bytesSent = 0;
@@ -851,9 +851,9 @@ bool ClientSession::PostCurrentSend()
 	{
 		LOGI("session %u declining to post send : IO cancel is in progress", sessionIdForLog);
 
-		m_sendPacketQueue->ReleaseEntry(m_currentSendPacket);
-		m_currentSendPacket = nullptr;
+		m_currentSendPacket.Reset();
 		m_sendOffset = 0;
+
 		::InterlockedExchange(&m_sending, 0);
 
 		return false;
@@ -903,30 +903,26 @@ bool ClientSession::OnSendCompleted(const DWORD bytesTransferred)
 	// 송신 완료 1건당 호출되는 핫패스. 릴리스에서는 컴파일 제거된다.
 	LOGT("session %u send completed %lu bytes", GetSessionID(), bytesTransferred);
 
-	// 부분 전송 처리
-	m_sendOffset += bytesTransferred;
-
-	SendPacketEntry* currentPacket = m_currentSendPacket;
-	if (!currentPacket)
+	if (!m_currentSendPacket)
 	{
-		// 다른 경로(HandleSocketError 등)가 이미 패킷과 토큰을 정리한 상태다.
-		// 여기서 m_sending 을 건드리면 그 사이 토큰을 획득한 다른 스레드의
-		// 소유권을 뺏게 되므로 손대지 않는다.
+		// 다른 정리 경로에서 현재 패킷을 이미 반환한 상태입니다.
+		// 다른 송신 담당자가 보유할 수 있는 토큰은 변경하지 않습니다.
 		return false;
 	}
 
-	// 아직 덜 보낸 데이터가 남았다면 이어서 송신
-	if (m_sendOffset < currentPacket->packetSize)
+	// 부분 전송 처리
+	m_sendOffset += bytesTransferred;
+
+	// 아직 남은 데이터가 있으면 같은 패킷을 유지하면서 이어 보냅니다.
+	if (m_sendOffset < m_currentSendPacket.Size())
 	{
 		return PostCurrentSend();
 	}
 
-	// 완전 전송 완료
-	// 패킷 + 엔트리 반환
-	m_sendPacketQueue->ReleaseEntry(currentPacket);
-	m_currentSendPacket = nullptr;
-
+	// 전체 송신이 끝났으므로 패킷 소유권을 반환합니다.
+	m_currentSendPacket.Reset();
 	m_sendOffset = 0;
+
 	::InterlockedExchange(&m_sending, 0);
 
 	// 다음 패킷 있으면 이어서 송신
@@ -1087,12 +1083,27 @@ bool ClientSession::EnqueueSendPacket(PacketHandle&& packetHandle)
 	return true;
 }
 
-bool ClientSession::EnqueueSharedSendPacket(const void* packetData, uint32_t packetSize, SendPacketReleaseFunc releaseFunc, void* releaseContext)
+bool ClientSession::EnqueueSharedSendPacket(SharedPacketHandle packetHandle)
 {
-	if (!packetData || packetSize == 0 || !releaseFunc || GetSendPacketQueue() == nullptr)
+	if (!packetHandle || GetSendPacketQueue() == nullptr)
+	{
 		return false;
+	}
 
-	const PACKET_HEADER* packetHeader = reinterpret_cast<const PACKET_HEADER*>(packetData);
+	const auto bytes = packetHandle.View();
+
+	if (bytes.size() < sizeof(PACKET_HEADER) || bytes.size() > PACKET_SIZE_LIMIT)
+	{
+		LOGE("session %u invalid shared packet size",
+			GetSessionID());
+
+		return false;
+	}
+
+	const uint32_t packetSize = static_cast<uint32_t>(bytes.size());
+
+	const auto* packetHeader = reinterpret_cast<const PACKET_HEADER*>(bytes.data());
+
 	if (packetHeader == nullptr || packetSize < sizeof(PACKET_HEADER))
 	{
 		LOGE("session %u invalid packet header", GetSessionID());
@@ -1127,7 +1138,7 @@ bool ClientSession::EnqueueSharedSendPacket(const void* packetData, uint32_t pac
 		return false;
 	}
 
-	if (!GetSendPacketQueue()->EnqueueShared(packetData, packetSize, releaseFunc, releaseContext))
+	if (!GetSendPacketQueue()->EnqueueShared(std::move(packetHandle)))
 	{
 		uint32_t suppressed = 0;
 		if (ShouldLogSendReject(SendRejectReason::SendQueueFull, suppressed))
@@ -1142,34 +1153,6 @@ bool ClientSession::EnqueueSharedSendPacket(const void* packetData, uint32_t pac
 
 	return true;
 }
-
-bool ClientSession::EnqueueSharedSendPacket(SharedPacketHandle packetHandle)
-{
-	if (!packetHandle || packetHandle.Size() == 0 || packetHandle.Size() > PACKET_SIZE_LIMIT)
-	{
-		return false;
-	}
-
-	const auto bytes = packetHandle.View();
-
-	const bool queued = EnqueueSharedSendPacket(
-		bytes.data(),
-		static_cast<uint32_t>(bytes.size()),
-		SharedPacketHandle::ReleaseCallback,
-		packetHandle.m_control);
-
-	if (!queued)
-	{
-		return false;
-	}
-
-	// 성공하면 큐의 콜백이 이 참조를 반환한다.
-	// 제어 객체를 읽지 않고 지역 핸들의 포인터만 비운다.
-	packetHandle.DetachForQueue();
-
-	return true;
-}
-
 
 void ClientSession::HandleSocketError(int errorCode, IO_OPERATION ioOperation)
 {
@@ -1200,13 +1183,9 @@ void ClientSession::HandleSocketError(int errorCode, IO_OPERATION ioOperation)
 		// SEND 인 경우
 		// 현재 처리되어야 하는 엔트리를 큐에 반환하고
 		// nullptr 초기화 한다.
-		if (m_currentSendPacket && m_sendPacketQueue)
-		{
-			m_sendPacketQueue->ReleaseEntry(m_currentSendPacket);
-		}
-		m_currentSendPacket = nullptr;
-
+		m_currentSendPacket.Reset();
 		m_sendOffset = 0;
+
 		::InterlockedExchange(&m_sending, 0);
 	}
 	switch (errorCode)

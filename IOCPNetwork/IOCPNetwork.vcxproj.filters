@@ -119,9 +119,6 @@
     <ClInclude Include="..\Buffer\RecvPacketBuffer.h">
       <Filter>Buffer</Filter>
     </ClInclude>
-    <ClInclude Include="..\Buffer\SendPacketEntry.h">
-      <Filter>Buffer</Filter>
-    </ClInclude>
     <ClInclude Include="..\Buffer\SendPacketQueue.h">
       <Filter>Buffer</Filter>
     </ClInclude>

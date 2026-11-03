@@ -9,14 +9,13 @@
 
 #include "../Network/OverlappedEx.h"
 #include "../Protocol/PacketID.h"
-#include "../Buffer/SendPacketEntry.h"
+#include "../Buffer/SendPacketQueue.h"
 #include "../Buffer/SessionBufferConfig.h"
 #include "../Job/JobHandle.h"
 class Job;
 
 class SessionJobQueue;
 class RecvPacketBuffer;
-class SendPacketQueue;
 class TlsMemoryPool;
 class ISessionEvent;
 class PacketHandle;
@@ -50,15 +49,15 @@ private:
 	OverlappedEx m_sendOverlapped{};
 	SendPacketQueue* m_sendPacketQueue = nullptr;
 
-	// 큐에서 꺼내 전송 중인 엔트리. 큐 밖에 있는 유일한 엔트리이고,
-	// 다 쓰면 m_sendPacketQueue->ReleaseEntry 로 되돌린다.
-	//
-	// 예전에는 전용 서술자 풀 포인터(m_sendPacketPool)를 따로 들고 있었다.
-	// 패킷 반납과 서술자 반납을 세션이 각각 불러야 했기 때문이다. 반납을
-	// 큐 한 곳으로 모으면서 그 멤버가 필요 없어졌다.
-	SendPacketEntry* m_currentSendPacket = nullptr;
-	Job* m_currentJob = nullptr;
+	// 송신 중인 패킷을 소유합니다.
+	// 부분 송신이면 유지하고, 최종 완료 또는 안전한 종료 정리 시 반환합니다.
+	SendPacket m_currentSendPacket;
 	uint32_t m_sendOffset = 0;
+
+	Job* m_currentJob = nullptr;
+
+
+
 	SessionJobQueue* m_jobQueue = nullptr;
 
 	volatile LONG m_sending = 0; // sending flag: 0 = not sending, 1 = sending (Interlocked)
@@ -214,8 +213,6 @@ public:
 	// Consumes this reference on both success and failure.
 	[[nodiscard]]
 	bool EnqueueSharedSendPacket(SharedPacketHandle packetHandle) override;
-
-	bool EnqueueSharedSendPacket(const void* packetData, uint32_t packetSize, SendPacketReleaseFunc releaseFunc, void* releaseContext);
 
 	void HandleSocketError(int errorCode, IO_OPERATION ioOperation);
 

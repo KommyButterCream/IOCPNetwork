@@ -3,8 +3,6 @@
 
 #include <utility> // for std::exchange
 
-class ClientSession;
-
 // 복사본은 변경하지 않는 패킷 버퍼를 공유하며, 각 핸들은 참조 하나를 소유합니다.
 // 서비스가 보관한 복사본은 해당 엔진을 종료하기 전에 반환합니다.
 class SharedPacketHandle final
@@ -38,8 +36,5 @@ private:
 
     static void AddRef(Control* control) noexcept;
     static void Release(Control* control) noexcept;
-    static void ReleaseCallback(const void*, void*) noexcept;
-    void DetachForQueue() noexcept { m_control = nullptr; }
-    friend class ClientSession;
     Control* m_control = nullptr;
 };
