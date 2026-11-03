@@ -17,14 +17,14 @@ public:
     Job& operator=(Job&&) = delete;
 
     // Configure once before enqueueing. Failure preserves the supplied packet.
-    [[nodiscard]] IOCP_ENGINE_API bool SetPacketJob(PacketHandlerFunc handler, ISession* session,
+    [[nodiscard]] bool SetPacketJob(PacketHandlerFunc handler, ISession* session,
         uint16_t packetId, PacketHandle&& packet, const HandlerContext& context);
 
     // Preserve legacy non-packet ownership: existing scheduler/queue paths
     // return the buffer. These setters do not adopt a PacketHandle.
-    [[nodiscard]] IOCP_ENGINE_API bool SetDBJob(DBHandlerFunc handler, IDBConnection* connection,
+    [[nodiscard]] bool SetDBJob(DBHandlerFunc handler, IDBConnection* connection,
         const char* data, uint32_t size, const HandlerContext& context);
-    [[nodiscard]] IOCP_ENGINE_API bool SetSystemJob(SystemHandlerFunc handler, IOCPCore* core,
+    [[nodiscard]] bool SetSystemJob(SystemHandlerFunc handler, IOCPCore* core,
         const void* data, uint32_t size, const HandlerContext& context);
 
     [[nodiscard]] JobType GetType() const noexcept { return m_type; }
@@ -34,8 +34,8 @@ public:
         return m_type == JobType::DB || m_type == JobType::SYSTEM ? m_data : nullptr;
     }
 
-    [[nodiscard]] IOCP_ENGINE_API PacketHandle TakePacket() noexcept;
-    IOCP_ENGINE_API void Execute();
+    [[nodiscard]] PacketHandle TakePacket() noexcept;
+    void Execute();
 
 private:
     friend class SessionJobQueue;

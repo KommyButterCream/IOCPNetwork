@@ -22,15 +22,10 @@ class ISessionEvent;
 class PacketHandle;
 class SharedPacketHandle;
 
-#ifdef BUILD_IOCP_ENGINE_DLL
-#define IOCP_ENGINE_API __declspec(dllexport)
-#else
-#define IOCP_ENGINE_API __declspec(dllimport)
-#endif
 
 #define INET_ADDRSTRLEN  22
 
-class IOCP_ENGINE_API ClientSession final : public BaseSession
+class ClientSession final : public BaseSession
 {
 public:
 	ClientSession();
@@ -120,7 +115,7 @@ public:
 	// 두 단계다. IsTransportConnected 는 소켓이 붙었는가,
 	// IsEstablished 는 인증까지 끝났는가. (설명은 .cpp 주석)
 	bool IsTransportConnected() const;
-	bool IsEstablished() const;
+	bool IsEstablished() const override;
 
 	// --- 서비스 접속/종료 통지의 짝 맞추기 ---
 	//
@@ -214,11 +209,11 @@ public:
 	// 성공하면 packet은 비워지고 송신 큐가 소유한다.
 	// 실패하면 packet은 소유권을 유지한다.
 	[[nodiscard]]
-	bool EnqueueSendPacket(PacketHandle&& packetHandle);
+	bool EnqueueSendPacket(PacketHandle&& packetHandle) override;
 
 	// Consumes this reference on both success and failure.
 	[[nodiscard]]
-	bool EnqueueSharedSendPacket(SharedPacketHandle packetHandle);
+	bool EnqueueSharedSendPacket(SharedPacketHandle packetHandle) override;
 
 	bool EnqueueSharedSendPacket(const void* packetData, uint32_t packetSize, SendPacketReleaseFunc releaseFunc, void* releaseContext);
 
@@ -227,13 +222,13 @@ public:
 	void UpdateProcessingFlag(LONG value);
 	bool IsProcessingReady();
 
-	void SetSessionContext(SessionContext* sessionContext);
-	SessionContext* GetSessionContext() const;
+	void SetSessionContext(SessionContext* sessionContext) override;
+	SessionContext* GetSessionContext() const override;
 
 	void SetCurrentJob(Job* job);
 	// Called only by the currently executing client packet handler.
 	[[nodiscard]]
-	PacketHandle TakeCurrentPacket();
+	PacketHandle TakeCurrentPacket() override;
 
 	void SetRemoteAddress(const char* ipAddress, uint16_t port);
 

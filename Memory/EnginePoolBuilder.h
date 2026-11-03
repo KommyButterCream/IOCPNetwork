@@ -52,9 +52,8 @@ namespace ENGINE_POOL
 	// 재고만 OS 로 돌려주고 풀 객체는 남긴다.
 	//
 	// 왜 지우지 않는가
-	//   엔진은 풀 포인터를 밖으로 내보낸다. HandlerContext 에 실려 서비스
-	//   핸들러로 가고, GetPacketMemoryPool() 로도 나가고, SharedPacketHandle 은
-	//   아예 그 포인터를 들고 다니며 마지막 참조가 반납을 수행한다.
+	// PacketHandle과 SharedPacketHandle은 풀 포인터를 비공개 멤버로 보관합니다.
+	// 생성 함수 호출이 끝나도 마지막 소유 핸들이 해제될 때 메모리를 반환합니다.
 	//
 	//   그 상태에서 Stop 이 풀을 delete 하면, 늦게 도착한 반납 하나가
 	//   해제된 객체를 역참조한다. 게다가 소멸자의 Finalize 가 세그먼트를

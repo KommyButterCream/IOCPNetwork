@@ -33,6 +33,9 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\Buffer\PacketHandle.cpp"><Filter>Buffer</Filter></ClCompile>
+    <ClCompile Include="..\Buffer\SharedPacketHandle.cpp"><Filter>Buffer</Filter></ClCompile>
+    <ClCompile Include="..\Job\HandlerContext.cpp"><Filter>Job</Filter></ClCompile>
     <ClCompile Include="..\Job\Job.cpp">
       <Filter>Job</Filter>
     </ClCompile>
@@ -244,6 +247,9 @@
     </ClInclude>
     <ClInclude Include="..\Memory\EnginePoolConfig.h" />
     <ClInclude Include="..\Memory\EnginePoolBuilder.h" />
+    <ClInclude Include="..\EngineApi.h" />
+    <ClInclude Include="..\IOCPNetwork.h" />
+    <ClInclude Include="..\Job\HandlerContext.h"><Filter>Job</Filter></ClInclude>
     <ClInclude Include="..\Buffer\PacketHandle.h">
       <Filter>Buffer</Filter>
     </ClInclude>

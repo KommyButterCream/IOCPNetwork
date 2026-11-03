@@ -1,7 +1,6 @@
 ﻿#include "SendPacketQueue.h"
 
 #include "../Diagnostics/EngineAssert.h"
-
 #include "../Memory/EngineMemoryPoolHelper.h"
 
 #include <utility> // for std::move

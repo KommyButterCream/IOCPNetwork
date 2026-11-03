@@ -10,13 +10,6 @@
 #include "GlobalBlockPool.h"
 #include "SizeBin.h"
 
-#ifndef IOCP_ENGINE_API
-#ifdef BUILD_IOCP_ENGINE_DLL
-#define IOCP_ENGINE_API __declspec(dllexport)
-#else
-#define IOCP_ENGINE_API __declspec(dllimport)
-#endif
-#endif
 
 // 스레드 하나가 빈별로 들고 있는 프리 리스트와, 그 캐시들의 수명 관리.
 //
@@ -112,7 +105,7 @@ namespace MemoryPoolDetail
 	// 조회는 두 단계다.
 	//   어느 배열인가   실행 중인 스레드가 암묵적으로 결정 (thread_local)
 	//   배열의 몇 번째  어느 풀인가로 명시적으로 결정 (m_slotIndex)
-	class IOCP_ENGINE_API ThreadCacheRegistry
+	class ThreadCacheRegistry
 	{
 	public:
 		// thread_local 배열로 빠르게 찾을 수 있는 풀 개수.

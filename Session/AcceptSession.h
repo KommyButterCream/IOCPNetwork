@@ -7,6 +7,14 @@
 
 class AcceptSession final : public BaseSession
 {
+private:
+    // 연결 수락 슬롯은 서비스에 노출하지 않습니다.
+    bool IsEstablished() const override { return false; }
+    bool EnqueueSendPacket(PacketHandle&&) override { return false; }
+    bool EnqueueSharedSendPacket(SharedPacketHandle) override { return false; }
+    SessionContext* GetSessionContext() const override { return nullptr; }
+    void SetSessionContext(SessionContext* context) override { delete context; }
+    PacketHandle TakeCurrentPacket() override { return {}; }
 public:
 	AcceptSession();
 	~AcceptSession() override;

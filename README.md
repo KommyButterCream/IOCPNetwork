@@ -16,7 +16,7 @@ Windows의 IOCP(I/O Completion Port)를 기반으로 구현한 C++ TCP 서버·�
 
 ## 목표 개발 및 빌드 환경
 
-다음 환경을 기준으로 빌드 환경을 준비하고 있습니다.
+다음 환경을 기준으로 개발합니다.
 
 - Windows 10/11 x64
 - C++20
@@ -29,8 +29,9 @@ Core와 이 라이브러리를 사용하는 프로젝트는 동일한 도구 집
 특히 전체 프로그램 최적화를 사용하는 Release 구성에서는 컴파일러 버전이 다르면 링크 오류가 발생할 수 있습니다.
 환경 전환 시 IOCPNetwork, Core 및 소비자 프로젝트의 플랫폼 도구 집합을 함께 맞추고 다시 빌드합니다.
 
-현재 저장소의 프로젝트 설정은 이전 빌드 검증에 사용한 v143 기준입니다.
-위 목표 환경으로의 프로젝트 설정 전환과 빌드 검증은 아직 완료하지 않았습니다.
+현재 IOCPNetwork와 Core는 v145 도구 집합과 C++20을 사용합니다.
+Visual Studio 2026에서 엔진, Echo 예제, Streaming 서버·클라이언트 서비스의 x64 Debug·Release 빌드를 확인했습니다.
+CUDA를 사용하는 영상 코덱과 전체 스트리밍 GUI의 검증 범위는 아래에 별도로 적었습니다.
 
 ## 저장소 배치
 
@@ -90,14 +91,74 @@ IOCPNetwork 자체에는 CUDA가 필요하지 않습니다.
 | `Diagnostics/` | 엔진 불변식 검사 및 진단 카운터 |
 | `docs/` | 프로젝트 설명 및 구조 검토 문서 |
 
+## 서비스에서 사용하는 API
+
+공개 진입 헤더는 `IOCPNetwork.h`입니다. 필요한 경우 `Core/IOCPServer.h`,
+`Core/IOCPClient.h` 등 개별 공개 헤더를 포함해도 됩니다.
+
+- 서버·클라이언트 구현: `IOCPServer`, `IOCPClient` 상속 및 콜백 재정의
+- 연결 사용: 콜백의 `ISession*`, 클라이언트의 `GetSession()`
+- 핸들러 등록: `RegisterPacketHandler(packetId, handler)`
+- 패킷 생성: 엔진 객체 또는 `HandlerContext`의 `CreatePacket(size)`
+- 공유 송신용 변환: `CreateSharedPacket(std::move(packet))`
+- 송신: `ISession::EnqueueSendPacket()`, `EnqueueSharedSendPacket()`
+
+서비스는 `ClientSession`, `Job`, `JobHandle`, 큐, `TlsMemoryPool`, `PacketHandlerTable`을 직접 사용하지 않습니다.
+기존의 풀·큐·핸들러 테이블 getter는 제거했습니다. 이 변경을 적용할 때는 엔진과 소비자 프로젝트를 함께 다시 빌드합니다.
+
+아래는 핸들러 안에서 응답 패킷을 만드는 형태입니다. `ResponsePacket`은 서비스가 정의한 패킷 타입이며
+생성자에서 패킷 ID와 전체 길이를 설정한다고 가정합니다.
+
+```cpp
+#include "IOCPNetwork.h"
+#include <memory>  // for std::construct_at
+#include <utility> // for std::move
+
+bool SendResponse(ISession& session, const HandlerContext& context)
+{
+    auto packet = context.CreatePacket(sizeof(ResponsePacket));
+    if (!packet)
+        return false;
+
+    auto* response = std::construct_at(
+        reinterpret_cast<ResponsePacket*>(packet.MutableView().data()));
+    // response의 서비스 데이터를 채웁니다.
+
+    return session.EnqueueSendPacket(std::move(packet));
+}
+```
+
+`CreatePacket()`은 풀에서 지정한 크기의 버퍼를 확보합니다. 패킷 ID·길이 설정이나 직렬화까지 수행하지 않습니다.
+0바이트, 프로토콜 상한 초과, 시작 전 또는 풀 할당 실패 시에는 빈 핸들을 반환합니다.
+패킷 타입은 별도의 소멸 처리가 필요 없는 전송용 데이터로 구성합니다. 핸들은 버퍼를 반환하며 사용자 타입의 소멸자를 호출하지 않습니다.
+
+### 소유권과 수명
+
+| 호출 | 소유권 규약 |
+|---|---|
+| `EnqueueSendPacket(std::move(packet))` | 성공하면 송신 큐로 이전, 실패하면 호출자의 핸들에 유지 |
+| `CreateSharedPacket(std::move(packet))` | 성공·실패 모두 원래 핸들을 소비; 실패하면 자동 반환 |
+| `EnqueueSharedSendPacket(shared)` | 값으로 복사된 참조 한 개를 소비; 원래 `shared`는 유지 |
+| `SubmitPacketJob(session, id, std::move(packet))` | 성공하면 Job으로 이전, 실패하면 자동 반환 |
+| `TakeCurrentPacket()` | 현재 실행 중인 클라이언트 패킷 핸들러에서만 소유권 회수 |
+
+공유 핸들 복사는 패킷 바이트를 복사하지 않습니다. 공유 전환 후 기존 포인터나 `MutableView()`로 얻은 주소로 내용을 변경하지 않습니다.
+`ISession*`과 `HandlerContext`는 빌린 참조입니다. 세션 포인터를 보관한다고 연결 수명이 연장되지 않으며,
+`IsEstablished()` 확인만으로 이후 호출까지 수명이 고정되지도 않습니다. 서비스는 세션을 `delete`하지 않습니다.
+서비스에 따로 보관한 패킷 핸들은 `StopServer()` / `StopClient()` 전에 정리하고,
+엔진 종료와 패킷 생성·송신을 동시에 진행하지 않습니다. 엔진 파괴·재시작을 넘어 핸들이나 컨텍스트를 보관하지 않습니다.
+
 ## 빌드 확인 범위
 
-프로젝트 이름 변경 후 기존 환경에서 다음 솔루션의 x64 Debug·Release 컴파일과 링크를 확인했습니다.
-당시 도구 집합은 v143이며, 스트리밍 전체 솔루션은 Visual Studio 2022와 CUDA 12.8 빌드 통합을 사용했습니다.
+2026-11-03 기준, Visual Studio 2026 / v145 / C++20 / x64에서 다음 항목을 확인했습니다.
 
-- IOCPNetwork
-- IOCPEchoMessageApp
-- DesktopStreamingApp
+- IOCPNetwork 및 IOCPEchoMessageApp 솔루션: Debug·Release 빌드
+- StreamingServer·StreamingClient 서비스 프로젝트: Debug·Release 빌드
+- 공개 헤더와 import 라이브러리만 사용하는 소비자: `/W4` 빌드, 경고 0
+- 실제 DLL을 사용하는 TCP 에코 및 공유 송신: 정상 송신, 연결 종료, 미완료 송신 중 서버 종료
+- 내부 객체 파일을 연결한 회귀 테스트: Job 큐/반환, 실패 경로, 공유 참조, DB/System의 기존 정리 경로
+- 검증한 종료 시나리오: 미완료 I/O 0, 사용 중 세션 0, 풀 할당·반환 균형
 
-Visual Studio 2026·CUDA Toolkit 13.4.3 목표 환경의 빌드는 아직 검증하지 않았습니다.
-실제 통신 및 부하 테스트는 위 빌드 확인 범위에 포함되지 않습니다.
+CUDA Toolkit 13.4.3의 영상 인코딩·디코딩과 전체 스트리밍 GUI는 이번 검증에 포함하지 않았습니다.
+공개 API 및 export 변경 전후, 세부 검증 결과와 남은 설계 과제는
+[공개 API 정리 작업 보고서](docs/public-api-refactor.html)에 정리했습니다.

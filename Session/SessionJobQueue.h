@@ -10,18 +10,13 @@
 #include "SessionDefs.h"
 #include "../Job/JobHandle.h"
 
-#ifdef BUILD_IOCP_ENGINE_DLL
-#define IOCP_ENGINE_API __declspec(dllexport)
-#else
-#define IOCP_ENGINE_API __declspec(dllimport)
-#endif
 
 class Job;
 class TlsMemoryPool;
 enum class SESSION_ROLE;
 
 // 세션별 JobQueue (singly-linked list) - SRWLock 으로 보호
-class IOCP_ENGINE_API SessionJobQueue
+class SessionJobQueue
 {
 public:
 	SessionJobQueue(SESSION_ROLE sessionRole, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool);

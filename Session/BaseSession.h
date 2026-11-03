@@ -1,19 +1,15 @@
 ﻿#pragma once
 
 #include <stdint.h>
+#include <WinSock2.h>
 
 #include "ISession.h"
 #include "SessionDefs.h"
 #include "DisconnectReason.h"
 
-#ifdef BUILD_IOCP_ENGINE_DLL
-#define IOCP_ENGINE_API __declspec(dllexport)
-#else
-#define IOCP_ENGINE_API __declspec(dllimport)
-#endif
 
 // 세션의 공통 상태와 I/O 수명 관리.
-class IOCP_ENGINE_API BaseSession : public ISession
+class BaseSession : public ISession
 {
 public:
 	BaseSession();
@@ -148,7 +144,7 @@ public:
 	SESSION_ROLE GetSessionRole() const { return m_sessionRole; }
 	void SetSessionID(uint32_t sessionId) { m_sessionId = sessionId; }
 
-	// ISession 의 유일한 순수 가상. 서비스가 ISession* 로 부른다.
+	// 서비스에 제공하는 세션 식별자의 공통 구현입니다.
 	uint32_t GetSessionID() const override { return m_sessionId; }
 
 	// --- 종료 사유 ---

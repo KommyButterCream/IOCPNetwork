@@ -2,8 +2,6 @@
 
 #include <stdint.h>
 
-#include "PreDefine.h"
-
 #include "../Protocol/PacketHeader.h"
 
 class TlsMemoryPool;

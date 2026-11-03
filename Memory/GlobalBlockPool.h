@@ -9,13 +9,6 @@
 #include "BlockLayout.h"
 #include "SizeBin.h"
 
-#ifndef IOCP_ENGINE_API
-#ifdef BUILD_IOCP_ENGINE_DLL
-#define IOCP_ENGINE_API __declspec(dllexport)
-#else
-#define IOCP_ENGINE_API __declspec(dllimport)
-#endif
-#endif
 
 // 블록의 실체를 소유하는 계층.
 //
@@ -34,7 +27,7 @@
 
 namespace MemoryPoolDetail
 {
-	class IOCP_ENGINE_API GlobalBlockPool
+	class GlobalBlockPool
 	{
 	public:
 		// head 가 nullptr 이면 실패

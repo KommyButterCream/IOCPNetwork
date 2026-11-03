@@ -19,6 +19,9 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\Buffer\PacketHandle.cpp" />
+    <ClCompile Include="..\Buffer\SharedPacketHandle.cpp" />
+    <ClCompile Include="..\Job\HandlerContext.cpp" />
     <ClCompile Include="..\Job\Job.cpp" />
     <ClCompile Include="..\Job\JobHandle.cpp" />
     <ClCompile Include="..\Buffer\RecvPacketBuffer.cpp" />
@@ -46,6 +49,9 @@
     <ClCompile Include="..\Session\SessionManager.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\EngineApi.h" />
+    <ClInclude Include="..\IOCPNetwork.h" />
+    <ClInclude Include="..\Job\HandlerContext.h" />
     <ClInclude Include="..\Buffer\PacketHandle.h" />
     <ClInclude Include="..\Buffer\PreDefine.h" />
     <ClInclude Include="..\Buffer\RecvPacketBuffer.h" />

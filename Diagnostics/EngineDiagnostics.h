@@ -2,11 +2,7 @@
 
 #include <stdint.h>
 
-#ifdef BUILD_IOCP_ENGINE_DLL
-#define IOCP_ENGINE_API __declspec(dllexport)
-#else
-#define IOCP_ENGINE_API __declspec(dllimport)
-#endif
+#include "../EngineApi.h"
 
 // ---------------------------------------------------------------------------
 // 엔진 자기 진단 계수기
@@ -25,12 +21,12 @@ namespace Engine
 	namespace Diagnostics
 	{
 		// ENGINE_VIOLATION / ENGINE_CORRUPTION 이 부른다. 직접 부를 일은 없다.
-		IOCP_ENGINE_API void NoteViolation();
+		void NoteViolation();
 
 		// 지금까지 누적된 위반 수.
 		IOCP_ENGINE_API uint64_t GetViolationCount();
 
 		// 시나리오 경계에서 0 으로 되돌린다. 하네스 전용이다.
-		IOCP_ENGINE_API void ResetViolationCount();
+		void ResetViolationCount();
 	}
 }

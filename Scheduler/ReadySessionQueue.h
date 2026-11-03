@@ -7,15 +7,10 @@
 #include <Windows.h>
 #include <stdint.h>
 
-#ifdef BUILD_IOCP_ENGINE_DLL
-#define IOCP_ENGINE_API __declspec(dllexport)
-#else
-#define IOCP_ENGINE_API __declspec(dllimport)
-#endif
 
 class ISession;
 
-class IOCP_ENGINE_API ReadySessionQueue
+class ReadySessionQueue
 {
 public:
 	ReadySessionQueue();

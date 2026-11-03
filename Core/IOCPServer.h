@@ -2,8 +2,8 @@
 
 #include "IOCPCore.h"
 #include "HeartbeatConfig.h"
-#include "../Job/JobDefs.h"
-#include "../Protocol/SystemPacket.h"
+#include "../Job/HandlerContext.h"
+#include "../Session/DisconnectReason.h"
 #include "../Buffer/SessionBufferConfig.h"
 #include "../Memory/EnginePoolConfig.h"
 #include "../Session/ConnectionPolicyConfig.h"
@@ -11,8 +11,11 @@
 #include <stdint.h>
 
 #include "../Buffer/PacketHandle.h"
+#include "../Buffer/SharedPacketHandle.h"
+#include "../Session/ISession.h"
 
 enum class IO_OPERATION;
+enum class SYSTEM_AUTH_RESULT : uint16_t;
 
 class ISession;
 class ClientSession;
@@ -26,17 +29,15 @@ class HeartbeatThread;
 
 struct OverlappedEx;
 
-#ifdef BUILD_IOCP_ENGINE_DLL
-#define IOCP_ENGINE_API __declspec(dllexport)
-#else
-#define IOCP_ENGINE_API __declspec(dllimport)
-#endif
+#include "../EngineApi.h"
 
-class IOCP_ENGINE_API IOCPServer : public IOCPCore
+class IOCPServer : public IOCPCore
 {
 public:
-	IOCPServer();
-	virtual ~IOCPServer();
+	IOCP_ENGINE_API IOCPServer();
+	IOCPServer(const IOCPServer&) = delete;
+	IOCPServer& operator=(const IOCPServer&) = delete;
+	IOCP_ENGINE_API virtual ~IOCPServer();
 
 public:
 	// poolConfig 는 메모리 풀 세 개의 빈 목록과 커밋 상한이다.
@@ -53,21 +54,16 @@ public:
 	// 예전에는 StartServer 안에 상수 두 개로 박혀 있었고, 그래서 실시간
 	// 서비스가 15초짜리 침묵을 줄일 방법이 없었다. 기본값은 예전 값 그대로다.
 	// (값과 세 번째 항목의 사정은 Core/HeartbeatConfig.h 참고)
-	bool StartServer(const char* ipAddress, const uint16_t port, const uint32_t maxConnectionCount,
+	IOCP_ENGINE_API bool StartServer(const char* ipAddress, const uint16_t port, const uint32_t maxConnectionCount,
 		const SessionBufferConfig& bufferConfig = SessionBufferPreset::Server(),
 		const ConnectionPolicyConfig& policyConfig = ConnectionPolicyConfig(),
 		const EnginePoolConfig& poolConfig = EnginePoolPreset::Server(),
 		const HeartbeatConfig& heartbeatConfig = HeartbeatConfig());
-	void StopServer();
+	IOCP_ENGINE_API void StopServer();
 
 private:
-	// 메모리 풀 객체를 실제로 지운다.
-	//
-	// StopServer 는 Finalize 까지만 한다. 풀 포인터가 서비스 핸들러와
-	// SharedPacketHandle 으로 나가 있어서, 늦게 도착하는 반납이 해제된 객체를
-	// 만질 수 있기 때문이다. (사정은 ENGINE_POOL::FinalizePools 주석)
-	//
-	// 그래서 지우는 자리는 소멸자와, 다시 기동하기 직전 두 곳뿐이다.
+	// 서비스의 패킷 핸들이 모두 반환된 후에만 풀을 파괴합니다.
+	// 종료 시 풀을 정리하며, 엔진 파괴·재시작 시에는 풀 객체도 삭제합니다.
 	void DestroyMemoryPools();
 
 	SOCKET m_serverSocket = INVALID_SOCKET;
@@ -149,7 +145,7 @@ private:
 
 private:
 	// GQCS 에 통지 받은 IO 처리
-	void HandleCompletion(ULONG_PTR completionKey, LPOVERLAPPED overlapped, DWORD bytesTransferred, BOOL completionStatus) override;
+	IOCP_ENGINE_API void HandleCompletion(ULONG_PTR completionKey, LPOVERLAPPED overlapped, DWORD bytesTransferred, BOOL completionStatus) override;
 	// 아래 핸들러들의 세션 인자는 전부 ClientSession 이다.
 	// RECV/SEND 완료 키에 등록되는 것이 ClientSession 뿐이기 때문이다.
 	// (ACCEPT 는 완료 키가 아니라 overlappedEx->sessionId 로 라우팅한다)
@@ -213,16 +209,14 @@ private:
 
 	SystemPacketResult HandleSystemPacket(ClientSession* session, uint16_t packetId, const char* packetData, uint32_t packetSize);
 
-protected:
-	ReadySessionQueue* GetReadySessionQueue() const;
-	PacketHandlerTable* GetPacketHandlerTable() const;
+private:
 
 public:
 	// 지금 걸려 있는 AcceptEx 개수와 유지 목표. 운영 지표라 서비스가 읽는다.
 	// 이 값이 목표보다 오래 낮게 머물면 자원 부족을 의심해야 하고,
 	// 0 이면 새 접속을 전혀 받지 못하는 상태다.
-	uint32_t GetPostedAcceptCount() const;
-	uint32_t GetDesiredAcceptCount() const;
+	IOCP_ENGINE_API uint32_t GetPostedAcceptCount() const;
+	IOCP_ENGINE_API uint32_t GetDesiredAcceptCount() const;
 
 	// 지금 이 서버의 세션들이 들고 있는 미완료 I/O 총합.
 	//
@@ -230,13 +224,13 @@ public:
 	// 만지고 있지 않다는 뜻이고, 엔진의 수명 규약 전체가 이 하나에
 	// 얹혀 있다. 조용한 상태에서 0 으로 돌아오지 않으면 Increment 와
 	// Decrement 의 짝이 맞지 않는다는 신호다.
-	uint32_t GetOutstandingIOCount() const;
+	IOCP_ENGINE_API uint32_t GetOutstandingIOCount() const;
 
 	// 지금 임대되어 있는 클라이언트 세션 수. 운영 지표이자, 반납이
 	// 실제로 이루어졌는지 확인하는 유일한 외부 관측점이다.
 	// 미완료 I/O 가 0 이어도 세션이 풀로 돌아오지 않았을 수 있다 —
 	// 그 둘은 별개의 실패다.
-	uint32_t GetInUseSessionCount() const;
+	IOCP_ENGINE_API uint32_t GetInUseSessionCount() const;
 
 	// 지금 가장 밀린 세션의 잡 큐가 도달했던 최고 깊이.
 	//
@@ -245,7 +239,7 @@ public:
 	// 상한을 어디에 둘지는 이 값을 실제로 보고 정해야 한다.
 	//
 	// 합이 아니라 최댓값인 이유는 ClientSessionPool 쪽 주석 참고.
-	uint32_t GetPeakJobQueueDepth() const;
+	IOCP_ENGINE_API uint32_t GetPeakJobQueueDepth() const;
 
 	// 수신 백프레셔가 걸린 총 횟수.
 	//
@@ -253,26 +247,19 @@ public:
 	// 걸지 않은 횟수의 전 세션 합이다. 이 값이 0 이면 부하가 고수위까지
 	// 가지 않은 것이고, 0 이 아니면서 세션이 끊기지 않았다면 백프레셔가
 	// 의도대로 동작한 것이다 — 예전에는 그 상황에서 세션을 잃었다.
-	uint32_t GetRecvPauseCount() const;
+	IOCP_ENGINE_API uint32_t GetRecvPauseCount() const;
 
-protected:
-	TlsMemoryPool* GetJobMemoryPool() const;
-	TlsMemoryPool* GetPacketMemoryPool() const;
-
-	// 송신 경로 부기용 풀. 64바이트 빈 하나를 갖고 있다.
-	//
-	// 브로드캐스트에서 SharedPacketHandle 을 담을 곳이 필요해서 열었다.
-	// packet 풀은 수신 경로와 공유하므로 작은 송신 부기 객체는 여기에 둔다.
-	// (분리 이유는 m_sendQueueMemoryPool 선언부 주석 참고)
-	TlsMemoryPool* GetSendQueueMemoryPool() const;
-
-	const HandlerContext& GetHandlerContext() const;
-	virtual void* GetServiceContext();
+public:
+	IOCP_ENGINE_API bool RegisterPacketHandler(uint16_t packetId, PacketHandlerFunc handler);
+	[[nodiscard]] IOCP_ENGINE_API PacketHandle CreatePacket(std::size_t size) const;
+	[[nodiscard]] IOCP_ENGINE_API SharedPacketHandle CreateSharedPacket(PacketHandle packet) const;
+	IOCP_ENGINE_API const HandlerContext& GetHandlerContext() const;
+	IOCP_ENGINE_API virtual void* GetServiceContext();
 
 protected:
 	// Consumes packetHandle on both success and failure.
 	// Success transfers ownership to the Job; failure returns the packet automatically.
-	bool SubmitPacketJob(ISession* session, uint16_t packetId, PacketHandle packetHandle);
+	IOCP_ENGINE_API bool SubmitPacketJob(ISession* session, uint16_t packetId, PacketHandle packetHandle);
 
 protected:
 	virtual void OnClientConnect(ISession* session) = 0;

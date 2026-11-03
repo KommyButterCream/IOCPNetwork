@@ -23,11 +23,7 @@
 //#include <ws2tcpip.h>
 //#include <iphlpapi.h>
 
-#ifdef BUILD_IOCP_ENGINE_DLL
-#define IOCP_ENGINE_API __declspec(dllexport)
-#else
-#define IOCP_ENGINE_API __declspec(dllimport)
-#endif
+#include "../EngineApi.h"
 
 // IOCP Server/Client 를 위한 공용 기능 구현
 // Winsock 을 초기화 하고 GQCS 를 위한 스레드풀과 IOCP 핸들을 초기화 한다.
@@ -56,11 +52,11 @@ enum EngineLogSink : unsigned int
 	ENGINE_LOG_SINK_FILE = 1 << 1,
 };
 
-class IOCP_ENGINE_API IOCPCore
+class IOCPCore
 {
 public:
-	IOCPCore();
-	virtual ~IOCPCore();
+	IOCP_ENGINE_API IOCPCore();
+	IOCP_ENGINE_API virtual ~IOCPCore();
 
 public:
 	bool Start();
@@ -75,18 +71,18 @@ public:
 	// 호스트에서 Logger::SetLogLevel 을 호출해도 DLL 쪽 로그는 바뀌지 않는다.
 	// 아래 함수들은 DLL 쪽 사본을 제어하기 위한 통로다.
 	// (호스트 자신의 로그는 호스트가 Logger::SetLogLevel 로 따로 조절한다)
-	static void SetEngineLogLevel(int level);
-	static int GetEngineLogLevel();
+	IOCP_ENGINE_API static void SetEngineLogLevel(int level);
+	IOCP_ENGINE_API static int GetEngineLogLevel();
 
 	// 엔진 로그를 파일로 남긴다. 1MB 버퍼를 쓰고 ERROR 이상에서만 flush 하므로
 	// 콘솔 출력보다 훨씬 빠르다.
-	static bool SetEngineLogFile(const char* filePath);
-	static void FlushEngineLog();
+	IOCP_ENGINE_API static bool SetEngineLogFile(const char* filePath);
+	IOCP_ENGINE_API static void FlushEngineLog();
 
 	// 출력 대상 지정. Core::Util::LOG_SINK_* 비트 조합을 넘긴다.
 	// 콘솔 쓰기가 파일보다 훨씬 느리므로 부하 상황에서는 파일만 켜는 것이 좋다.
-	static void SetEngineLogSinks(unsigned int sinks);
-	static unsigned int GetEngineLogSinks();
+	IOCP_ENGINE_API static void SetEngineLogSinks(unsigned int sinks);
+	IOCP_ENGINE_API static unsigned int GetEngineLogSinks();
 
 protected:
 	// 서버, 클라이언트에서 override 필수!

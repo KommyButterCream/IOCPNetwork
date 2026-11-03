@@ -11,13 +11,6 @@
 #include "SizeBin.h"
 #include "ThreadBlockCache.h"
 
-#ifndef IOCP_ENGINE_API
-#ifdef BUILD_IOCP_ENGINE_DLL
-#define IOCP_ENGINE_API __declspec(dllexport)
-#else
-#define IOCP_ENGINE_API __declspec(dllimport)
-#endif
-#endif
 
 // TLS 2단계 크기별 메모리 풀 — 조립과 공개 API.
 //
@@ -42,7 +35,7 @@
 //   할당하지 않는 시점에 호출해야 한다. 엔진은 워커 스레드를 join 한 뒤
 //   풀을 지우므로 이 계약을 이미 만족한다.
 
-class IOCP_ENGINE_API TlsMemoryPool
+class TlsMemoryPool
 {
 public:
 	// 메모리 풀 초기화에 사용.

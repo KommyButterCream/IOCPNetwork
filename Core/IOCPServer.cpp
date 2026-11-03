@@ -27,6 +27,7 @@
 #include "../Buffer/SendPacketEntry.h"
 #include "../Buffer/PreDefine.h"
 #include "../Protocol/PacketID.h"
+#include "../Protocol/SystemPacket.h"
 
 #include "../Session/ISession.h"
 #include "../Session/SessionManager.h"
@@ -196,8 +197,8 @@ bool IOCPServer::StartServer(const char* ipAddress, const uint16_t port, const u
 		return false;
 	}
 
-	m_handlerContext.jobMemoryPool = GetJobMemoryPool();
-	m_handlerContext.packetMemoryPool = GetPacketMemoryPool();
+	m_handlerContext.m_sharedPool = m_sendQueueMemoryPool;
+	m_handlerContext.m_packetPool = m_packetMemoryPool;
 	m_handlerContext.serviceContext = GetServiceContext();
 
 	m_packetHandlerTable = new PacketHandlerTable();
@@ -1821,31 +1822,6 @@ uint32_t IOCPServer::GetInUseSessionCount() const
 	return m_sessionManager->GetClientSessionInUseCount();
 }
 
-ReadySessionQueue* IOCPServer::GetReadySessionQueue() const
-{
-	return m_readySessionQueue;
-}
-
-PacketHandlerTable* IOCPServer::GetPacketHandlerTable() const
-{
-	return m_packetHandlerTable;
-}
-
-TlsMemoryPool* IOCPServer::GetJobMemoryPool() const
-{
-	return m_jobMemoryPool;
-}
-
-TlsMemoryPool* IOCPServer::GetPacketMemoryPool() const
-{
-	return m_packetMemoryPool;
-}
-
-TlsMemoryPool* IOCPServer::GetSendQueueMemoryPool() const
-{
-	return m_sendQueueMemoryPool;
-}
-
 const HandlerContext& IOCPServer::GetHandlerContext() const
 {
 	return m_handlerContext;
@@ -1951,7 +1927,7 @@ bool IOCPServer::SendSystemAuthResponse(ClientSession* session, SYSTEM_AUTH_RESU
 		return false;
 	}
 
-	auto* packetPool = GetPacketMemoryPool();
+	auto* packetPool = m_packetMemoryPool;
 	if (!packetPool)
 	{
 		return false;
@@ -2067,4 +2043,17 @@ IOCPServer::SystemPacketResult IOCPServer::HandleSystemPacket(ClientSession* ses
 		LOGW("session %u unhandled system packet id: %u", session->GetSessionID(), packetId);
 		return SystemPacketResult::Failed;
 	}
+}
+
+bool IOCPServer::RegisterPacketHandler(uint16_t id, PacketHandlerFunc handler)
+{
+	return m_packetHandlerTable && m_packetHandlerTable->Register(id, handler);
+}
+PacketHandle IOCPServer::CreatePacket(std::size_t size) const
+{
+	return m_handlerContext.CreatePacket(size);
+}
+SharedPacketHandle IOCPServer::CreateSharedPacket(PacketHandle packet) const
+{
+	return m_handlerContext.CreateSharedPacket(std::move(packet));
 }

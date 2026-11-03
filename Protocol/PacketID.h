@@ -2,11 +2,6 @@
 
 #include <stdint.h>
 
-static void* to_void_ptr(const char* value)
-{
-	return const_cast<void*>(static_cast<const void*>(value));
-}
-
 using PACKET_ID_TYPE = uint16_t;
 
 enum class PACKET_ID : PACKET_ID_TYPE

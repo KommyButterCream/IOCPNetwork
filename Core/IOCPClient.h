@@ -4,13 +4,15 @@
 #include "ClientLivenessConfig.h"
 #include "../Session/ISessionEvent.h"
 #include "../Session/DisconnectReason.h"
-#include "../Job/JobDefs.h"
+#include "../Job/HandlerContext.h"
 #include "../Buffer/SessionBufferConfig.h"
 #include "../Memory/EnginePoolConfig.h"
 
 #include <stdint.h>
 
 #include "../Buffer/PacketHandle.h"
+#include "../Buffer/SharedPacketHandle.h"
+#include "../Session/ISession.h"
 
 enum class IO_OPERATION;
 
@@ -25,11 +27,7 @@ class ClientWatchdogThread;
 class PacketHandlerTable;
 class SessionContext;
 
-#ifdef BUILD_IOCP_ENGINE_DLL
-#define IOCP_ENGINE_API __declspec(dllexport)
-#else
-#define IOCP_ENGINE_API __declspec(dllimport)
-#endif
+#include "../EngineApi.h"
 
 #define INET_ADDRSTRLEN  22
 
@@ -44,11 +42,13 @@ class SessionContext;
 // 이벤트가 두 가지로 배선된 것처럼 보이지만 받아서 할 일이 다르다.
 // (어댑터 멤버를 끼워 단일 상속으로 맞출 수도 있으나, 클래스와 간접 호출을
 //  하나씩 늘려 가독성 흠 하나를 바꾸는 거래라 하지 않는다)
-class IOCP_ENGINE_API IOCPClient : public IOCPCore, public ISessionEvent
+class IOCPClient : public IOCPCore, public ISessionEvent
 {
 public:
-	IOCPClient();
-	virtual ~IOCPClient();
+	IOCP_ENGINE_API IOCPClient();
+	IOCPClient(const IOCPClient&) = delete;
+	IOCPClient& operator=(const IOCPClient&) = delete;
+	IOCP_ENGINE_API virtual ~IOCPClient();
 
 public:
 	// iocpThreadCount 는 GQCS 워커 수다. 0 이면 기본값 2 를 쓴다.
@@ -72,20 +72,16 @@ public:
 	// 예전에는 그 수단이 아예 없어서, 랜선이 빠지거나 서버 프로세스가
 	// 행되면 클라가 영원히 기다렸다. 기본값으로 켜져 있다.
 	// (자세한 사정은 Core/ClientLivenessConfig.h)
-	bool StartClient(const char* serverIp, const uint16_t port,
+	IOCP_ENGINE_API bool StartClient(const char* serverIp, const uint16_t port,
 		const SessionBufferConfig& bufferConfig = SessionBufferPreset::Client(),
 		uint32_t iocpThreadCount = 0,
 		const EnginePoolConfig& poolConfig = EnginePoolPreset::Client(),
 		const ClientLivenessConfig& livenessConfig = ClientLivenessConfig());
-	void StopClient();
+	IOCP_ENGINE_API void StopClient();
 
 private:
-	// 메모리 풀 객체를 실제로 지운다.
-	//
-	// StopClient 는 Finalize 까지만 한다. 풀 포인터가 서비스 핸들러
-	// (HandlerContext)와 GetPacketMemoryPool() 로 나가 있어서, 늦게 도착하는
-	// 반납이 해제된 객체를 만질 수 있기 때문이다.
-	// (사정은 ENGINE_POOL::FinalizePools 주석)
+	// 서비스의 패킷 핸들이 모두 반환된 후에만 풀을 파괴합니다.
+	// 종료 시 풀을 정리하며, 엔진 파괴·재시작 시에는 풀 객체도 삭제합니다.
 	void DestroyMemoryPools();
 
 	// Destory Flag
@@ -149,7 +145,7 @@ private:
 
 private:
 	// GQCS 에 통지 받은 IO 처리
-	void HandleCompletion(ULONG_PTR completionKey, LPOVERLAPPED overlapped, DWORD bytesTransferred, BOOL completionStatus) override;
+	IOCP_ENGINE_API void HandleCompletion(ULONG_PTR completionKey, LPOVERLAPPED overlapped, DWORD bytesTransferred, BOOL completionStatus) override;
 	// 아래 핸들러들의 세션 인자는 전부 ClientSession 이다.
 	// 이 클라이언트가 가진 세션은 m_session 하나뿐이다.
 	void HandleSocketError(OverlappedEx* overlappedEx, ClientSession* session, int errorCode, IO_OPERATION ioOperation);
@@ -186,7 +182,7 @@ private:
 	bool SendSystemAuthRequest(ClientSession* session);
 	bool HandleSystemPacket(ClientSession* session, uint16_t packetId, const char* packetData, uint32_t packetSize);
 
-	void OnDisconnectRequest(ISession* session) override;
+	IOCP_ENGINE_API void OnDisconnectRequest(ISession* session) override;
 
 	// 종료 절차의 뒷부분. 소켓을 닫고 세션 상태를 정리한다.
 	// OnDisconnectRequest 가 그 자리에서 부르거나(남은 I/O 가 없을 때),
@@ -202,32 +198,26 @@ private:
 	ClientSession* ResolveOwnSession(ISession* session, const char* calledFrom);
 
 public:
-	PacketHandlerTable* GetPacketHandlerTable() const;
-	TlsMemoryPool* GetJobMemoryPool() const;
-	TlsMemoryPool* GetPacketMemoryPool() const;
-
-	// 서버 쪽 같은 이름과 대칭으로 둔다. (사정은 IOCPServer.h 주석 참고)
-	// 클라는 세션이 하나라 브로드캐스트가 없지만, 공유 송신 자체는 막혀
-	// 있지 않으므로 한쪽만 여는 편이 더 헷갈린다.
-	TlsMemoryPool* GetSendQueueMemoryPool() const;
-
-	const HandlerContext& GetHandlerContext() const;
-	ClientSession* GetClientSession() const;
+	IOCP_ENGINE_API bool RegisterPacketHandler(uint16_t packetId, PacketHandlerFunc handler);
+	[[nodiscard]] IOCP_ENGINE_API PacketHandle CreatePacket(std::size_t size) const;
+	[[nodiscard]] IOCP_ENGINE_API SharedPacketHandle CreateSharedPacket(PacketHandle packet) const;
+	IOCP_ENGINE_API const HandlerContext& GetHandlerContext() const;
+	IOCP_ENGINE_API ISession* GetSession() const;
 
 	// 이 클라이언트 세션이 들고 있는 미완료 I/O 수.
 	// 조용한 상태에서 0 으로 돌아오지 않으면 Increment 와 Decrement 의
 	// 짝이 맞지 않는다는 신호다.
-	uint32_t GetOutstandingIOCount() const;
-	virtual void* GetServiceContext();
+	IOCP_ENGINE_API uint32_t GetOutstandingIOCount() const;
+	IOCP_ENGINE_API virtual void* GetServiceContext();
 
 
 protected:
 	// Consumes packetHandle on both success and failure.
 	// Success transfers ownership to the Job; failure returns the packet automatically.
-	bool SubmitPacketJob(ISession* session, uint16_t packetId, PacketHandle packetHandle);
+	IOCP_ENGINE_API bool SubmitPacketJob(ISession* session, uint16_t packetId, PacketHandle packetHandle);
 
-	virtual void OnClientConnect(ISession* session) {};
-	virtual void OnSessionEstablished(ISession* session) {};
+	virtual void OnClientConnect(ISession*) {};
+	virtual void OnSessionEstablished(ISession*) {};
 
 	// reason 은 이 연결이 왜 끝났는지다.
 	//
@@ -239,7 +229,7 @@ protected:
 	//
 	// 재접속 여부만 알면 되면 IsRetryableDisconnect(reason) 를 쓰면 된다.
 	// (값 목록은 Session/DisconnectReason.h)
-	virtual void OnClientDisconnect(ISession* session, DisconnectReason reason) {};
+	virtual void OnClientDisconnect(ISession*, DisconnectReason) {};
 
 	// 접속 자체가 성립하지 않았다. errorCode 는 WSA 오류 코드다.
 	//
@@ -250,9 +240,9 @@ protected:
 	// 이게 없던 동안 서버가 떠 있지 않으면 서비스는 콜백을 하나도 받지
 	// 못했다. StartClient 는 ConnectEx 를 건 시점에 true 를 돌려주므로,
 	// 실패를 알 방법도 재시도를 걸 근거도 없었다.
-	virtual void OnConnectFailed(int errorCode) {};
-	virtual void OnReceive(ISession* session, uint16_t packetId, PacketHandle packetHandle) {};
-	virtual void OnSend(ISession* session, uint32_t bytesTransferred) {};
+	virtual void OnConnectFailed(int) {};
+	virtual void OnReceive(ISession*, uint16_t, PacketHandle) {};
+	virtual void OnSend(ISession*, uint32_t) {};
 };
 
 

@@ -228,8 +228,8 @@ bool IOCPClient::StartClient(const char* serverIp, const uint16_t port, const Se
 	m_packetMemoryPool = pools.packet;
 	m_sendQueueMemoryPool = pools.sendQueue;
 
-	m_handlerContext.jobMemoryPool = GetJobMemoryPool();
-	m_handlerContext.packetMemoryPool = GetPacketMemoryPool();
+	m_handlerContext.m_sharedPool = m_sendQueueMemoryPool;
+	m_handlerContext.m_packetPool = m_packetMemoryPool;
 	m_handlerContext.serviceContext = GetServiceContext();
 
 	m_packetHandlerTable = new PacketHandlerTable();
@@ -1210,26 +1210,6 @@ void IOCPClient::CompleteDisconnect(ClientSession* clientSession)
 	}
 }
 
-PacketHandlerTable* IOCPClient::GetPacketHandlerTable() const
-{
-	return m_packetHandlerTable;
-}
-
-TlsMemoryPool* IOCPClient::GetJobMemoryPool() const
-{
-	return m_jobMemoryPool;
-}
-
-TlsMemoryPool* IOCPClient::GetPacketMemoryPool() const
-{
-	return m_packetMemoryPool;
-}
-
-TlsMemoryPool* IOCPClient::GetSendQueueMemoryPool() const
-{
-	return m_sendQueueMemoryPool;
-}
-
 const HandlerContext& IOCPClient::GetHandlerContext() const
 {
 	return m_handlerContext;
@@ -1281,7 +1261,7 @@ bool IOCPClient::SubmitPacketJob(ISession* session, uint16_t packetId, PacketHan
 	return true;
 }
 
-ClientSession* IOCPClient::GetClientSession() const
+ISession* IOCPClient::GetSession() const
 {
 	return m_session;
 }
@@ -1309,7 +1289,7 @@ bool IOCPClient::SendSystemAuthRequest(ClientSession* session)
 		return false;
 	}
 
-	auto* m_packetMemoryPool = GetPacketMemoryPool();
+	// 인증에 사용하는 패킷 풀은 엔진이 소유합니다.
 
 	if (!m_packetMemoryPool)
 	{
@@ -1454,4 +1434,17 @@ bool IOCPClient::HandleSystemPacket(ClientSession* session, uint16_t packetId, c
 		LOGW("session %u unhandled system packet id: %u", session->GetSessionID(), packetId);
 		return false;
 	}
+}
+
+bool IOCPClient::RegisterPacketHandler(uint16_t id, PacketHandlerFunc handler)
+{
+	return m_packetHandlerTable && m_packetHandlerTable->Register(id, handler);
+}
+PacketHandle IOCPClient::CreatePacket(std::size_t size) const
+{
+	return m_handlerContext.CreatePacket(size);
+}
+SharedPacketHandle IOCPClient::CreateSharedPacket(PacketHandle packet) const
+{
+	return m_handlerContext.CreateSharedPacket(std::move(packet));
 }
