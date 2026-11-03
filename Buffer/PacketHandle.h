@@ -1,8 +1,10 @@
 #pragma once
 #include "../EngineApi.h"
+
 #include <cstddef> // for std::byte, std::size_t
 #include <span>    // for std::span
 #include <utility> // for std::exchange
+
 class TlsMemoryPool;
 
 // 이동 전용 버퍼 소유권입니다. 서비스에 보관한 핸들은 엔진 종료 전에 반환합니다.

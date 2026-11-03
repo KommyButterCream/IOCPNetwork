@@ -525,9 +525,11 @@ bool ClientSession::PostReceive()
 	// 링 끝에 붙어 있으면 남은 조각을 앞으로 당겨 연속 공간을 만든다.
 	// 이게 없으면 쓰기 위치가 끝에 가까워질수록 WSARecv 길이가 줄어들어,
 	// 같은 양을 받는 데 필요한 완료 횟수가 계속 늘어난다.
-	recvBuf.PrepareWrite();
+	recvBuf.PrepareForReceive();
 
-	m_recvOverlapped.ResetForNextIO(GetSessionID(),	recvBuf.GetWriteablePtr(), recvBuf.GetWriteableSize());
+	const auto writable = recvBuf.GetWritableSpan();
+
+	m_recvOverlapped.ResetForNextIO(GetSessionID(), writable.data(), static_cast<ULONG>(writable.size()));
 
 	if (m_recvOverlapped.wsaBuffer.len == 0)
 	{
@@ -543,8 +545,8 @@ bool ClientSession::PostReceive()
 		// 링보다 빨리 밀어 넣으면 된다. 디버거를 붙이고 부하를 거는 동안
 		// 남이 멈출 수 있는 자리를 둘 이유가 없다. 불변식 위반이 아니라
 		// 정상적으로 일어날 수 있는 혼잡 상태다.
-		LOGE("session %u recv ring is full, cannot post recv (stored %u / capacity %u). releasing the session",
-			GetSessionID(), recvBuf.GetStoredSize(), recvBuf.GetCapacity());
+		LOGE("session %u recv ring is full, cannot post recv (stored %zu / capacity %zu). releasing the session",
+			GetSessionID(), recvBuf.GetBufferedSize(), recvBuf.GetCapacity());
 
 		return false;
 	}

@@ -24,7 +24,7 @@ struct SessionBufferConfig
 	// 세션당 수신 링 크기.
 	//
 	// 2의 거듭제곱이어야 한다 (위치 계산을 마스크로 한다).
-	// maxRecvPacketSize 의 2배 이상이어야 한다 — PrepareWrite 가 남은
+	// maxRecvPacketSize 의 2배 이상이어야 한다 — PrepareForReceive 가 남은
 	// 조각을 앞으로 당긴 뒤에도 최대 패킷 하나가 통째로 들어가야 한다.
 	// 실용적으로는 4배를 권한다.
 	uint32_t recvRingSize = MEMORY_SIZE_16K;

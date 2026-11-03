@@ -702,9 +702,9 @@ void IOCPClient::HandleRecv(OverlappedEx* overlappedEx, ClientSession* session, 
 
 	if (!recvBuf.CommitWrite(bytesTransferred))
 	{
-		ENGINE_VIOLATION("session %u recv ring commit failed : %lu bytes would overflow (stored %u / capacity %u)",
+		ENGINE_VIOLATION("session %u recv ring commit failed : %lu bytes would overflow (stored %zu / capacity %zu)",
 			clientSession->GetSessionID(), bytesTransferred,
-			recvBuf.GetStoredSize(), recvBuf.GetCapacity());
+			recvBuf.GetBufferedSize(), recvBuf.GetCapacity());
 
 		clientSession->DecrementIO();
 		return;
@@ -713,29 +713,26 @@ void IOCPClient::HandleRecv(OverlappedEx* overlappedEx, ClientSession* session, 
 	// 패킷 처리 루프
 	while (!recvBuf.IsEmpty())
 	{
-		PacketHandle packetHandle;
-		uint16_t packetId = 0;
+		auto [status, packetHandle, packetId] = recvBuf.ReadPacket();
 
-		const PacketReadResult readResult = recvBuf.ReadPacket(packetHandle, packetId);
-
-		if (readResult == PacketReadResult::NeedMoreData)
+		if (status == PacketReadStatus::NeedMoreData)
 		{
 			// 아직 다 안 왔다. 다음 수신 완료에서 이어서 파싱한다.
 			break;
 		}
 
-		if (readResult != PacketReadResult::Ok)
+		if (status != PacketReadStatus::Ok)
 		{
 			// Invalid 는 서버가 규칙 밖의 크기를 적어 보낸 것이고,
 			// OutOfMemory 는 패킷 풀이 고갈된 것이다. 둘 다 이 스트림을
 			// 더 이상 신뢰할 수 없으므로 연결을 끊는다.
 			LOGE("session %u recv stream is unusable (%s). dropping the connection",
 				clientSession->GetSessionID(),
-				readResult == PacketReadResult::Invalid ? "invalid packet size" : "packet pool exhausted");
+				status == PacketReadStatus::Invalid ? "invalid packet size" : "packet pool exhausted");
 
 			// 두 사유는 서비스가 할 일이 다르다. 앞쪽은 서버가 이상한
 			// 것이고, 뒤쪽은 우리 풀이 모자란 것이다.
-			clientSession->NoteDisconnectReason(readResult == PacketReadResult::Invalid
+			clientSession->NoteDisconnectReason(status == PacketReadStatus::Invalid
 				? DisconnectReason::ProtocolError
 				: DisconnectReason::ResourceExhausted);
 

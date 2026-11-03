@@ -1,23 +1,22 @@
 ﻿#pragma once
 
-#include <stdint.h>
+#include <cstdint> // for uint16_t
+#include <memory> // for std::unique_ptr
+#include <span> // for std::span, std::as_writable_bytes
+#include <cstddef> // for std::byte, std::size_t
 
 #include "../Protocol/PacketHeader.h"
+#include "PacketHandle.h"
 
 class TlsMemoryPool;
-class PacketHandle;
 
-// 링에서 패킷 하나를 꺼낸 결과.
+// 링에서 패킷 하나를 꺼낸 결과
 //
-//   Ok           : packetHandle owns the extracted packet.
+//   Ok           : 결과의 packet이 추출한 패킷을 소유한다
 //   NeedMoreData : 아직 다 안 왔다. 다음 수신을 기다리면 된다
 //   Invalid      : 헤더가 규칙을 어겼다. 피어 잘못이므로 세션을 끊어야 한다
 //   OutOfMemory  : 패킷 풀이 고갈됐다. 우리 잘못이지만 역시 세션을 끊는다
-//
-// 예전에는 넷을 모두 false 로 뭉뚱그려서, 크기가 깨진 헤더가 "덜 왔다" 와
-// 구분되지 않았다. 그래서 packetSize 를 크게 적어 보내면 그 세션은 영원히
-// 파싱이 막힌 채로 살아남았다.
-enum class PacketReadResult
+enum class PacketReadStatus
 {
 	Ok,
 	NeedMoreData,
@@ -25,10 +24,18 @@ enum class PacketReadResult
 	OutOfMemory,
 };
 
+// 패킷 추출 상태와 추출한 패킷의 소유권을 함께 반환
+struct [[nodiscard]] PacketReadResult
+{
+	PacketReadStatus status = PacketReadStatus::NeedMoreData;
+	PacketHandle packet;
+	uint16_t packetId = ToInteger(PACKET_ID::NONE);
+};
+
 class RecvPacketBuffer
 {
 public:
-	RecvPacketBuffer();
+	RecvPacketBuffer() = default;
 	~RecvPacketBuffer();
 
 	RecvPacketBuffer(const RecvPacketBuffer&) = delete;
@@ -39,50 +46,60 @@ public:
 private:
 	TlsMemoryPool* m_packetMemoryPool = nullptr;
 
-	char* m_buffer = nullptr;
-	uint32_t m_writePos = 0;
-	uint32_t m_readPos = 0;
-	uint32_t m_storedSize = 0;
+	static constexpr std::size_t BUFFER_ALIGNMENT = 64;
 
-	// 예전에는 컴파일 타임 상수였다. 역할마다 적정값이 달라서 런타임으로
-	// 옮겼다. 마스크는 매번 빼지 않으려고 미리 만들어 둔다.
-	uint32_t m_capacity = 0;
-	uint32_t m_capacityMask = 0;
-	uint32_t m_maxPacketSize = 0;
+	struct AlignedBufferDeleter
+	{
+		void operator()(char* buffer) const noexcept;
+	};
+
+	std::unique_ptr<char[], AlignedBufferDeleter> m_buffer;
+
+	std::size_t m_writeOffset = 0;
+	std::size_t m_readOffset = 0;
+	std::size_t m_bufferedSize = 0;
+
+	std::size_t m_capacity = 0;
+	std::size_t m_wrapMask = 0;
+	std::size_t m_maxPacketSize = 0;
 
 public:
-	// ringSize 는 2의 거듭제곱이어야 하고 maxPacketSize 의 2배 이상이어야
-	// 한다. 어기면 false 를 반환한다. (예전에는 static_assert 였다)
-	bool Initialize(TlsMemoryPool* packetMemoryPool, uint32_t ringSize, uint32_t maxPacketSize);
+	[[nodiscard]] bool Initialize(TlsMemoryPool* packetMemoryPool, std::size_t bufferSize, std::size_t maxPacketSize);
 	void Finalize();
 	void Reset();
 
-	// WSARecv용
-	char* GetWriteablePtr();
-	uint32_t   GetWriteableSize() const;
+	// 다음 수신에 사용할 연속된 쓰기 영역을 반환
+	// 반환된 영역은 버퍼를 소유하지 않음
+	[[nodiscard]]
+	std::span<char> GetWritableSpan() noexcept;
 
 	// 수신 완료 후 처리
-	bool CommitWrite(const uint32_t bytesReceived);
+	[[nodiscard]] bool CommitWrite(const std::size_t bytesReceived);
 
-	// 패킷 추출
+	// 성공하면 패킷 소유권을 반환하며, 실패하면 읽기 위치를 유지
 	[[nodiscard]]
-	PacketReadResult ReadPacket(PacketHandle& packetHandle, uint16_t& packetId);
-	
-	// WSARecv 를 걸기 직전에 부른다. 링 끝에 붙어 있으면 앞으로 당겨서
-	// 한 번에 최대 패킷을 받을 수 있는 연속 공간을 만든다.
-	void PrepareWrite();
+	PacketReadResult ReadPacket();
+
+	// WSARecv 를 걸기 직전에 호출. 링 끝에 붙어 있으면 앞으로 당겨서
+	// 한 번에 최대 패킷을 받을 수 있는 연속 공간을 만듬.
+	void PrepareForReceive();
 
 	// 상태 확인
-	uint32_t GetStoredSize() const { return m_storedSize; }
-	uint32_t GetCapacity() const { return m_capacity; }
-	uint32_t GetMaxPacketSize() const { return m_maxPacketSize; }
-	bool IsFull() const { return m_storedSize == m_capacity; }
-	bool IsEmpty() const { return m_storedSize == 0; }
+	[[nodiscard]] std::size_t GetBufferedSize() const noexcept { return m_bufferedSize; }
+	[[nodiscard]] std::size_t GetCapacity() const noexcept { return m_capacity; }
+	[[nodiscard]] std::size_t GetMaxPacketSize() const noexcept { return m_maxPacketSize; }
+	[[nodiscard]] bool IsFull() const noexcept { return m_bufferedSize == m_capacity; }
+	[[nodiscard]] bool IsEmpty() const noexcept { return m_bufferedSize == 0; }
 
 private:
-	bool PeekHeader(PACKET_HEADER& header);
+	[[nodiscard]] bool PeekPacketHeader(PACKET_HEADER& header) const noexcept;
+
+	// 현재 읽기 위치부터 목적지 크기만큼 복사
+	// 목적지 크기는 저장된 데이터 크기 이하여야 한다.
+	// 읽기 위치와 저장된 데이터 크기는 변경하지 않음.
+	void CopyReadableBytes(std::span<std::byte> destination) const noexcept;
 
 	// 남아 있는 조각을 오프셋 0 으로 모은다. 조각은 최대 패킷보다 작다.
-	void Compact();
+	void CompactUnreadData();
 };
 

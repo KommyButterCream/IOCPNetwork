@@ -162,3 +162,19 @@ bool SendResponse(ISession& session, const HandlerContext& context)
 CUDA Toolkit 13.4.3의 영상 인코딩·디코딩과 전체 스트리밍 GUI는 이번 검증에 포함하지 않았습니다.
 공개 API 및 export 변경 전후, 세부 검증 결과와 남은 설계 과제는
 [공개 API 정리 작업 보고서](docs/public-api-refactor.html)에 정리했습니다.
+
+## 수신 버퍼 리팩토링
+
+RecvPacketBuffer는 64바이트 정렬 C++ operator new/delete와 unique_ptr로 버퍼를 관리합니다.
+PrepareForReceive() → GetWritableSpan() → WSARecv → CommitWrite() → ReadPacket() 순서로 사용합니다.
+ReadPacket()은 PacketReadStatus와 PacketHandle, 패킷 ID를 담은 PacketReadResult를 반환합니다.
+헤더·패킷 복사는 CopyReadableBytes()로 통합했습니다.
+
+위치·크기는 std::size_t이며, 이는 메모리 크기 표현의 일관성을 위한 선택입니다. 성능 향상을 의미하지 않습니다.
+m_readOffset / m_writeOffset은 바이트 위치, m_bufferedSize는 미추출 바이트 수,
+m_wrapMask는 링 순환용 마스크입니다. 프로토콜 필드는 고정 폭 정수를 유지합니다.
+초기화 시 WSABUF의 길이 범위를 검사하며, 비동기 수신 중에는 버퍼를 이동·초기화·해제하지 않습니다.
+
+Debug·Release 빌드와 정렬·링 경계·실패·반환 회귀 검증을 완료했습니다.
+변경 전후 이름, 소유권 규약과 성능 최적화 후속 과제는
+[보고서의 수신 버퍼 정리](docs/public-api-refactor.html#recv-buffer)를 참고합니다.
