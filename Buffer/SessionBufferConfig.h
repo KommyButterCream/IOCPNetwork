@@ -2,7 +2,6 @@
 
 #include <stdint.h>
 
-#include "PreDefine.h"
 
 #include "../Protocol/PacketHeader.h"
 
@@ -19,7 +18,7 @@ struct SessionBufferConfig
 {
 	// 헤더가 주장할 수 있는 수신 패킷 크기의 상한.
 	// 이보다 큰 값을 적어 보내면 프로토콜 위반으로 보고 세션을 끊는다.
-	uint32_t maxRecvPacketSize = MEMORY_SIZE_4K;
+	uint32_t maxRecvPacketSize = 4u * 1024;
 
 	// 세션당 수신 링 크기.
 	//
@@ -27,7 +26,7 @@ struct SessionBufferConfig
 	// maxRecvPacketSize 의 2배 이상이어야 한다 — PrepareForReceive 가 남은
 	// 조각을 앞으로 당긴 뒤에도 최대 패킷 하나가 통째로 들어가야 한다.
 	// 실용적으로는 4배를 권한다.
-	uint32_t recvRingSize = MEMORY_SIZE_16K;
+	uint32_t recvRingSize = 16u * 1024;
 
 	// 보낼 수 있는 패킷 크기의 상한.
 	//
@@ -49,7 +48,7 @@ struct SessionBufferConfig
 	//
 	// 깊을수록 느린 피어의 버스트를 더 흡수하지만, 그만큼 오래된 데이터를
 	// 붙들고 있게 된다. 실시간성이 중요하면 얕게 잡는 편이 낫다.
-	uint32_t sendQueueDepth = BLOCK_COUNT_4K;
+	uint32_t sendQueueDepth = 4096;
 
 	// --- 수신 백프레셔 수위 ---
 	//
@@ -128,10 +127,10 @@ namespace SessionBufferPreset
 	inline SessionBufferConfig Server()
 	{
 		SessionBufferConfig config;
-		config.maxRecvPacketSize = MEMORY_SIZE_4K;
-		config.recvRingSize = MEMORY_SIZE_16K;
+		config.maxRecvPacketSize = 4u * 1024;
+		config.recvRingSize = 16u * 1024;
 		config.maxSendPacketSize = PACKET_SIZE_LIMIT;
-		config.sendQueueDepth = BLOCK_COUNT_4K;
+		config.sendQueueDepth = 4096;
 		config.recvPauseJobDepth = 256;
 		config.recvResumeJobDepth = 64;
 		return config;
@@ -145,9 +144,9 @@ namespace SessionBufferPreset
 	{
 		SessionBufferConfig config;
 		config.maxRecvPacketSize = PACKET_SIZE_LIMIT;
-		config.recvRingSize = MEMORY_SIZE_256K;
-		config.maxSendPacketSize = MEMORY_SIZE_4K;
-		config.sendQueueDepth = BLOCK_COUNT_4K;
+		config.recvRingSize = 256u * 1024;
+		config.maxSendPacketSize = 4u * 1024;
+		config.sendQueueDepth = 4096;
 
 		// 서버와 같은 값이다.
 		//

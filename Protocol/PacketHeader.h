@@ -1,8 +1,12 @@
 ﻿#pragma once
 
-#include <stdint.h>
+#include <cstdint> // for uint16_t, uint32_t
+#include <limits> // for std::numeric_limits
 
 #include "PacketID.h"
+
+// packetSize 필드로 표현 가능한 패킷 전체 길이의 상한입니다.
+inline constexpr uint32_t PACKET_SIZE_LIMIT = (std::numeric_limits<uint16_t>::max)();
 
 #pragma pack(push, 1)
 

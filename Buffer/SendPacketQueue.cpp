@@ -1,6 +1,7 @@
 ﻿#include "SendPacketQueue.h"
 
-#include "PreDefine.h"
+#include "../Protocol/PacketHeader.h"
+
 
 #include "../Diagnostics/EngineAssert.h"
 #include "../Memory/TlsMemoryPool.h"

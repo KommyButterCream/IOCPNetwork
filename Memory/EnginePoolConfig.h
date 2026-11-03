@@ -2,7 +2,13 @@
 
 #include <stdint.h>
 
-#include "../Buffer/PreDefine.h"
+// 송신 노드 풀의 초기 재고입니다. 부족하면 풀이 런타임에 확장합니다.
+inline constexpr uint32_t SEND_QUEUE_ENTRY_COUNT = 64u * 1024;
+
+// 풀별 기본 커밋 상한입니다. 서비스는 EnginePoolConfig에서 조정할 수 있습니다.
+inline constexpr uint64_t POOL_COMMIT_LIMIT_PACKET = 512ull * 1024 * 1024;
+inline constexpr uint64_t POOL_COMMIT_LIMIT_JOB = 64ull * 1024 * 1024;
+inline constexpr uint64_t POOL_COMMIT_LIMIT_SENDQUEUE = 128ull * 1024 * 1024;
 
 // 엔진이 기동할 때 만드는 메모리 풀 세 개의 설정.
 //
@@ -52,7 +58,7 @@ struct PoolBinSetConfig
 	uint32_t entryCount = 0;
 
 	// 이 풀이 OS 에서 잡을 수 있는 총 바이트. 0 이면 무제한.
-	// 튜닝 손잡이가 아니라 폭주 차단기다. (PreDefine.h 주석 참고)
+	// 튜닝 손잡이가 아니라 폭주 차단기다.
 	uint64_t commitLimitBytes = 0;
 
 	// 항목을 하나 더한다. 가득 찼거나 값이 0 이면 아무것도 하지 않고 false.
@@ -148,12 +154,12 @@ namespace EnginePoolPreset
 		config.packet.Add(128, 1024);
 		config.packet.Add(256, 1024);
 		config.packet.Add(512, 1024);
-		config.packet.Add(MEMORY_SIZE_1K, 1024);
-		config.packet.Add(MEMORY_SIZE_2K, 1024);
-		config.packet.Add(MEMORY_SIZE_4K, 1024);
-		config.packet.Add(MEMORY_SIZE_8K, 512);
-		config.packet.Add(MEMORY_SIZE_16K, 512);
-		config.packet.Add(MEMORY_SIZE_32K, 512);
+		config.packet.Add(1u * 1024, 1024);
+		config.packet.Add(2u * 1024, 1024);
+		config.packet.Add(4u * 1024, 1024);
+		config.packet.Add(8u * 1024, 512);
+		config.packet.Add(16u * 1024, 512);
+		config.packet.Add(32u * 1024, 512);
 		config.packet.commitLimitBytes = POOL_COMMIT_LIMIT_PACKET;
 
 		config.job.blockCount = 1024;
@@ -181,13 +187,13 @@ namespace EnginePoolPreset
 		config.packet.Add(128, 1024);
 		config.packet.Add(256, 1024);
 		config.packet.Add(512, 1024);
-		config.packet.Add(MEMORY_SIZE_1K, 512);
-		config.packet.Add(MEMORY_SIZE_2K, 512);
-		config.packet.Add(MEMORY_SIZE_4K, 512);
-		config.packet.Add(MEMORY_SIZE_8K, 256);
-		config.packet.Add(MEMORY_SIZE_16K, 128);
-		config.packet.Add(MEMORY_SIZE_32K, 128);
-		config.packet.Add(MEMORY_SIZE_64K, 64);
+		config.packet.Add(1u * 1024, 512);
+		config.packet.Add(2u * 1024, 512);
+		config.packet.Add(4u * 1024, 512);
+		config.packet.Add(8u * 1024, 256);
+		config.packet.Add(16u * 1024, 128);
+		config.packet.Add(32u * 1024, 128);
+		config.packet.Add(64u * 1024, 64);
 		config.packet.commitLimitBytes = POOL_COMMIT_LIMIT_PACKET;
 
 		config.job.blockCount = 1024;

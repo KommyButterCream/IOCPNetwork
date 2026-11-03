@@ -113,9 +113,6 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="..\Buffer\PreDefine.h">
-      <Filter>Buffer</Filter>
-    </ClInclude>
     <ClInclude Include="..\Buffer\RecvPacketBuffer.h">
       <Filter>Buffer</Filter>
     </ClInclude>

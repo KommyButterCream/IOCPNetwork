@@ -1,6 +1,7 @@
 #include "HandlerContext.h"
+
+#include "../Protocol/PacketHeader.h"
 #include "../Memory/TlsMemoryPool.h"
-#include "../Buffer/PreDefine.h"
 #include <utility> // for std::move
 PacketHandle HandlerContext::CreatePacket(std::size_t size) const
 {

@@ -53,7 +53,6 @@
     <ClInclude Include="..\IOCPNetwork.h" />
     <ClInclude Include="..\Job\HandlerContext.h" />
     <ClInclude Include="..\Buffer\PacketHandle.h" />
-    <ClInclude Include="..\Buffer\PreDefine.h" />
     <ClInclude Include="..\Buffer\RecvPacketBuffer.h" />
     <ClInclude Include="..\Buffer\SendPacketQueue.h" />
     <ClInclude Include="..\Buffer\SharedPacketHandle.h" />
