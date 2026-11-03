@@ -182,7 +182,7 @@ bool IOCPServer::StartServer(const char* ipAddress, const uint16_t port, const u
 
 	m_jobMemoryPool = pools.job;
 	m_packetMemoryPool = pools.packet;
-	m_sendQueueMemoryPool = pools.sendQueue;
+	m_sharedPacketMemoryPool = pools.sharedPacket;
 
 	m_readySessionQueue = new ReadySessionQueue;
 	if (!m_readySessionQueue)
@@ -195,7 +195,7 @@ bool IOCPServer::StartServer(const char* ipAddress, const uint16_t port, const u
 		return false;
 	}
 
-	m_handlerContext.m_sharedPool = m_sendQueueMemoryPool;
+	m_handlerContext.m_sharedPool = m_sharedPacketMemoryPool;
 	m_handlerContext.m_packetPool = m_packetMemoryPool;
 	m_handlerContext.serviceContext = GetServiceContext();
 
@@ -235,7 +235,7 @@ bool IOCPServer::StartServer(const char* ipAddress, const uint16_t port, const u
 
 	LOGI("accept slots %u (max connections %u)", acceptSlotCount, maxConnectionCount);
 
-	if (!m_sessionManager->Initialize(acceptSlotCount, maxConnectionCount, m_sendQueueMemoryPool, m_jobMemoryPool, m_packetMemoryPool, IOCPCore::CloseSocketHandle, bufferConfig))
+	if (!m_sessionManager->Initialize(acceptSlotCount, maxConnectionCount, m_jobMemoryPool, m_packetMemoryPool, IOCPCore::CloseSocketHandle, bufferConfig))
 		return false;
 
 	// 세션 종료 통지를 세션 풀에 맡긴다.
@@ -383,24 +383,24 @@ void IOCPServer::StopServer()
 	// peak 은 초기 blockCount 산정 근거이고, grow 가 0 이 아니면 초기값이 부족했다는 뜻이며
 	// OUTSTANDING 이 0 이 아니면 누수다. 개별 할당 로그 없이 이걸로 판단한다.
 	//
-	// sendQueue 는 세션이 전부 내려간 뒤에 찍어야 한다 (세션 매니저를 이미
+	// 공유 패킷 풀은 세션이 전부 내려간 뒤에 찍어야 한다 (세션 매니저를 이미
 	// 지웠으므로 그 조건은 만족한다). 여기서 grow 가 0 이 아니면 초기
-	// SEND_QUEUE_ENTRY_COUNT 로는 버스트를 못 받았다는 뜻이다.
+	// SHARED_PACKET_CONTROL_COUNT 로는 버스트를 못 받았다는 뜻이다.
 	if (m_jobMemoryPool)       m_jobMemoryPool->LogStats("job");
 	if (m_packetMemoryPool)    m_packetMemoryPool->LogStats("packet");
-	if (m_sendQueueMemoryPool) m_sendQueueMemoryPool->LogStats("sendQueue");
+	if (m_sharedPacketMemoryPool) m_sharedPacketMemoryPool->LogStats("sharedPacket");
 
 	// 재고만 돌려주고 객체는 남긴다. 늦게 도착하는 반납이 해제된 풀을
 	// 역참조하지 않도록 하기 위한 것이고, 실제 delete 는 소멸자가 한다.
 	// (사정은 ENGINE_POOL::FinalizePools 주석)
 	//
 	// 반드시 세션 매니저를 지운 뒤여야 한다. 세션 정리가 담고 있던 패킷과
-	// 송신 엔트리를 이 풀들로 되돌리기 때문이다.
+	// 공유 제어 객체를 이 풀들로 되돌리기 때문이다.
 	{
 		ENGINE_POOL::EnginePools pools;
 		pools.packet = m_packetMemoryPool;
 		pools.job = m_jobMemoryPool;
-		pools.sendQueue = m_sendQueueMemoryPool;
+		pools.sharedPacket = m_sharedPacketMemoryPool;
 
 		ENGINE_POOL::FinalizePools(pools);
 	}
@@ -414,13 +414,13 @@ void IOCPServer::DestroyMemoryPools()
 	ENGINE_POOL::EnginePools pools;
 	pools.packet = m_packetMemoryPool;
 	pools.job = m_jobMemoryPool;
-	pools.sendQueue = m_sendQueueMemoryPool;
+	pools.sharedPacket = m_sharedPacketMemoryPool;
 
 	ENGINE_POOL::DestroyPools(pools);
 
 	m_packetMemoryPool = nullptr;
 	m_jobMemoryPool = nullptr;
-	m_sendQueueMemoryPool = nullptr;
+	m_sharedPacketMemoryPool = nullptr;
 }
 
 void IOCPServer::HandleCompletion(

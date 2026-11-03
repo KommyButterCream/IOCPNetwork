@@ -108,7 +108,7 @@ public:
 
 	// ClientSession 전용 메서드
 public:
-	bool InitializeMemoryPool(TlsMemoryPool* sendQueueMemoryPool, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig);
+	bool InitializeMemoryPool(TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig);
 
 	bool IsReady() const;
 	// 두 단계다. IsTransportConnected 는 소켓이 붙었는가,

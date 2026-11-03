@@ -24,7 +24,7 @@
 #include "TlsMemoryPool.h"
 #include "EnginePoolConfig.h"
 
-#include "../Buffer/SendPacketQueue.h"
+#include "../Buffer/SharedPacketHandle.h"
 #include "../Job/Job.h"
 
 #include "../../Core/Util/Logger.h"
@@ -38,7 +38,7 @@ namespace ENGINE_POOL
 	{
 		TlsMemoryPool* packet = nullptr;
 		TlsMemoryPool* job = nullptr;
-		TlsMemoryPool* sendQueue = nullptr;
+		TlsMemoryPool* sharedPacket = nullptr;
 	};
 
 	inline void DestroyPools(EnginePools& pools)
@@ -46,7 +46,7 @@ namespace ENGINE_POOL
 		// 지우는 순서는 상관없다. 서로를 참조하지 않는다.
 		delete pools.packet;    pools.packet = nullptr;
 		delete pools.job;       pools.job = nullptr;
-		delete pools.sendQueue; pools.sendQueue = nullptr;
+		delete pools.sharedPacket; pools.sharedPacket = nullptr;
 	}
 
 	// 재고만 OS 로 돌려주고 풀 객체는 남긴다.
@@ -77,7 +77,7 @@ namespace ENGINE_POOL
 	{
 		if (pools.packet)    pools.packet->Finalize();
 		if (pools.job)       pools.job->Finalize();
-		if (pools.sendQueue) pools.sendQueue->Finalize();
+		if (pools.sharedPacket) pools.sharedPacket->Finalize();
 	}
 
 	namespace Detail
@@ -154,9 +154,9 @@ namespace ENGINE_POOL
 		if (!config.IsValid())
 		{
 			LOGE("[%s] the pool configuration is invalid (packet entries %u, "
-				"job blocks %u, send queue blocks %u)",
+				"job blocks %u, shared packet blocks %u)",
 				roleName, config.packet.entryCount,
-				config.job.blockCount, config.sendQueue.blockCount);
+				config.job.blockCount, config.sharedPacket.blockCount);
 			return false;
 		}
 
@@ -198,9 +198,9 @@ namespace ENGINE_POOL
 			return false;
 		}
 
-		outPools.sendQueue = Detail::CreateReservePool(
-			config.sendQueue, static_cast<uint32_t>(SendPacketQueue::GetNodeSize()), "sendQueue");
-		if (!outPools.sendQueue)
+		outPools.sharedPacket = Detail::CreateReservePool(
+			config.sharedPacket, static_cast<uint32_t>(SharedPacketHandle::GetControlSize()), "sharedPacket");
+		if (!outPools.sharedPacket)
 		{
 			DestroyPools(outPools);
 			return false;
@@ -212,14 +212,14 @@ namespace ENGINE_POOL
 		// 로그만 보고 알 수 있어야 한다. 서비스 코드를 찾아 들어가지 않아도 된다.
 		LOGI("[%s] memory pools ready : packet %u bins up to %u bytes (limit %lluMB), "
 			"job %u blocks (limit %lluMB), "
-			"sendQueue %u blocks (limit %lluMB)",
+			"sharedPacket %u blocks (limit %lluMB)",
 			roleName,
 			outPools.packet->GetBinCount(), config.packet.LargestBlockSize(),
 			static_cast<unsigned long long>(config.packet.commitLimitBytes >> 20),
 			config.job.blockCount,
 			static_cast<unsigned long long>(config.job.commitLimitBytes >> 20),
-			config.sendQueue.blockCount,
-			static_cast<unsigned long long>(config.sendQueue.commitLimitBytes >> 20));
+			config.sharedPacket.blockCount,
+			static_cast<unsigned long long>(config.sharedPacket.commitLimitBytes >> 20));
 
 		return true;
 	}

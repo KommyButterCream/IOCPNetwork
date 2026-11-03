@@ -38,7 +38,7 @@ private:
 	uint32_t m_clientSessionCount = 0;
 
 public:
-	bool Initialize(const uint32_t acceptSessionCount, const uint32_t clientSessionCount, TlsMemoryPool* sendQueueMemoryPool, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, CloseSocketFunc closeSocketFunc, const SessionBufferConfig& bufferConfig);
+	bool Initialize(const uint32_t acceptSessionCount, const uint32_t clientSessionCount, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, CloseSocketFunc closeSocketFunc, const SessionBufferConfig& bufferConfig);
 	void Finalize();
 
 	// Accept Session //

@@ -10,12 +10,12 @@
 #include "PacketHandle.h"
 #include "SharedPacketHandle.h"
 
+#include <memory> // for std::unique_ptr
 #include <cstddef> // for std::byte, std::size_t
 #include <span>    // for std::span
 #include <utility> // for std::move
 #include <variant> // for std::variant, std::visit
 
-class TlsMemoryPool;
 
 // 송신할 패킷의 소유권을 보관합니다.
 // 단독 소유 패킷과 공유 패킷 중 하나만 보유합니다.
@@ -97,7 +97,7 @@ private:
 };
 
 // 엔진 내부 FIFO 송신 큐입니다.
-// 노드는 SendPacket으로 단독 또는 공유 패킷을 소유합니다.
+// 배열 슬롯은 SendPacket으로 단독 또는 공유 패킷을 소유합니다.
 // 여러 생산자가 동시에 등록할 수 있으며, ClientSession이 소비를 직렬화합니다.
 // Initialize/Finalize는 생산자와 소비자가 접근하지 않는 상태에서 호출합니다.
 class SendPacketQueue
@@ -113,9 +113,10 @@ public:
 	SendPacketQueue& operator=(SendPacketQueue&&) = delete;
 
 	// maxCount 는 이 큐에 동시에 담을 수 있는 패킷 수의 상한이다.
-	// 패킷 소유권은 각 노드의 SendPacket이 관리합니다.
+	// 패킷 소유권은 각 슬롯의 SendPacket이 관리합니다.
+	// maxCount개 슬롯을 초기화 시 확보하며 운영 중 용량은 변경하지 않습니다.
 	[[nodiscard]]
-	bool Initialize(TlsMemoryPool* sendQueueMemoryPool, uint32_t maxCount);
+	bool Initialize(uint32_t maxCount);
 	void Finalize();
 
 	// 성공할 때만 소유권을 이동합니다. 실패하면 호출자의 핸들은 유지됩니다.
@@ -127,7 +128,7 @@ public:
 	bool EnqueueShared(SharedPacketHandle packetHandle);
 
 	// 대기 패킷의 소유권을 반환합니다. 큐가 비어 있으면 빈 값을 반환합니다.
-	// 패킷을 보관하던 노드는 함수 안에서 풀로 반환합니다.
+	// 꺼낸 슬롯은 빈 핸들이 되어 다시 사용할 수 있습니다.
 	[[nodiscard]]
 	SendPacket Dequeue();
 
@@ -144,30 +145,15 @@ public:
 	[[nodiscard]]
 	uint32_t GetMaxCount() const noexcept { return m_maxCount; }
 
-	// 엔진 초기화 시 송신 큐 풀의 블록 크기를 결정하는 데 사용합니다.
-	[[nodiscard]]
-	static std::size_t GetNodeSize() noexcept;
-
 private:
-	struct Node;
-
 	template<typename Handle>
 	[[nodiscard]]
 	bool EnqueueHandle(Handle&& packetHandle);
 
-	[[nodiscard]]
-	Node* CreateNode();
-
-	// 큐 내부 노드를 소멸시키고 풀에 반환합니다.
-	void ReleaseNode(Node* entry);
-
 	mutable SRWLOCK m_srwLock = SRWLOCK_INIT;
-
-	TlsMemoryPool* m_sendQueueMemoryPool = nullptr;
-
-	Node* m_head = nullptr;
-	Node* m_tail = nullptr;
-
+	std::unique_ptr<SendPacket[]> m_packets;
+	uint32_t m_head = 0;
+	uint32_t m_tail = 0;
 	uint32_t m_count = 0;
 	uint32_t m_maxCount = 0;
 };

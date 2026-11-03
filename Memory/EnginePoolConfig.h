@@ -2,13 +2,13 @@
 
 #include <stdint.h>
 
-// 송신 노드 풀의 초기 재고입니다. 부족하면 풀이 런타임에 확장합니다.
-inline constexpr uint32_t SEND_QUEUE_ENTRY_COUNT = 64u * 1024;
+// 공유 패킷 제어 객체 풀의 초기 재고입니다. 부족하면 풀이 런타임에 확장합니다.
+inline constexpr uint32_t SHARED_PACKET_CONTROL_COUNT = 64u * 1024;
 
 // 풀별 기본 커밋 상한입니다. 서비스는 EnginePoolConfig에서 조정할 수 있습니다.
 inline constexpr uint64_t POOL_COMMIT_LIMIT_PACKET = 512ull * 1024 * 1024;
 inline constexpr uint64_t POOL_COMMIT_LIMIT_JOB = 64ull * 1024 * 1024;
-inline constexpr uint64_t POOL_COMMIT_LIMIT_SENDQUEUE = 128ull * 1024 * 1024;
+inline constexpr uint64_t POOL_COMMIT_LIMIT_SHAREDPACKET = 128ull * 1024 * 1024;
 
 // 엔진이 기동할 때 만드는 메모리 풀 세 개의 설정.
 //
@@ -28,8 +28,8 @@ inline constexpr uint64_t POOL_COMMIT_LIMIT_SENDQUEUE = 128ull * 1024 * 1024;
 //   패킷 풀은 빈 목록을 통째로 연다. 담기는 것이 서비스의
 //   데이터라 크기 분포를 아는 쪽이 서비스뿐이다.
 //
-//   잡 풀과 송신 큐 엔트리 풀은 개수와 상한만 연다. 그쪽 블록 크기는
-//   Job 크기 / 송신 큐가 제공하는 내부 노드 크기로 엔진이 정하는 값이고,
+//   잡 풀과 공유 패킷 제어 객체 풀은 개수와 상한만 연다. 그쪽 블록 크기는
+//   Job 크기 / SharedPacketHandle이 제공하는 제어 객체 크기로 엔진이 정하는 값이고,
 //   서비스가 고를 수 있는 것처럼 보이게 두면 틀린 값을 넣을 자리만 생긴다.
 //   (Job 은 alignas(64) 라 정렬 요구까지 따라붙는다)
 
@@ -106,7 +106,7 @@ struct PoolBinSetConfig
 	}
 };
 
-// 블록 크기가 엔진에 고정된 풀의 설정. 잡 풀과 송신 큐 엔트리 풀이 쓴다.
+// 블록 크기가 엔진에 고정된 풀의 설정. 잡 풀과 공유 패킷 제어 객체 풀이 쓴다.
 struct PoolReserveConfig
 {
 	// 미리 만들어 둘 블록 수. 상한이 아니라 출발점이다.
@@ -126,13 +126,13 @@ struct EnginePoolConfig
 	// Job 객체. 블록 크기는 엔진이 sizeof(Job) 으로 정한다.
 	PoolReserveConfig job;
 
-	// 송신 큐 노드용 풀. 블록 크기는 송신 큐가 제공하는 내부 노드 크기로 정합니다.
-	PoolReserveConfig sendQueue;
+	// 공유 패킷 제어 객체용 풀. 블록 크기는 SharedPacketHandle이 제공하는 제어 객체 크기로 정합니다.
+	PoolReserveConfig sharedPacket;
 
 	bool IsValid() const
 	{
 		return packet.IsValid()
-			&& job.IsValid() && sendQueue.IsValid();
+			&& job.IsValid() && sharedPacket.IsValid();
 	}
 };
 
@@ -165,8 +165,8 @@ namespace EnginePoolPreset
 		config.job.blockCount = 1024;
 		config.job.commitLimitBytes = POOL_COMMIT_LIMIT_JOB;
 
-		config.sendQueue.blockCount = SEND_QUEUE_ENTRY_COUNT;
-		config.sendQueue.commitLimitBytes = POOL_COMMIT_LIMIT_SENDQUEUE;
+		config.sharedPacket.blockCount = SHARED_PACKET_CONTROL_COUNT;
+		config.sharedPacket.commitLimitBytes = POOL_COMMIT_LIMIT_SHAREDPACKET;
 
 		return config;
 	}
@@ -199,8 +199,8 @@ namespace EnginePoolPreset
 		config.job.blockCount = 1024;
 		config.job.commitLimitBytes = POOL_COMMIT_LIMIT_JOB;
 
-		config.sendQueue.blockCount = SEND_QUEUE_ENTRY_COUNT;
-		config.sendQueue.commitLimitBytes = POOL_COMMIT_LIMIT_SENDQUEUE;
+		config.sharedPacket.blockCount = SHARED_PACKET_CONTROL_COUNT;
+		config.sharedPacket.commitLimitBytes = POOL_COMMIT_LIMIT_SHAREDPACKET;
 
 		return config;
 	}

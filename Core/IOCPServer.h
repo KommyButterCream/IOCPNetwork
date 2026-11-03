@@ -76,15 +76,8 @@ private:
 	TlsMemoryPool* m_jobMemoryPool = nullptr;
 	TlsMemoryPool* m_packetMemoryPool = nullptr;
 
-	// 송신 큐 엔트리 전용 풀.
-	//
-	// m_packetMemoryPool 안의 빈 하나로 대신하지 않는 이유는, 그 풀이 수신
-	// 경로도 쓰기 때문이다(RecvPacketBuffer::ReadPacket). 같이 쓰면 송신
-	// 버스트가 수신 실패로 번진다. 따로 두면 LogStats("sendQueue") 의
-	// grow / acquireFail 이 송신 경로만의 신호가 되는 이점도 있다.
-	//
-	// 예전에는 HybridSendPacketPool 이 이 자리에 있었다.
-	TlsMemoryPool* m_sendQueueMemoryPool = nullptr;
+	// 공유 패킷 참조 제어 객체용 풀입니다. 큐 배열은 세션이 직접 소유합니다.
+	TlsMemoryPool* m_sharedPacketMemoryPool = nullptr;
 
 	HandlerContext m_handlerContext = {};
 

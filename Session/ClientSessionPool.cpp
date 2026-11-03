@@ -12,7 +12,7 @@
 
 using namespace Core::Util;
 
-ClientSessionPool::ClientSessionPool(uint32_t capacity, TlsMemoryPool* sendQueueMemoryPool, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig)
+ClientSessionPool::ClientSessionPool(uint32_t capacity, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig)
 {
 	m_capacity = capacity;
 
@@ -33,7 +33,7 @@ ClientSessionPool::ClientSessionPool(uint32_t capacity, TlsMemoryPool* sendQueue
 			return;
 		}
 
-		if (!m_sessions[i].InitializeMemoryPool(sendQueueMemoryPool, jobMemoryPool, packetMemoryPool, bufferConfig))
+		if (!m_sessions[i].InitializeMemoryPool(jobMemoryPool, packetMemoryPool, bufferConfig))
 		{
 			ENGINE_VIOLATION("failed to bind memory pools to client session %u of %u", i, m_capacity);
 			return;

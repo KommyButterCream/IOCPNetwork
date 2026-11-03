@@ -138,9 +138,7 @@ void ClientSession::ResetSession()
 		m_recvPacketBuffer->Reset();
 	}
 
-	// 전송 중이던 엔트리를 반환한다.
-	// 포인터만 버리면 패킷 메모리와 엔트리가 함께 누수된다.
-	// (RST 등으로 전송 도중에 세션이 정리되는 경로에서 실제로 발생한다)
+	// 미완료 IO가 정리된 뒤 세션이 보관한 송신 패킷을 반환합니다.
 	m_currentSendPacket.Reset();
 	m_sendOffset = 0;
 
@@ -182,9 +180,7 @@ void ClientSession::Finalize()
 
 	m_eventHandler = nullptr;
 
-	// 전송 중이던 엔트리를 반환한다. (ResetSession 과 같은 이유)
-	// 반드시 ReleaseMemoryResources 보다 먼저 해야 한다. 그쪽이 송신 큐를
-	// 지우고, 엔트리를 되돌릴 수 있는 것은 그 큐뿐이다.
+	// 미완료 IO가 정리된 뒤 세션이 보관한 송신 패킷을 반환합니다.
 	m_currentSendPacket.Reset();
 	m_sendOffset = 0;
 
@@ -282,21 +278,13 @@ bool ClientSession::OnDisconnect()
 	return BaseSession::OnDisconnect();
 }
 
-bool ClientSession::InitializeMemoryPool(TlsMemoryPool* sendQueueMemoryPool, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig)
+bool ClientSession::InitializeMemoryPool(TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig)
 {
 	if (!bufferConfig.IsValid())
 	{
 		ENGINE_VIOLATION("session %u received an invalid buffer config (recv %u/ring %u, send %u, queue %u)",
 			GetSessionID(), bufferConfig.maxRecvPacketSize, bufferConfig.recvRingSize,
 			bufferConfig.maxSendPacketSize, bufferConfig.sendQueueDepth);
-		return false;
-	}
-
-	// 널 풀은 아무것도 잡기 전에 걸러낸다. 예전에는 이 검사가 세 번째
-	// 단계에 있어서, 실패가 확정된 뒤에 링 버퍼와 잡 큐를 만들었다 지웠다.
-	if (!sendQueueMemoryPool)
-	{
-		ENGINE_VIOLATION("session %u received a null send queue memory pool", GetSessionID());
 		return false;
 	}
 
@@ -329,7 +317,7 @@ bool ClientSession::InitializeMemoryPool(TlsMemoryPool* sendQueueMemoryPool, Tls
 
 	m_sendPacketQueue = new SendPacketQueue();
 	if (!m_sendPacketQueue ||
-		!m_sendPacketQueue->Initialize(sendQueueMemoryPool, m_bufferConfig.sendQueueDepth))
+		!m_sendPacketQueue->Initialize(m_bufferConfig.sendQueueDepth))
 	{
 		ReleaseMemoryResources();
 		return false;
@@ -840,10 +828,10 @@ bool ClientSession::PostCurrentSend()
 	// 취소가 걸린 뒤에는 새 송신을 걸지 않는다. (사정은 BaseSession::BeginIO 주석)
 	//
 	// 정리를 BeginIO 앞에서 끝내는 것이 중요하다. 카운트를 들고 있는 동안은
-	// 세션이 반납되지 않으므로 여기서 엔트리를 되돌리는 것이 안전하고,
+	// 세션이 반납되지 않으므로 여기서 패킷를 되돌리는 것이 안전하고,
 	// BeginIO 가 false 를 돌려준 뒤에는 세션을 만질 수 없다.
 	//
-	// 엔트리를 되돌리지 않으면 패킷과 엔트리가 그대로 새고, m_sending
+	// 패킷를 되돌리지 않으면 패킷과 패킷가 그대로 새고, m_sending
 	// 토큰이 잡힌 채로 남아 이 세션은 이후 어떤 송신도 발행하지 못한다.
 	const uint32_t sessionIdForLog = GetSessionID();
 
@@ -862,7 +850,7 @@ bool ClientSession::PostCurrentSend()
 	if (!BeginIO())
 	{
 		// 위 검사와 여기 사이에 취소가 걸렸다. 정리는 카운트를 들고 있는
-		// BeginIO 안에서 할 수 없으므로, 발행만 포기하고 엔트리는 그대로 둔다.
+		// BeginIO 안에서 할 수 없으므로, 발행만 포기하고 패킷는 그대로 둔다.
 		// 세션 반납 경로(ResetSession / Finalize)가 m_currentSendPacket 을
 		// 회수한다.
 		LOGI("session %u declining to post send : IO cancel raced the post", sessionIdForLog);
@@ -1181,7 +1169,7 @@ void ClientSession::HandleSocketError(int errorCode, IO_OPERATION ioOperation)
 	else if (ioOperation == IO_OPERATION::SEND)
 	{
 		// SEND 인 경우
-		// 현재 처리되어야 하는 엔트리를 큐에 반환하고
+		// 현재 처리되어야 하는 패킷를 큐에 반환하고
 		// nullptr 초기화 한다.
 		m_currentSendPacket.Reset();
 		m_sendOffset = 0;

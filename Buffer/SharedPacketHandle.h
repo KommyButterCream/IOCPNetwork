@@ -23,6 +23,8 @@ public:
     // 엔진 내부 생성 함수입니다. 서비스는 CreateSharedPacket()을 사용합니다.
     [[nodiscard]] static SharedPacketHandle Create(TlsMemoryPool& pool, PacketHandle packet);
 
+    [[nodiscard]] static std::size_t GetControlSize() noexcept;
+
     IOCP_ENGINE_API void Reset() noexcept;
 
     [[nodiscard]] explicit operator bool() const noexcept { return m_control != nullptr; }

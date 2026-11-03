@@ -110,8 +110,8 @@ private:
 	TlsMemoryPool* m_jobMemoryPool = nullptr;
 	TlsMemoryPool* m_packetMemoryPool = nullptr;
 
-	// 송신 큐 엔트리 전용 풀. 분리 이유는 IOCPServer 의 같은 멤버 주석 참고.
-	TlsMemoryPool* m_sendQueueMemoryPool = nullptr;
+	// 공유 패킷 참조 제어 객체용 풀입니다.
+	TlsMemoryPool* m_sharedPacketMemoryPool = nullptr;
 	ClientSessionScheduler* m_clientSessionScheduler = nullptr;
 
 	// 서버가 조용해진 것을 알아차리는 감시 스레드.

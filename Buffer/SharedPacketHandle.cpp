@@ -93,3 +93,8 @@ void SharedPacketHandle::Release(Control* control) noexcept
     std::destroy_at(control);
     pool->Release(control);
 }
+
+std::size_t SharedPacketHandle::GetControlSize() noexcept
+{
+    return sizeof(Control);
+}

@@ -81,13 +81,13 @@ void IOCPClient::DestroyMemoryPools()
 	ENGINE_POOL::EnginePools pools;
 	pools.packet = m_packetMemoryPool;
 	pools.job = m_jobMemoryPool;
-	pools.sendQueue = m_sendQueueMemoryPool;
+	pools.sharedPacket = m_sharedPacketMemoryPool;
 
 	ENGINE_POOL::DestroyPools(pools);
 
 	m_packetMemoryPool = nullptr;
 	m_jobMemoryPool = nullptr;
-	m_sendQueueMemoryPool = nullptr;
+	m_sharedPacketMemoryPool = nullptr;
 }
 
 bool IOCPClient::StartClient(const char* serverIp, const uint16_t port, const SessionBufferConfig& bufferConfig, uint32_t iocpThreadCount, const EnginePoolConfig& poolConfig, const ClientLivenessConfig& livenessConfig)
@@ -224,9 +224,9 @@ bool IOCPClient::StartClient(const char* serverIp, const uint16_t port, const Se
 
 	m_jobMemoryPool = pools.job;
 	m_packetMemoryPool = pools.packet;
-	m_sendQueueMemoryPool = pools.sendQueue;
+	m_sharedPacketMemoryPool = pools.sharedPacket;
 
-	m_handlerContext.m_sharedPool = m_sendQueueMemoryPool;
+	m_handlerContext.m_sharedPool = m_sharedPacketMemoryPool;
 	m_handlerContext.m_packetPool = m_packetMemoryPool;
 	m_handlerContext.serviceContext = GetServiceContext();
 
@@ -247,7 +247,7 @@ bool IOCPClient::StartClient(const char* serverIp, const uint16_t port, const Se
 		LOGE("failed to initialize the client session");
 		return false;
 	}
-	if (!m_session->InitializeMemoryPool(m_sendQueueMemoryPool, m_jobMemoryPool, m_packetMemoryPool, bufferConfig))
+	if (!m_session->InitializeMemoryPool(m_jobMemoryPool, m_packetMemoryPool, bufferConfig))
 		return false;
 	m_session->SetEventHandler(this);
 
@@ -359,10 +359,10 @@ void IOCPClient::StopClient()
 		m_session = nullptr;
 	}
 
-	// 세션(m_session)을 이미 지웠으므로 엔트리는 모두 반납된 상태다.
-	if (m_sendQueueMemoryPool)
+	// 세션(m_session)을 이미 지웠으므로 세션이 소유한 패킷 참조는 모두 반납된 상태다.
+	if (m_sharedPacketMemoryPool)
 	{
-		m_sendQueueMemoryPool->LogStats("sendQueue");
+		m_sharedPacketMemoryPool->LogStats("sharedPacket");
 	}
 
 	// 재고만 돌려주고 객체는 남긴다. 늦게 도착하는 반납이 해제된 풀을
@@ -370,12 +370,12 @@ void IOCPClient::StopClient()
 	// (사정은 ENGINE_POOL::FinalizePools 주석)
 	//
 	// 반드시 세션을 지운 뒤여야 한다. 세션 정리가 담고 있던 패킷과 송신
-	// 엔트리를 이 풀들로 되돌리기 때문이다.
+	// 공유 제어 객체를 이 풀들로 되돌리기 때문이다.
 	{
 		ENGINE_POOL::EnginePools pools;
 		pools.packet = m_packetMemoryPool;
 		pools.job = m_jobMemoryPool;
-		pools.sendQueue = m_sendQueueMemoryPool;
+		pools.sharedPacket = m_sharedPacketMemoryPool;
 
 		ENGINE_POOL::FinalizePools(pools);
 	}

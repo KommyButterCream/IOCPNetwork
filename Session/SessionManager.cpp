@@ -18,7 +18,7 @@ SessionManager::~SessionManager()
 	Finalize();
 }
 
-bool SessionManager::Initialize(const uint32_t acceptSessionCount, const uint32_t clientSessionCount, TlsMemoryPool* sendQueueMemoryPool, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, CloseSocketFunc closeSocketFunc, const SessionBufferConfig& bufferConfig)
+bool SessionManager::Initialize(const uint32_t acceptSessionCount, const uint32_t clientSessionCount, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, CloseSocketFunc closeSocketFunc, const SessionBufferConfig& bufferConfig)
 {
 	m_acceptSessionCount = acceptSessionCount;
 	m_clientSessionCount = clientSessionCount;
@@ -29,7 +29,7 @@ bool SessionManager::Initialize(const uint32_t acceptSessionCount, const uint32_
 
 	m_acceptSessionPool->SetSocketCloseFunc(closeSocketFunc);
 
-	m_clientSessionPool = new ClientSessionPool(clientSessionCount, sendQueueMemoryPool, jobMemoryPool, packetMemoryPool, bufferConfig);
+	m_clientSessionPool = new ClientSessionPool(clientSessionCount, jobMemoryPool, packetMemoryPool, bufferConfig);
 	if (!m_clientSessionPool || !m_clientSessionPool->IsReady())
 		return false;
 
