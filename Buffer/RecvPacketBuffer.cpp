@@ -116,11 +116,8 @@ std::span<char> RecvPacketBuffer::GetWritableSpan() noexcept
 	// 두 위치가 같은 경우는 위에서 가득 찬 상태를 제외했으므로 빈 버퍼다.
 	if (m_writeOffset >= m_readOffset)
 	{
-		const std::size_t spaceToEnd = m_capacity - m_writeOffset;
-		const std::size_t totalSpace = m_capacity - m_bufferedSize;
-
-		// 링 끝을 넘지 않고 전체 빈 공간도 초과하지 않는 길이로 제한한다.
-		writableSize = spaceToEnd < totalSpace ? spaceToEnd : totalSpace;
+		// 가득 찬 상태는 위에서 제외했으므로 쓰기 위치부터 링 끝까지는 모두 빈 공간입니다.
+		writableSize = m_capacity - m_writeOffset;
 	}
 	else
 	{
@@ -164,7 +161,16 @@ bool RecvPacketBuffer::PeekPacketHeader(PACKET_HEADER& header) const noexcept
 		return false;
 	}
 
-	CopyReadableBytes(std::as_writable_bytes(std::span<PACKET_HEADER>{ &header, 1 }));
+	// 연속된 헤더는 고정 4바이트 복사로 처리해 컴파일러가 단순 로드로 최적화할 수 있게 합니다.
+	if (m_capacity - m_readOffset >= sizeof(PACKET_HEADER))
+	{
+		std::memcpy(&header, m_buffer.get() + m_readOffset, sizeof(PACKET_HEADER));
+	}
+	else
+	{
+		// 헤더가 링 끝과 시작에 걸친 경우에만 두 구간을 합칩니다.
+		CopyReadableBytes(std::as_writable_bytes(std::span<PACKET_HEADER>{ &header, 1 }));
+	}
 
 	return true;
 }
