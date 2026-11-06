@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include "ISessionEvent.h"
+#include "SessionDefs.h"
 
 #include "../Buffer/SessionBufferConfig.h"
 #include <memory> // for std::unique_ptr
@@ -32,14 +33,20 @@ private:
 	SessionManager& operator = (SessionManager&& rhs) noexcept = delete;
 
 private:
-	std::unique_ptr<AcceptSessionPool> m_acceptSessionPool;
 	std::unique_ptr<ClientSessionPool> m_clientSessionPool;
 
-	uint32_t m_acceptSessionCount = 0;
-	uint32_t m_clientSessionCount = 0;
+	std::unique_ptr<AcceptSessionPool> m_acceptSessionPool;
 
 public:
-	bool Initialize(const uint32_t acceptSessionCount, const uint32_t clientSessionCount, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, CloseSocketFunc closeSocketFunc, const SessionBufferConfig& bufferConfig);
+	bool Initialize(const uint32_t acceptSessionCount, 
+		const uint32_t clientSessionCount, 
+		TlsMemoryPool* jobMemoryPool, 
+		TlsMemoryPool* packetMemoryPool,
+		CloseSocketFunc closeSocketFunc, 
+		const SessionBufferConfig& bufferConfig,
+		SessionDisconnectNotifyFunc disconnectNotifyFunc = nullptr, 
+		void* disconnectNotifyContext = nullptr);
+
 	void Finalize();
 
 	// Accept Session //
@@ -48,15 +55,13 @@ public:
 	uint32_t GetAcceptSessionCount() const noexcept;
 
 	void CancelAllAcceptIORequests();
-	bool WaitForAllAcceptIOComplete(const uint32_t timeout_ms);
+	IOWaitResult WaitForAllAcceptIOComplete(const uint32_t timeout_ms);
 
 	// Client Session //
 public:
-	bool IsClientSessionFull() const;
 	uint32_t GetClientSessionInUseCount() const;
 	uint32_t CountClientSessionsFromAddress(const char* ipAddress) const;
 
-	ClientSession* GetClientSession(const uint32_t sessionId);
 	uint32_t GetClientSessionCount() const noexcept;
 
 	// Accept / Client 양쪽 세션이 들고 있는 미완료 I/O 총합.
@@ -71,19 +76,17 @@ public:
 	uint32_t GetTotalRecvPauseCount() const;
 
 	ClientSession* AcquireClientSession();
-	void ReleaseClientSession(ISession* session);
-
-	// 세션 종료를 서비스에 알릴 진입점을 클라이언트 세션 풀에 건다.
-	// 통지를 부르는 자리를 풀 하나로 모으기 위한 배선이다.
-	void SetSessionDisconnectNotifyFunc(SessionDisconnectNotifyFunc notifyFunc, void* context);
+	void ReleaseClientSession(ClientSession* session);
 
 	void RequestAllRecvSendIOCancel();
-	bool WaitForAllRecvSendIOCancelComplete(const uint32_t timeout_ms);
+	IOWaitResult WaitForAllRecvSendIOCancelComplete(const uint32_t timeout_ms);
 	void DisconnectAllSessions();
 	uint32_t SendHeartbeatRequests();
 
 	uint32_t DisconnectZombieSessions(uint64_t heartbeatTimeout_ms,
 		uint64_t stalledPeerTimeout_ms, uint64_t releaseBudget_ms);
 
+
+private:
 	void OnDisconnectRequest(ISession* session) override;
 };

@@ -235,16 +235,16 @@ bool IOCPServer::StartServer(const char* ipAddress, const uint16_t port, const u
 
 	LOGI("accept sessions %u (max connections %u)", acceptSessionCount, maxConnectionCount);
 
-	if (!m_sessionManager->Initialize(acceptSessionCount, maxConnectionCount, m_jobMemoryPool, m_packetMemoryPool, IOCPCore::CloseSocketHandle, bufferConfig))
+	if (!m_sessionManager->Initialize(
+		acceptSessionCount, 
+		maxConnectionCount, 
+		m_jobMemoryPool, 
+		m_packetMemoryPool, 
+		IOCPCore::CloseSocketHandle, 
+		bufferConfig,
+		&IOCPServer::OnSessionDisconnectNotify,
+		this))
 		return false;
-
-	// 세션 종료 통지를 세션 풀에 맡긴다.
-	//
-	// 이 서버가 직접 부르지 않는다. 반납 경로가 여럿이라(소켓 오류 /
-	// 좀비 정리 / 파싱 실패 / 접속 시퀀스 실패 / 서버 종료) 부르는 자리를
-	// 여기저기 두면 하나씩 빠진다. 실제로 그랬다 — 정상 종료 한 경로에만
-	// 있었다. 반납이 실제로 일어나는 곳은 풀 하나뿐이므로 거기서 부른다.
-	m_sessionManager->SetSessionDisconnectNotifyFunc(&IOCPServer::OnSessionDisconnectNotify, this);
 
 	if (!PrepareAccept())
 	{
@@ -289,26 +289,49 @@ void IOCPServer::StopServer()
 
 	if (m_sessionManager)
 	{
-		LOGI("shutdown 1/6 : cancelling all AcceptEx IO");
 		m_sessionManager->CancelAllAcceptIORequests();
-
-		// 모든 세션의 발행이 막힌 뒤 리슨 소켓에 남은 요청을 취소한다.
 		if (!CancelAllAcceptIO())
 			ENGINE_VIOLATION("failed to cancel outstanding AcceptEx on the listen socket");
 
-		LOGI("shutdown 2/6 : waiting for AcceptEx cancellation");
-		m_sessionManager->WaitForAllAcceptIOComplete(10'000);
-	}
-
-	if (m_sessionManager)
-	{
-		LOGI("shutdown 3/6 : cancelling all recv/send IO");
 		m_sessionManager->RequestAllRecvSendIOCancel();
 
-		LOGI("shutdown 4/6 : waiting for recv/send cancellation");
-		m_sessionManager->WaitForAllRecvSendIOCancelComplete(10'000);
+		// 10초는 진단 주기다. 완료가 늦어져도 워커와 세션 풀은 유지한다.
+		constexpr DWORD diagnosticIntervalMs = 10'000;
+		const ULONGLONG started = ::GetTickCount64();
+		ULONGLONG nextDiagnostic = started + diagnosticIntervalMs;
+		auto waitForCompletion = [&](const char* operation, auto wait)
+		{
+			bool reportedError = false;
+			for (;;)
+			{
+				const ULONGLONG now = ::GetTickCount64();
+				const DWORD remaining = now < nextDiagnostic ? static_cast<DWORD>(nextDiagnostic - now) : 0;
+				const auto result = (m_sessionManager->*wait)(remaining);
+				if (result.status == IOWaitStatus::Completed)
+					return;
 
-		// 세션 초기화는 Job 워커 종료와 준비 큐 참조 반환 뒤에 수행합니다.
+				const ULONGLONG checked = ::GetTickCount64();
+				const bool failed = result.status == IOWaitStatus::Failed;
+				if (checked >= nextDiagnostic || (failed && !reportedError))
+				{
+					LOGW("shutdown waiting for %s: session=%u wait=%s error=%u outstanding=%u elapsed=%llu ms",
+						operation, result.sessionId, failed ? "failed" : "timeout", result.error,
+						m_sessionManager->GetOutstandingIOCount(), checked - started);
+					nextDiagnostic = checked + diagnosticIntervalMs;
+					reportedError = failed;
+				}
+
+				// 이벤트 오류 시에도 실제 카운트가 0이 되면 다음 검사에서 통과한다.
+				if (failed)
+					::Sleep(50);
+			}
+		};
+
+		waitForCompletion("AcceptEx", &SessionManager::WaitForAllAcceptIOComplete);
+
+		// 첫 취소 순회와 겹친 Accept 완료가 연결을 인계했을 수 있다.
+		m_sessionManager->RequestAllRecvSendIOCancel();
+		waitForCompletion("recv/send", &SessionManager::WaitForAllRecvSendIOCancelComplete);
 	}
 
 	// I/O 개수가 0이어도 완료 함수의 마지막 반환 처리가 남아 있을 수 있습니다.
@@ -685,165 +708,82 @@ void IOCPServer::HandleAccept(uint32_t sessionId, DWORD bytesTransferred)
 		}
 	}
 
-	ClientSession* clientSession = nullptr;
+	ClientSession* clientSession = m_sessionManager->AcquireClientSession();
 
-	if (!m_sessionManager->IsClientSessionFull())
+	if (!clientSession)
 	{
-		// Client Session Pool 이 여유 있는 경우
-		//
-		// 예전에는 AcquireClientSession 이 ISession* 를 돌려주어 여기서
-		// dynamic_cast 로 되돌렸다. 풀에는 ClientSession 만 들어가므로
-		// 그 RTTI 조회는 절대 실패할 수 없는 검사였고, 실패를 "풀 고갈" 로
-		// 착각하게 만드는 분기까지 달고 있었다. 이제 임대가 구체 타입을
-		// 돌려주므로 아래 널 검사는 순수하게 고갈만 뜻한다.
-		clientSession = m_sessionManager->AcquireClientSession();
-
-		if (!clientSession)
-		{
-			// Client Session 획득에 실패한 경우
-			// Full 체크 할 때에는 여유 있었는데
-			// 그 사이에 다른 스레드가 클라이언트 세션을 가져갔는데
-			// 마침 세션 프리리스트에 대기 중인 세션이 없는 경우
-			// 해당 연결을 강제 종료 처리 후 Accept 를 걸어 준다.
-
-			IOCPCore::CloseSocketHandle(acceptSession->DetachAcceptSocket());
-
-			// ResetSession 이 아니다. 우리 몫의 카운트를 아직 들고 있다.
-			// (사정은 AcceptSession::ResetForRepost 주석)
-			acceptSession->ResetForRepost();
-
-			const bool nextAcceptPosted = PostAccept(acceptSession);
-
-			if (!nextAcceptPosted)
-			{
-				// 세션이 실제로 비었다. 놓아야 주기 점검이 다시 채울 수 있다.
-				acceptSession->ReleaseSession();
-			}
-
-
-			// 걸려 있는 AcceptEx 가 하나도 없으면 새 접속을 못 받는 상태다.
-			ReportAcceptStarvationIfNeeded();
-
-			if (!nextAcceptPosted)
-			{
-				LOGE("failed to post the next AcceptEx after the client session pool handed out nothing");
-
-				return;
-			}
-		}
-		else
-		{
-			// Client Session 획득에 성공한 경우
-			// socket 을 붙이고 IOCP 에 등록 후 PostRecv 하러 간다.
-
-			// 주소는 이 함수 앞부분에서 이미 읽어 두었다. (주소당 제한을
-			// 세션 임대 전에 판단해야 해서 앞으로 옮겼다)
-
-			const SOCKET acceptedSocket = acceptSession->DetachAcceptSocket();
-
-			if (acceptedSocket == INVALID_SOCKET)
-			{
-				// 종료 측이 먼저 소켓을 가져갔다면 임대한 연결 세션을 즉시 돌려준다.
-				if (::ReadAcquire(&m_serverShutdownRequested) == FALSE)
-				{
-					ENGINE_VIOLATION("accept session %u completed without a socket",
-						acceptSession->GetSessionID());
-				}
-
-				m_sessionManager->ReleaseClientSession(clientSession);
-
-				// 아직 완료 워커가 세션을 소유한 동안 이번 완료 처리를 끝낸다.
-				acceptSession->ResetForRepost();
-				acceptSession->ReleaseSession();
-
-				return;
-			}
-
-			// 검사한 값과 보고하는 값이 같아야 하므로 한 번만 읽는다.
-			// 따로 읽으면 위반을 기록하면서 그 근거로는 멀쩡한 값을 찍을 수 있다.
-			const SOCKET handedOutSocket = clientSession->GetClientSocket();
-			const ServerSessionState handedOutState = clientSession->GetServerSessionState();
-
-			if (handedOutSocket != INVALID_SOCKET || handedOutState != ServerSessionState::CONNECT_READY)
-			{
-				// 풀에서 막 임대한 세션이 깨끗하지 않다. 사용 중인 세션이 재배포된 것이다.
-				ENGINE_VIOLATION("session %u was handed out but is not clean (socket %d, state %d)",
-					clientSession->GetSessionID(), static_cast<int>(handedOutSocket), static_cast<int>(handedOutState));
-			}
-
-			LOGI("socket %d attached to session %u (via accept session %u)", (int)acceptedSocket, clientSession->GetSessionID(), acceptSession->GetSessionID());
-
-			clientSession->AttachSocket(acceptedSocket);
-			clientSession->SetRemoteAddress(strIPAddress, remotePort);
-
-			// Session 과 1:1 대응하는 User 를 초기화 한다.
-			// Session 은 네트워크 담당, User 는 서비스 로직을 담당한다.
-			//User* pUser = m_userManager->GetUser(clientSession->GetSessionID());
-			//pUser->ResetUser();
-			//if (!pUser->Initialize(clientSession, clientSession->GetSessionID()))
-			//{
-			//	__debugbreak();
-			//}
-			//clientSession->SetUser(pUser);
-
-			const bool nextAcceptPosted = PostAccept(acceptSession);
-
-			if (!nextAcceptPosted)
-			{
-				// 세션이 실제로 비었다. 놓아야 주기 점검이 다시 채울 수 있다.
-				acceptSession->ReleaseSession();
-			}
-
-
-			// 걸려 있는 AcceptEx 가 하나도 없으면 새 접속을 못 받는 상태다.
-			ReportAcceptStarvationIfNeeded();
-
-			if (::ReadAcquire(&m_serverShutdownRequested) == TRUE)
-			{
-				m_sessionManager->ReleaseClientSession(clientSession);
-				return;
-			}
-
-			if (!nextAcceptPosted)
-			{
-				LOGW("could not repost accept session %u; continuing with the accepted connection", sessionId);
-			}
-		}
-	}
-	else
-	{
-		// Client Session Pool 이 여유 없는 경우
-		// 해당 연결을 강제 종료 처리 후 Accept 를 걸어 준다.
-
-		LOGW("accept session %u rejected a connection : the client session pool is full", acceptSession->GetSessionID());
-
 		IOCPCore::CloseSocketHandle(acceptSession->DetachAcceptSocket());
-
-		// ResetSession 이 아니다. 우리 몫의 카운트를 아직 들고 있다.
-		// (사정은 AcceptSession::ResetForRepost 주석)
 		acceptSession->ResetForRepost();
 
-		const bool nextAcceptPosted = PostAccept(acceptSession);
-
-		if (!nextAcceptPosted)
+		if (!PostAccept(acceptSession))
 		{
-			// 세션이 실제로 비었다. 놓아야 주기 점검이 다시 채울 수 있다.
 			acceptSession->ReleaseSession();
-		}
-
-
-		// 걸려 있는 AcceptEx 가 하나도 없으면 새 접속을 못 받는 상태다.
-		ReportAcceptStarvationIfNeeded();
-
-		if (!nextAcceptPosted)
-		{
 			LOGE("failed to post the next AcceptEx after rejecting a connection (pool full)");
 		}
+
+		ReportAcceptStarvationIfNeeded();
+		return;
+	}
+
+	const SOCKET acceptedSocket = acceptSession->DetachAcceptSocket();
+
+	if (acceptedSocket == INVALID_SOCKET)
+	{
+		// 종료 측이 먼저 소켓을 가져갔다면 임대한 연결 세션을 즉시 돌려준다.
+		if (::ReadAcquire(&m_serverShutdownRequested) == FALSE)
+		{
+			ENGINE_VIOLATION("accept session %u completed without a socket",
+				acceptSession->GetSessionID());
+		}
+
+		m_sessionManager->ReleaseClientSession(clientSession);
+
+		// 아직 완료 워커가 세션을 소유한 동안 이번 완료 처리를 끝낸다.
+		acceptSession->ResetForRepost();
+		acceptSession->ReleaseSession();
 
 		return;
 	}
 
-	ENGINE_CHECK_RETVOID(clientSession != nullptr, "reached the connect sequence without a client session");
+	// 검사한 값과 보고하는 값이 같아야 하므로 한 번만 읽는다.
+	// 따로 읽으면 위반을 기록하면서 그 근거로는 멀쩡한 값을 찍을 수 있다.
+	const SOCKET handedOutSocket = clientSession->GetClientSocket();
+	const ServerSessionState handedOutState = clientSession->GetServerSessionState();
+
+	if (handedOutSocket != INVALID_SOCKET || handedOutState != ServerSessionState::CONNECT_READY)
+	{
+		// 풀에서 막 임대한 세션이 깨끗하지 않다. 사용 중인 세션이 재배포된 것이다.
+		ENGINE_VIOLATION("session %u was handed out but is not clean (socket %d, state %d)",
+			clientSession->GetSessionID(), static_cast<int>(handedOutSocket), static_cast<int>(handedOutState));
+	}
+
+	LOGI("socket %d attached to session %u (via accept session %u)", (int)acceptedSocket, clientSession->GetSessionID(), acceptSession->GetSessionID());
+
+	clientSession->AttachSocket(acceptedSocket);
+	clientSession->SetRemoteAddress(strIPAddress, remotePort);
+
+	const bool nextAcceptPosted = PostAccept(acceptSession);
+
+	if (!nextAcceptPosted)
+	{
+		// 세션이 실제로 비었다. 놓아야 주기 점검이 다시 채울 수 있다.
+		acceptSession->ReleaseSession();
+	}
+
+
+	// 걸려 있는 AcceptEx 가 하나도 없으면 새 접속을 못 받는 상태다.
+	ReportAcceptStarvationIfNeeded();
+
+	if (::ReadAcquire(&m_serverShutdownRequested) == TRUE)
+	{
+		m_sessionManager->ReleaseClientSession(clientSession);
+		return;
+	}
+
+	if (!nextAcceptPosted)
+	{
+		LOGW("could not repost accept session %u; continuing with the accepted connection", sessionId);
+	}
 
 	// 접속 시퀀스가 도는 동안 이 세션을 붙잡아 둔다.
 	//

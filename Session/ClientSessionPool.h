@@ -7,6 +7,7 @@
 #include <Windows.h>
 #include <stdint.h>
 #include "ISessionEvent.h"
+#include "SessionDefs.h"
 #include <memory> // for std::unique_ptr
 
 #include "../Buffer/SessionBufferConfig.h"
@@ -63,9 +64,6 @@ public:
 	// 세션 수량 반환
 	uint32_t GetSessionCount() const;
 
-	// 세션이 모두 Connected 되어서 사용 중인지 bool 반환
-	bool IsSessionFull() const;
-
 	// 지금 임대되어 있는 세션 수.
 	// 노드 상태를 훑어서 센다. 별도 카운터를 두면 예외 경로에서 어긋날 수
 	// 있고, 이 함수는 접속/인증 때만 불리므로 O(capacity) 로 충분하다.
@@ -79,7 +77,7 @@ public:
 
 	// 세션 연결 해제
 	void RequestAllRecvSendIOCancel();
-	bool WaitForAllRecvSendIOCancelComplete(const uint32_t timeout_ms);
+	IOWaitResult WaitForAllRecvSendIOCancelComplete(const uint32_t timeout_ms);
 	void DisconnectAllSessions();
 	uint32_t SendHeartbeatRequests();
 	// stalledPeerTimeout_ms 는 "우리 송신이 밀려 있는" 세션에만 적용하는 더 긴

@@ -239,9 +239,7 @@ bool IOCPClient::StartClient(const char* serverIp, const uint16_t port, const Se
 	m_session = new ClientSession;
 	if (!m_session)
 		return false;
-	// Initialize 는 CreateEvent 가 실패하면 false 다. 그 세션은
-	// m_ioCancelCompleteEvent 없이 살아남고, WaitForIOCancelComplete 가
-	// 널 이벤트를 보고 무조건 true 를 반환해 취소 대기가 무의미해진다.
+	// 취소 완료 이벤트를 준비한 세션만 연결에 사용한다.
 	if (!m_session->Initialize(SESSION_ROLE::CLIENT, 0))
 	{
 		LOGE("failed to initialize the client session");
@@ -340,7 +338,7 @@ void IOCPClient::StopClient()
 		//
 		// 이벤트는 disconnect 를 요청한 쪽이 CancelPendingIO 로 무장해
 		// 두었으므로, 이미 다른 스레드가 절차를 진행 중이어도 세워진다.
-		if (!m_session->WaitForIOCancelComplete(10'000))
+		if (m_session->WaitForIOCancelComplete(10'000).status != IOWaitStatus::Completed)
 		{
 			ENGINE_VIOLATION("session %u IO cancel did not complete during shutdown (io count %ld)",
 				m_session->GetSessionID(), m_session->GetOutstandingIOCount());

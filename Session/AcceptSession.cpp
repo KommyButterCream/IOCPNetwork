@@ -180,10 +180,23 @@ LONG AcceptSession::GetAcceptIOCount() const
 	return m_acceptIOCount;
 }
 
-bool AcceptSession::WaitForAcceptIOComplete(uint32_t timeout_ms) const
+IOWaitResult AcceptSession::WaitForAcceptIOComplete(uint32_t timeout_ms) const
 {
 	if (GetAcceptIOCount() == 0)
-		return true;
+		return { IOWaitStatus::Completed };
 
-	return m_acceptIOCompleteEvent && ::WaitForSingleObject(m_acceptIOCompleteEvent, timeout_ms) == WAIT_OBJECT_0;
+	if (!m_acceptIOCompleteEvent)
+		return { IOWaitStatus::Failed, GetSessionID(), ERROR_INVALID_HANDLE };
+
+	const DWORD result = ::WaitForSingleObject(m_acceptIOCompleteEvent, timeout_ms);
+	if (result == WAIT_FAILED)
+	{
+		const DWORD error = ::GetLastError();
+		return { IOWaitStatus::Failed, GetSessionID(), error };
+	}
+
+	if (GetAcceptIOCount() == 0)
+		return { IOWaitStatus::Completed };
+
+	return { IOWaitStatus::TimedOut, GetSessionID() };
 }

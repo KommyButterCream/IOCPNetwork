@@ -247,12 +247,6 @@ uint32_t ClientSessionPool::GetSessionCount() const
 	return m_capacity;
 }
 
-bool ClientSessionPool::IsSessionFull() const
-{
-	Core::Sync::SRWReadLockGuard lockguard(m_lock);
-	return (m_freeList == nullptr);
-}
-
 uint32_t ClientSessionPool::GetInUseCount() const
 {
 	if (!m_nodes)
@@ -317,9 +311,9 @@ void ClientSessionPool::RequestAllRecvSendIOCancel()
 
 	for (uint32_t i = 0; i < m_capacity; ++i)
 	{
-		ClientSession* session = &m_sessions[i];
+		auto session = TryAcquireSessionReference(i);
 
-		if (session != nullptr && session->IsTransportConnected())
+		if (session && session->IsTransportConnected())
 		{
 			if (!session->CancelPendingIO())
 			{
@@ -329,26 +323,20 @@ void ClientSessionPool::RequestAllRecvSendIOCancel()
 	}
 }
 
-bool ClientSessionPool::WaitForAllRecvSendIOCancelComplete(const uint32_t timeout_ms)
+IOWaitResult ClientSessionPool::WaitForAllRecvSendIOCancelComplete(const uint32_t timeout_ms)
 {
-	if (!m_sessions)
-		return false;
-
+	// 모든 세션이 이번 대기 주기의 같은 마감 시각을 사용한다.
+	const ULONGLONG deadline = ::GetTickCount64() + timeout_ms;
 	for (uint32_t i = 0; i < m_capacity; ++i)
 	{
-		ClientSession* session = &m_sessions[i];
-
-		if (session != nullptr && session->IsTransportConnected())
-		{
-			if (!session->WaitForIOCancelComplete(timeout_ms))
-			{
-				ENGINE_VIOLATION("session %u IO cancel did not complete within %u ms", session->GetSessionID(), timeout_ms);
-				return false;
-			}
-		}
+		const ULONGLONG now = ::GetTickCount64();
+		const DWORD remaining = now < deadline ? static_cast<DWORD>(deadline - now) : 0;
+		const auto result = m_sessions[i].WaitForIOCancelComplete(remaining);
+		if (result.status != IOWaitStatus::Completed)
+			return result;
 	}
 
-	return true;
+	return { IOWaitStatus::Completed };
 }
 
 void ClientSessionPool::DisconnectAllSessions()

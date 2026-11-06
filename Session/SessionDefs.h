@@ -2,6 +2,15 @@
 
 #include <stdint.h>
 
+enum class IOWaitStatus { Completed, TimedOut, Failed };
+
+struct IOWaitResult
+{
+	IOWaitStatus status;
+	uint32_t sessionId = UINT32_MAX;
+	uint32_t error = 0;
+};
+
 enum class IO_OPERATION
 {
 	INVALID = 0,

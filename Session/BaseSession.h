@@ -177,7 +177,7 @@ public:
 	void DecrementIO();
 
 	bool CancelPendingIO();
-	bool WaitForIOCancelComplete(const uint32_t timeout_ms);
+	IOWaitResult WaitForIOCancelComplete(const uint32_t timeout_ms);
 
 	// I/O 발행을 시도한다. 발행 지점(PostReceive / PostCurrentSend)이
 	// IncrementIO 대신 부른다.

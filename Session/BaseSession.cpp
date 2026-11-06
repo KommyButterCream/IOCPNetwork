@@ -320,89 +320,40 @@ void BaseSession::ReissueCancelIo()
 	::CancelIoEx(reinterpret_cast<HANDLE>(m_clientSocket), nullptr);
 }
 
-bool BaseSession::WaitForIOCancelComplete(const uint32_t timeout_ms)
+IOWaitResult BaseSession::WaitForIOCancelComplete(const uint32_t timeout_ms)
 {
-	// 기다리는 목적은 "미완료 I/O 가 없는 상태" 하나다. 이벤트는 그걸
-	// 알리는 수단일 뿐이므로, 이미 0 이면 이벤트를 보지 않고 통과한다.
-	// 신호를 놓쳤더라도 여기서 걸러진다.
-	if (::ReadAcquire(&m_ioCount) == 0)
-	{
-		return true;
-	}
-
-	if (!m_ioCancelCompleteEvent)
-	{
-		return true;
-	}
-
-	// 한 번에 통째로 기다리지 않고 쪼개서 기다린다.
-	//
-	// 예전에는 여기서 timeout_ms 를 한 번에 걸었다. 그러면 게이트를 막
-	// 통과한 스레드가 취소 뒤에 발행한 I/O 를 아무도 다시 취소하지 않으므로,
-	// 그 한 건 때문에 10초를 통째로 태우고 타임아웃했다.
-	// (실측: bench Phase 4 반복 8회 전부)
-	//
-	// 슬라이스마다 CancelIoEx 를 다시 건다. 게이트가 닫힌 뒤로는 새 I/O 가
-	// 생기지 않으므로 낙오는 유한하고, 보통 두 번째 취소에서 걷힌다.
-	constexpr DWORD CANCEL_RETRY_SLICE_MS = 50;
-
+	constexpr DWORD cancelRetryMs = 50;
 	const ULONGLONG deadline = ::GetTickCount64() + timeout_ms;
 
-	for (;;)
+	while (GetOutstandingIOCount() != 0)
 	{
-		const ULONGLONG now = ::GetTickCount64();
-		const DWORD remaining = (now >= deadline)
-			? 0
-			: static_cast<DWORD>(deadline - now);
-
-		if (remaining == 0)
+		// 취소 직전에 발행된 I/O와 일시정지된 수신 참조까지 회수한다.
+		ReissueCancelIo();
+		ReleaseUnpostedIO();
+		if (GetOutstandingIOCount() == 0)
 			break;
 
-		const DWORD slice = (remaining < CANCEL_RETRY_SLICE_MS) ? remaining : CANCEL_RETRY_SLICE_MS;
+		if (!m_ioCancelCompleteEvent)
+			return { IOWaitStatus::Failed, GetSessionID(), ERROR_INVALID_HANDLE };
 
-		const DWORD waitResult = ::WaitForSingleObject(m_ioCancelCompleteEvent, slice);
+		const ULONGLONG now = ::GetTickCount64();
+		if (now >= deadline)
+			return { IOWaitStatus::TimedOut, GetSessionID() };
 
-		if (waitResult == WAIT_OBJECT_0)
+		const DWORD remaining = static_cast<DWORD>(deadline - now);
+		const DWORD slice = remaining < cancelRetryMs ? remaining : cancelRetryMs;
+		const DWORD result = ::WaitForSingleObject(m_ioCancelCompleteEvent, slice);
+		if (result == WAIT_FAILED)
 		{
-			LOGI("session %u IO cancel completed", GetSessionID());
-			return true;
+			const DWORD error = ::GetLastError();
+			return { IOWaitStatus::Failed, GetSessionID(), error };
 		}
-
-		if (waitResult != WAIT_TIMEOUT)
-		{
-			LOGE("session %u IO cancel wait returned %lu (error %lu)",
-				GetSessionID(), waitResult, ::GetLastError());
-			return false;
-		}
-
-		// 신호를 놓쳤을 수도 있으니 목적을 직접 확인한다.
-		if (::ReadAcquire(&m_ioCount) == 0)
-		{
-			LOGW("session %u IO cancel event was missed but the count is zero", GetSessionID());
-			return true;
-		}
-
-		// 게이트를 막 통과한 스레드가 취소 직후에 멈춤을 표시했을 수 있다.
-		// 그 카운트는 완료 통지가 아니라 여기서만 걷힌다.
-		ReleaseUnpostedIO();
-
-		// 낙오가 있으면 여기서 걷힌다.
-		ReissueCancelIo();
+		// 신호와 마지막 완료가 경합할 수 있으므로 카운트로 다시 판정한다.
+		if (result == WAIT_OBJECT_0 && GetOutstandingIOCount() != 0)
+			::Sleep(1);
 	}
 
-	const LONG outstanding = ::ReadAcquire(&m_ioCount);
-
-	if (outstanding == 0)
-	{
-		LOGW("session %u IO cancel event was missed but the count is zero", GetSessionID());
-		return true;
-	}
-
-	// 호출부는 이 실패를 무시하고 세션 해제로 진행하므로
-	// 남아 있는 IO 수까지 남겨야 원인 추적이 가능하다.
-	LOGE("session %u IO cancel timed out after %u ms (io count still %ld)",
-		GetSessionID(), timeout_ms, outstanding);
-	return false;
+	return { IOWaitStatus::Completed };
 }
 
 bool BaseSession::IsIOCancelRequested() const

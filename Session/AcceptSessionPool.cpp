@@ -76,22 +76,20 @@ void AcceptSessionPool::CancelAllAcceptIORequests()
 	}
 }
 
-bool AcceptSessionPool::WaitForAllAcceptIOComplete(uint32_t timeout_ms)
+IOWaitResult AcceptSessionPool::WaitForAllAcceptIOComplete(uint32_t timeout_ms)
 {
-	bool allCompleted = true;
-
+	// 모든 세션이 이번 대기 주기의 같은 마감 시각을 사용한다.
+	const ULONGLONG deadline = ::GetTickCount64() + timeout_ms;
 	for (uint32_t i = 0; i < m_capacity; ++i)
 	{
-		const auto& session = m_sessions[i];
-
-		if (!session.WaitForAcceptIOComplete(timeout_ms))
-		{
-			ENGINE_VIOLATION("accept session %u IO did not complete within %u ms", session.GetSessionID(), timeout_ms);
-			allCompleted = false;
-		}
+		const ULONGLONG now = ::GetTickCount64();
+		const DWORD remaining = now < deadline ? static_cast<DWORD>(deadline - now) : 0;
+		const auto result = m_sessions[i].WaitForAcceptIOComplete(remaining);
+		if (result.status != IOWaitStatus::Completed)
+			return result;
 	}
 
-	return allCompleted;
+	return { IOWaitStatus::Completed };
 }
 
 void AcceptSessionPool::SetSocketCloseFunc(CloseSocketFunc closeSocketFunc)

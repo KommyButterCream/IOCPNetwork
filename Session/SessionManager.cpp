@@ -10,16 +10,19 @@ using namespace Core::Util;
 #include "ClientSession.h"
 #include "ClientSessionPool.h"
 
-SessionManager::SessionManager()
-{
-}
+SessionManager::SessionManager() = default;
 
-SessionManager::~SessionManager()
-{
-	Finalize();
-}
+SessionManager::~SessionManager() = default;
 
-bool SessionManager::Initialize(const uint32_t acceptSessionCount, const uint32_t clientSessionCount, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, CloseSocketFunc closeSocketFunc, const SessionBufferConfig& bufferConfig)
+bool SessionManager::Initialize(
+	const uint32_t acceptSessionCount, 
+	const uint32_t clientSessionCount, 
+	TlsMemoryPool* jobMemoryPool,
+	TlsMemoryPool* packetMemoryPool,
+	CloseSocketFunc closeSocketFunc, 
+	const SessionBufferConfig& bufferConfig,
+	SessionDisconnectNotifyFunc disconnectNotifyFunc,
+	void* disconnectNotifyContext)
 {
 	// 실행 중인 풀을 교체하면 기존 세션을 사용하는 워커의 참조가 무효화된다.
 	if (m_acceptSessionPool || m_clientSessionPool)
@@ -36,39 +39,28 @@ bool SessionManager::Initialize(const uint32_t acceptSessionCount, const uint32_
 	acceptPool->SetSocketCloseFunc(closeSocketFunc);
 	clientPool->SetSocketCloseFunc(closeSocketFunc);
 	clientPool->SetEventHandler(this);
+	clientPool->SetDisconnectNotifyFunc(disconnectNotifyFunc, disconnectNotifyContext);
 
 	m_acceptSessionPool = std::move(acceptPool);
 	m_clientSessionPool = std::move(clientPool);
-
-	m_acceptSessionCount = acceptSessionCount;
-	m_clientSessionCount = clientSessionCount;
 
 	return true;
 }
 
 void SessionManager::Finalize()
 {
-	m_acceptSessionCount = 0;
-	m_clientSessionCount = 0;
-
 	m_acceptSessionPool.reset();
 	m_clientSessionPool.reset();
 }
 
 AcceptSession* SessionManager::GetAcceptSession(const uint32_t sessionId)
 {
-	if (!m_acceptSessionPool)
-		return nullptr;
-
-	if (sessionId >= m_acceptSessionPool->GetSessionCount())
-		return nullptr;
-
-	return m_acceptSessionPool->GetSession(sessionId);
+	return m_acceptSessionPool ? m_acceptSessionPool->GetSession(sessionId) : nullptr;
 }
 
 uint32_t SessionManager::GetAcceptSessionCount() const noexcept
 {
-	return m_acceptSessionCount;
+	return m_acceptSessionPool ? m_acceptSessionPool->GetSessionCount() : 0;
 }
 
 void SessionManager::CancelAllAcceptIORequests()
@@ -79,23 +71,13 @@ void SessionManager::CancelAllAcceptIORequests()
 	m_acceptSessionPool->CancelAllAcceptIORequests();
 }
 
-bool SessionManager::WaitForAllAcceptIOComplete(const uint32_t timeout_ms)
+IOWaitResult SessionManager::WaitForAllAcceptIOComplete(const uint32_t timeout_ms)
 {
+	// 풀이 생성되기 전에 종료하면 기다릴 Accept I/O가 없다.
 	if (!m_acceptSessionPool)
-		return false;
+		return { IOWaitStatus::Completed };
 
 	return m_acceptSessionPool->WaitForAllAcceptIOComplete(timeout_ms);
-}
-
-bool SessionManager::IsClientSessionFull() const
-{
-	// 이 파일의 다른 함수들과 달리 널 검사가 빠져 있었다.
-	// 풀이 없으면 세션을 내줄 수 없으므로 "가득 찼다" 가 안전한 답이다.
-	// 그러면 호출부(HandleAccept)가 임대를 시도하지 않고 연결을 거절한다.
-	if (!m_clientSessionPool)
-		return true;
-
-	return m_clientSessionPool->IsSessionFull();
 }
 
 uint32_t SessionManager::GetClientSessionInUseCount() const
@@ -114,28 +96,9 @@ uint32_t SessionManager::CountClientSessionsFromAddress(const char* ipAddress) c
 	return m_clientSessionPool->CountSessionsFromAddress(ipAddress);
 }
 
-ClientSession* SessionManager::GetClientSession(const uint32_t sessionId)
-{
-	if (!m_clientSessionPool)
-		return nullptr;
-
-	if (sessionId >= m_clientSessionPool->GetSessionCount())
-		return nullptr;
-
-	return m_clientSessionPool->GetSession(sessionId);
-}
-
 uint32_t SessionManager::GetClientSessionCount() const noexcept
 {
-	return m_clientSessionCount;
-}
-
-void SessionManager::SetSessionDisconnectNotifyFunc(SessionDisconnectNotifyFunc notifyFunc, void* context)
-{
-	if (!m_clientSessionPool)
-		return;
-
-	m_clientSessionPool->SetDisconnectNotifyFunc(notifyFunc, context);
+	return m_clientSessionPool ? m_clientSessionPool->GetSessionCount() : 0;
 }
 
 uint32_t SessionManager::GetPeakJobQueueDepth() const
@@ -182,7 +145,7 @@ ClientSession* SessionManager::AcquireClientSession()
 	return session;
 }
 
-void SessionManager::ReleaseClientSession(ISession* session)
+void SessionManager::ReleaseClientSession(ClientSession* session)
 {
 	if (!m_clientSessionPool)
 		return;
@@ -194,11 +157,7 @@ void SessionManager::ReleaseClientSession(ISession* session)
 		"ReleaseClientSession called with session id %u but capacity is %u",
 		sessionId, m_clientSessionPool->GetSessionCount());
 
-	// 기반 타입이 들어오는 유일한 지점이다. ISessionEvent::OnDisconnectRequest
-	// 가 ISession* 로 고정돼 있어서 여기까지는 기반 타입으로 온다.
-	// 클라 세션 풀에는 ClientSession 만 들어가므로 RTTI 조회는 필요 없다.
-	// 경계에서 한 번만 좁히고, 그 아래는 전부 구체 타입으로 다닌다.
-	m_clientSessionPool->Release(static_cast<ClientSession*>(session));
+	m_clientSessionPool->Release(session);
 }
 
 void SessionManager::RequestAllRecvSendIOCancel()
@@ -209,10 +168,11 @@ void SessionManager::RequestAllRecvSendIOCancel()
 	m_clientSessionPool->RequestAllRecvSendIOCancel();
 }
 
-bool SessionManager::WaitForAllRecvSendIOCancelComplete(const uint32_t timeout_ms)
+IOWaitResult SessionManager::WaitForAllRecvSendIOCancelComplete(const uint32_t timeout_ms)
 {
+	// 풀이 생성되기 전에 종료하면 기다릴 송수신 I/O가 없다.
 	if (!m_clientSessionPool)
-		return false;
+		return { IOWaitStatus::Completed };
 
 	return m_clientSessionPool->WaitForAllRecvSendIOCancelComplete(timeout_ms);
 }
@@ -252,5 +212,15 @@ void SessionManager::OnDisconnectRequest(ISession* session)
 	if (!m_clientSessionPool)
 		return;
 
-	ReleaseClientSession(session);
+	ENGINE_CHECK_RETVOID(session != nullptr, "OnDisconnectRequest called with a null session");
+
+	const uint32_t sessionId = session->GetSessionID();
+	ClientSession* clientSession = m_clientSessionPool->GetSession(sessionId);
+
+	// 다른 풀에서도 같은 ID를 쓸 수 있으므로 요청을 보낸 객체까지 확인한다.
+	ENGINE_CHECK_RETVOID(clientSession == session,
+		"disconnect request does not belong to this session pool (session %u)",
+		sessionId);
+
+	ReleaseClientSession(clientSession);
 }

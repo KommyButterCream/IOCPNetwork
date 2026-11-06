@@ -4,6 +4,7 @@
 #include <memory> // for std::unique_ptr
 
 #include "ISessionEvent.h"
+#include "SessionDefs.h"
 
 class AcceptSession;
 
@@ -21,8 +22,8 @@ public:
 
 	void CancelAllAcceptIORequests();
 
-	// 각 수락 세션에 timeout_ms를 적용하고, 모든 세션의 완료 여부를 확인한다.
-	bool WaitForAllAcceptIOComplete(uint32_t timeout_ms);
+	// 풀 전체에 하나의 대기 시간을 적용한다.
+	IOWaitResult WaitForAllAcceptIOComplete(uint32_t timeout_ms);
 	void SetSocketCloseFunc(CloseSocketFunc closeSocketFunc);
 
 private:

@@ -30,7 +30,7 @@ public:
 
 	void CompleteAcceptIO();
 	[[nodiscard]] LONG GetAcceptIOCount() const;
-	[[nodiscard]] bool WaitForAcceptIOComplete(uint32_t timeout_ms) const;
+	[[nodiscard]] IOWaitResult WaitForAcceptIOComplete(uint32_t timeout_ms) const;
 
 private:
 	struct AcceptRequest
