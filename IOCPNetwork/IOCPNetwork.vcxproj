@@ -44,6 +44,7 @@
     <ClCompile Include="..\Session\AcceptSessionPool.cpp" />
     <ClCompile Include="..\Session\ClientSessionLifetime.cpp" />
     <ClCompile Include="..\Session\ClientSession.cpp" />
+    <ClCompile Include="..\Session\ClientSessionIO.cpp" />
     <ClCompile Include="..\Session\ClientSessionPool.cpp" />
     <ClCompile Include="..\Session\SessionJobQueue.cpp" />
     <ClCompile Include="..\Session\SessionManager.cpp" />

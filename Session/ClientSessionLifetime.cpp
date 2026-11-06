@@ -9,18 +9,40 @@
 
 using namespace Core::Util;
 
-void ClientSession::CheckCleanupPreconditions() const
+void ClientSession::AttachSocket(SOCKET socket)
 {
 	if (m_clientSocket != INVALID_SOCKET)
-		ENGINE_VIOLATION("session %u cleaned up with a live socket", GetSessionID());
+	{
+		// 이미 소켓을 들고 있는 세션에 다시 붙이려 한다.
+		// 사용 중인 세션이 풀에서 다시 배포되면 이 경로로 온다.
+		ENGINE_VIOLATION("session %u already holds socket %d, cannot attach socket %d. the session was handed out while still in use",
+			GetSessionID(), static_cast<int>(m_clientSocket), static_cast<int>(socket));
+	}
 
-	const LONG outstanding = GetOutstandingIOCount();
-	if (outstanding != 0)
-		ENGINE_VIOLATION("session %u cleaned up with %ld outstanding IO operations", GetSessionID(), outstanding);
+	m_clientSocket = socket;
+}
 
-	Core::Sync::SRWReadLockGuard lock(m_lifetimeLock);
-	if (m_lifetimeReferences != 0 || m_releasePending)
-		ENGINE_VIOLATION("session %u cleaned up with outstanding lifetime references or pending release", GetSessionID());
+SOCKET ClientSession::DetachSocket()
+{
+	// 원자적으로 떼어낸다.
+	//
+	// 떼어낸 소켓은 곧바로 closesocket 으로 넘어간다. 두 스레드가 같은
+	// 값을 읽어 가면 같은 핸들을 두 번 닫는다. 닫힌 직후 같은 번호가 다른
+	// 소켓에 재할당되면 그 소켓이 대신 닫힌다 — 추적이 거의 불가능한 종류의
+	// 고장이다.
+	//
+	// 지연 반납을 넣으면서 실제로 겹칠 수 있는 조합이 생겼다. 마지막
+	// 완료를 처리하는 워커가 반납을 마무리하는 동안, 종료 절차의
+	// DisconnectAllSessions 가 같은 세션을 훑는다.
+	return reinterpret_cast<SOCKET>(::InterlockedExchangePointer(
+		reinterpret_cast<PVOID volatile*>(&m_clientSocket),
+		reinterpret_cast<PVOID>(INVALID_SOCKET)));
+}
+
+void ClientSession::SetOwnerCallbacks(OwnerCallbacks callbacks)
+{
+	Core::Sync::SRWWriteLockGuard lock(m_lifetimeLock);
+	m_ownerCallbacks = callbacks;
 }
 
 void ClientSession::AddLifetimeReference()
@@ -55,6 +77,19 @@ void ClientSession::ReleaseLifetimeReference()
 	}
 }
 
+bool ClientSession::RequestRelease()
+{
+	Core::Sync::SRWWriteLockGuard lock(m_lifetimeLock);
+	m_releasePending = m_lifetimeReferences != 0;
+	return !m_releasePending;
+}
+
+bool ClientSession::IsReleasePending() const
+{
+	Core::Sync::SRWReadLockGuard lock(m_lifetimeLock);
+	return m_releasePending;
+}
+
 void ClientSession::IncrementIO()
 {
 	AddLifetimeReference();
@@ -79,41 +114,9 @@ void ClientSession::DecrementIO()
 	ReleaseLifetimeReference();
 }
 
-void ClientSession::SetOwnerCallbacks(OwnerCallbacks callbacks)
-{
-	Core::Sync::SRWWriteLockGuard lock(m_lifetimeLock);
-	m_ownerCallbacks = callbacks;
-}
-
-bool ClientSession::RequestRelease()
-{
-	Core::Sync::SRWWriteLockGuard lock(m_lifetimeLock);
-	m_releasePending = m_lifetimeReferences != 0;
-	return !m_releasePending;
-}
-
-bool ClientSession::IsReleasePending() const
-{
-	Core::Sync::SRWReadLockGuard lock(m_lifetimeLock);
-	return m_releasePending;
-}
-
 LONG ClientSession::GetOutstandingIOCount() const
 {
 	return ::ReadAcquire(&m_ioCount);
-}
-
-bool ClientSession::BeginIOCancellation()
-{
-	if (::InterlockedExchange(&m_cancelIo, 1) != 0)
-		return false;
-
-	if (m_ioCancelCompleteEvent)
-	{
-		::ResetEvent(m_ioCancelCompleteEvent);
-	}
-
-	return true;
 }
 
 bool ClientSession::CancelPendingIO()
@@ -191,17 +194,6 @@ bool ClientSession::CancelPendingIO()
 	return true;
 }
 
-void ClientSession::ReissueCancelIo()
-{
-	if (m_clientSocket == INVALID_SOCKET)
-		return;
-
-	// 실패는 정상이다. 취소할 것이 없으면 ERROR_NOT_FOUND 가 돌아오고,
-	// 그건 낙오가 없었다는 뜻이다. 여기서는 보고하지 않는다 —
-	// 판정은 아래 대기가 카운트로 한다.
-	::CancelIoEx(reinterpret_cast<HANDLE>(m_clientSocket), nullptr);
-}
-
 IOWaitResult ClientSession::WaitForIOCancelComplete(const uint32_t timeout_ms)
 {
 	constexpr DWORD cancelRetryMs = 50;
@@ -238,15 +230,23 @@ IOWaitResult ClientSession::WaitForIOCancelComplete(const uint32_t timeout_ms)
 	return { IOWaitStatus::Completed };
 }
 
-bool ClientSession::IsIOCancelRequested() const
+void ClientSession::CheckCleanupPreconditions() const
 {
-	return (::ReadAcquire(&m_cancelIo) == 1);
+	if (m_clientSocket != INVALID_SOCKET)
+		ENGINE_VIOLATION("session %u cleaned up with a live socket", GetSessionID());
+
+	const LONG outstanding = GetOutstandingIOCount();
+	if (outstanding != 0)
+		ENGINE_VIOLATION("session %u cleaned up with %ld outstanding IO operations", GetSessionID(), outstanding);
+
+	Core::Sync::SRWReadLockGuard lock(m_lifetimeLock);
+	if (m_lifetimeReferences != 0 || m_releasePending)
+		ENGINE_VIOLATION("session %u cleaned up with outstanding lifetime references or pending release", GetSessionID());
 }
 
 bool ClientSession::BeginIO()
 {
-	// 증가가 먼저다. 이유는 헤더 주석 참고 —
-	// 이 카운트가 곧 "대기가 통과하지 못하게 하는 장벽" 이다.
+	// 취소 여부를 검사하기 전에 참조를 확보해야 발행 도중 세션이 반환되지 않는다.
 	IncrementIO();
 
 	if (::ReadAcquire(&m_cancelIo) == 0)
@@ -261,32 +261,31 @@ bool ClientSession::BeginIO()
 	return false;
 }
 
-void ClientSession::AttachSocket(SOCKET socket)
+bool ClientSession::IsIOCancelRequested() const
 {
-	if (m_clientSocket != INVALID_SOCKET)
-	{
-		// 이미 소켓을 들고 있는 세션에 다시 붙이려 한다.
-		// 사용 중인 세션이 풀에서 다시 배포되면 이 경로로 온다.
-		ENGINE_VIOLATION("session %u already holds socket %d, cannot attach socket %d. the session was handed out while still in use",
-			GetSessionID(), static_cast<int>(m_clientSocket), static_cast<int>(socket));
-	}
-
-	m_clientSocket = socket;
+	return (::ReadAcquire(&m_cancelIo) == 1);
 }
 
-SOCKET ClientSession::DetachSocket()
+bool ClientSession::BeginIOCancellation()
 {
-	// 원자적으로 떼어낸다.
-	//
-	// 떼어낸 소켓은 곧바로 closesocket 으로 넘어간다. 두 스레드가 같은
-	// 값을 읽어 가면 같은 핸들을 두 번 닫는다. 닫힌 직후 같은 번호가 다른
-	// 소켓에 재할당되면 그 소켓이 대신 닫힌다 — 추적이 거의 불가능한 종류의
-	// 고장이다.
-	//
-	// 지연 반납을 넣으면서 실제로 겹칠 수 있는 조합이 생겼다. 마지막
-	// 완료를 처리하는 워커가 반납을 마무리하는 동안, 종료 절차의
-	// DisconnectAllSessions 가 같은 세션을 훑는다.
-	return reinterpret_cast<SOCKET>(::InterlockedExchangePointer(
-		reinterpret_cast<PVOID volatile*>(&m_clientSocket),
-		reinterpret_cast<PVOID>(INVALID_SOCKET)));
+	if (::InterlockedExchange(&m_cancelIo, 1) != 0)
+		return false;
+
+	if (m_ioCancelCompleteEvent)
+	{
+		::ResetEvent(m_ioCancelCompleteEvent);
+	}
+
+	return true;
+}
+
+void ClientSession::ReissueCancelIo()
+{
+	if (m_clientSocket == INVALID_SOCKET)
+		return;
+
+	// 실패는 정상이다. 취소할 것이 없으면 ERROR_NOT_FOUND 가 돌아오고,
+	// 그건 낙오가 없었다는 뜻이다. 여기서는 보고하지 않는다 —
+	// 판정은 아래 대기가 카운트로 한다.
+	::CancelIoEx(reinterpret_cast<HANDLE>(m_clientSocket), nullptr);
 }

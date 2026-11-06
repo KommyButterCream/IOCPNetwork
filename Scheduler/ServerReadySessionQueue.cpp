@@ -42,7 +42,7 @@ void ServerReadySessionQueue::Finalize()
 	// 생산자 중지와 워커 Join 뒤, 세션 풀을 파괴하기 전에 호출합니다.
 	while (auto* session = Dequeue(0))
 	{
-		session->UpdateProcessingFlag(0);
+		session->ReleaseProcessing();
 		session->ReleaseLifetimeReference();
 	}
 	m_queue.reset();

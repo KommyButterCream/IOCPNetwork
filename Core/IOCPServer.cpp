@@ -1648,7 +1648,7 @@ bool IOCPServer::SubmitPacketJob(ISession* session, uint16_t packetId, PacketHan
 		return false;
 
 	// 준비 큐 등록에 실패했던 세션도 다음 Job에서 다시 스케줄할 수 있다.
-	if (!clientSession->IsProcessingReady())
+	if (!clientSession->TryClaimProcessing())
 	{
 		// 이미 스케줄되어 있거나 워커가 처리 중이다. 그 워커가 드레인을
 		// 끝낸 뒤 큐가 비어 있지 않으면 스스로 다시 올린다.
@@ -1659,7 +1659,7 @@ bool IOCPServer::SubmitPacketJob(ISession* session, uint16_t packetId, PacketHan
 	{
 		// 반드시 되돌린다. 그러지 않으면 이 세션은 처리 중으로 표시된 채
 		// 아무도 처리하지 않는 상태가 된다.
-		clientSession->UpdateProcessingFlag(0);
+		clientSession->ReleaseProcessing();
 
 		LOGE("session %u could not be scheduled : the ready queue is full. the job stays queued",
 			clientSession->GetSessionID());

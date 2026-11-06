@@ -105,6 +105,9 @@
     <ClCompile Include="..\Session\ClientSession.cpp">
       <Filter>Session</Filter>
     </ClCompile>
+    <ClCompile Include="..\Session\ClientSessionIO.cpp">
+      <Filter>Session</Filter>
+    </ClCompile>
     <ClCompile Include="..\Session\ClientSessionPool.cpp">
       <Filter>Session</Filter>
     </ClCompile>

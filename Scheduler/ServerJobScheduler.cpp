@@ -160,17 +160,17 @@ void ServerJobScheduler::WorkerThreadLoop(ServerJobWorker& worker, uint32_t work
 			jobHandle->Execute();
 		}
 
-		session->UpdateProcessingFlag(0);
+		session->ReleaseProcessing();
 
 		// 드레인 중에 새로 들어온 Job 이 있으면 다시 큐에 올린다.
 		if (session->GetJobQueue().HasRunnableJobs())
 		{
-			if (session->IsProcessingReady())
+			if (session->TryClaimProcessing())
 			{
 				if (!m_serverReadySessionQueue->Enqueue(session))
 				{
 					// Enqueue 실패 시 소유권 플래그를 되돌려야 세션이 영구히 묶이지 않는다.
-					session->UpdateProcessingFlag(0);
+					session->ReleaseProcessing();
 					LOGE("failed to re-queue session %u : ready queue is full", session->GetSessionID());
 				}
 			}

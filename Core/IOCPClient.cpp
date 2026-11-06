@@ -250,7 +250,7 @@ bool IOCPClient::StartClient(const char* serverIp, const uint16_t port, const Se
 	m_session->SetOwnerCallbacks({this, &IOCPClient::OnDisconnectRequest, &IOCPClient::OnReleaseReady});
 
 	// 세션에 소켓 설정
-	m_session->SetClientSocket(m_clientSocket);
+	m_session->AttachSocket(m_clientSocket);
 
 	// 세션 잡큐의 Job 을 처리 하기 위한 스케쥴러/스레드 생성
 	m_clientJobWorker = new ClientJobWorker;
@@ -1198,10 +1198,7 @@ void IOCPClient::CompleteDisconnect(ClientSession* clientSession)
 	}
 
 	// 소켓을 닫은 이후 세션에 대한 상태 및 정리를 수행
-	if (!clientSession->OnDisconnect())
-	{
-		ENGINE_VIOLATION("session %u OnDisconnect reported failure", clientSession->GetSessionID());
-	}
+	clientSession->OnDisconnect();
 }
 
 const HandlerContext& IOCPClient::GetHandlerContext() const

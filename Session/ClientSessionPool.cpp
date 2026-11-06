@@ -11,49 +11,16 @@
 
 using namespace Core::Util;
 
-namespace
-{
-	enum SESSION_POOL_STATE : LONG
-	{
-		SESSION_POOL_FREE = 0,
-		SESSION_POOL_IN_USE = 1,
-		SESSION_POOL_RELEASING = 2
-	};
-}
-
 struct ClientSessionPool::SessionNode
 {
-	// 세션 객체는 풀이 소유하고, 노드는 해당 슬롯을 가리킨다.
+	enum class State { Free, InUse, Releasing };
+
+	// 상태 전이와 프리 리스트 변경은 풀의 쓰기 락 아래에서 수행한다.
 	ClientSession* session = nullptr;
 	SessionNode* nextNode = nullptr;
 
-	volatile LONG poolState = SESSION_POOL_FREE;
+	State state = State::Free;
 };
-
-void ClientSessionPool::SessionReferenceReleaser::operator()(ClientSession* session) const noexcept
-{
-	session->ReleaseLifetimeReference();
-}
-
-ClientSessionPool::SessionReference ClientSessionPool::TryAcquireSessionReference(uint32_t slotIndex) const
-{
-	Core::Sync::SRWReadLockGuard lock(m_lock);
-
-	if (!m_nodes || slotIndex >= m_capacity)
-	{
-		return {};
-	}
-
-	const SessionNode& node = m_nodes[slotIndex];
-	if (::ReadAcquire(&node.poolState) != SESSION_POOL_IN_USE)
-	{
-		return {};
-	}
-
-	// 읽기 락을 보유한 동안에는 Release가 이 슬롯을 RELEASING으로 바꿀 수 없습니다.
-	node.session->AddLifetimeReference();
-	return SessionReference{ node.session };
-}
 
 std::unique_ptr<ClientSessionPool> ClientSessionPool::Create(uint32_t capacity,
 	TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig,
@@ -78,19 +45,6 @@ std::unique_ptr<ClientSessionPool> ClientSessionPool::Create(uint32_t capacity,
 	return std::unique_ptr<ClientSessionPool>(new ClientSessionPool(std::move(sessions), capacity, callbacks));
 }
 
-ClientSessionPool::ClientSessionPool(std::unique_ptr<ClientSession[]> sessions, uint32_t capacity, const Callbacks& callbacks)
-	: m_nodes(std::make_unique<SessionNode[]>(capacity)), m_sessions(std::move(sessions)), m_capacity(capacity),
-	m_callbacks(callbacks)
-{
-	for (uint32_t i = 0; i < m_capacity; ++i)
-	{
-		m_sessions[i].SetOwnerCallbacks({this, &ClientSessionPool::OnDisconnectRequest, &ClientSessionPool::OnReleaseReady});
-		m_nodes[i].session = &m_sessions[i];
-		m_nodes[i].nextNode = m_freeList;
-		m_freeList = &m_nodes[i];
-	}
-}
-
 ClientSessionPool::~ClientSessionPool() = default;
 
 ClientSession* ClientSessionPool::Acquire()
@@ -103,17 +57,18 @@ ClientSession* ClientSessionPool::Acquire()
 	}
 
 	SessionNode* node = m_freeList;
-	m_freeList = node->nextNode;
-	node->nextNode = nullptr;
 
 	// 프리 리스트에 올라와 있던 노드는 반드시 FREE 상태여야 한다.
 	// 여기서 어긋나면 프리 리스트가 오염된 것이므로 임대하지 않고 실패시킨다.
-	if (::InterlockedCompareExchange(&node->poolState, SESSION_POOL_IN_USE, SESSION_POOL_FREE) != SESSION_POOL_FREE)
+	if (node->state != SessionNode::State::Free)
 	{
 		LOGE("free list corrupted : node is not FREE (session %u)", node->session ? node->session->GetSessionID() : UINT32_MAX);
 		return nullptr;
 	}
 
+	m_freeList = node->nextNode;
+	node->nextNode = nullptr;
+	node->state = SessionNode::State::InUse;
 	return node->session;
 }
 
@@ -146,92 +101,6 @@ void ClientSessionPool::Release(ClientSession* clientSession)
 	FinishReleaseWhenReady(*clientSession);
 }
 
-bool ClientSessionPool::TryBeginRelease(uint32_t sessionId)
-{
-	// 참조를 빌리는 순회자와 같은 락에서 반환 권한을 한 번만 확보한다.
-	Core::Sync::SRWWriteLockGuard lock(m_lock);
-	return ::InterlockedCompareExchange(&m_nodes[sessionId].poolState,
-		SESSION_POOL_RELEASING, SESSION_POOL_IN_USE) == SESSION_POOL_IN_USE;
-}
-
-void ClientSessionPool::FinishReleaseWhenReady(ClientSession& session)
-{
-	// 참조가 남으면 마지막 참조를 반환하는 쪽이 OnReleaseReady에서 마무리한다.
-	if (session.RequestRelease())
-		CompleteRelease(&session);
-}
-
-void ClientSessionPool::NotifyServiceDisconnect(ClientSession* clientSession)
-{
-	if (!m_callbacks.notifyDisconnect)
-		return;
-
-	// 접속을 알린 적 없는 세션은 종료도 알리지 않는다. 수락 직후 거절된
-	// 접속이나 접속 시퀀스가 중간에 실패한 세션이 여기 해당한다.
-	// 래치를 소비하는 스레드는 하나뿐이라 두 번 알리지도 않는다.
-	if (!clientSession->ConsumeServiceConnectNotified())
-		return;
-
-	m_callbacks.notifyDisconnect(m_callbacks.disconnectContext, clientSession);
-}
-
-void ClientSessionPool::OnDisconnectRequest(void* context, ClientSession* session)
-{
-	static_cast<ClientSessionPool*>(context)->Release(session);
-}
-
-void ClientSessionPool::OnReleaseReady(void* context, ClientSession* session)
-{
-	ClientSessionPool* pool = static_cast<ClientSessionPool*>(context);
-
-	pool->CompleteRelease(session);
-}
-
-void ClientSessionPool::CompleteRelease(ClientSession* clientSession)
-{
-	const uint32_t sessionId = clientSession->GetSessionID();
-
-	if (!m_nodes || sessionId >= m_capacity)
-	{
-		LOGE("invalid session id %u (capacity %u)", sessionId, m_capacity);
-		return;
-	}
-
-	SessionNode* node = &m_nodes[sessionId];
-
-	CleanupDisconnectedSession(*clientSession);
-
-	{
-		Core::Sync::SRWWriteLockGuard lockguard(m_lock);
-		node->nextNode = m_freeList;
-		m_freeList = node;
-
-		// 프리 리스트에 올린 다음 락 안에서 FREE 로 전이한다.
-		// 순서를 바꾸면 Acquire 가 아직 프리 리스트에 없는 노드를 FREE 로 보거나,
-		// 반대로 프리 리스트에 있는 노드를 RELEASING 으로 보게 된다.
-		::InterlockedExchange(&node->poolState, SESSION_POOL_FREE);
-	}
-}
-
-void ClientSessionPool::CleanupDisconnectedSession(ClientSession& session)
-{
-	const SOCKET socket = session.DetachSocket();
-	if (socket != INVALID_SOCKET)
-	{
-		if (m_callbacks.closeSocket)
-			m_callbacks.closeSocket(socket);
-		else if (::closesocket(socket) == SOCKET_ERROR)
-			LOGE("failed to close client socket (error %d)", ::WSAGetLastError());
-	}
-
-	// 서비스가 원격 주소와 컨텍스트를 조회할 수 있도록 초기화 전에 알린다.
-	NotifyServiceDisconnect(&session);
-	if (!session.OnDisconnect())
-		ENGINE_VIOLATION("session %u OnDisconnect reported failure during release", session.GetSessionID());
-
-	session.ResetSession();
-}
-
 uint32_t ClientSessionPool::GetSessionCount() const
 {
 	return m_capacity;
@@ -242,14 +111,12 @@ uint32_t ClientSessionPool::GetInUseCount() const
 	if (!m_nodes)
 		return 0;
 
+	Core::Sync::SRWReadLockGuard lock(m_lock);
 	uint32_t count = 0;
 
 	for (uint32_t i = 0; i < m_capacity; ++i)
 	{
-		// poolState 는 Interlocked 로만 전이하므로 원자적으로 읽으면 된다.
-		// 세는 도중에 값이 바뀔 수 있어 결과는 근사치다. 접속 수용 판단은
-		// 어차피 다음 순간에 또 달라지므로 근사치로 충분하다.
-		if (::ReadAcquire(&m_nodes[i].poolState) != SESSION_POOL_FREE)
+		if (m_nodes[i].state != SessionNode::State::Free)
 		{
 			++count;
 		}
@@ -275,23 +142,6 @@ uint32_t ClientSessionPool::CountSessionsFromAddress(const char* ipAddress) cons
 	}
 
 	return count;
-}
-
-ClientSession* ClientSessionPool::GetSession(const uint32_t sessionId)
-{
-	// 이 함수만 검사가 없었다. 같은 클래스의 Release 도, AcceptSessionPool 의
-	// 같은 함수도 범위를 본다. 여기만 빠져 있으면 잘못된 id 하나가 배열 밖을
-	// 읽고 그 쓰레기 포인터가 세션으로 유통된다.
-	if (!m_nodes)
-		return nullptr;
-
-	if (sessionId >= m_capacity)
-	{
-		LOGE("GetSession called with session id %u but capacity is %u", sessionId, m_capacity);
-		return nullptr;
-	}
-
-	return m_nodes[sessionId].session;
 }
 
 void ClientSessionPool::RequestAllRecvSendIOCancel()
@@ -532,4 +382,128 @@ uint32_t ClientSessionPool::GetOutstandingIOCount() const
 	}
 
 	return total;
+}
+
+ClientSessionPool::ClientSessionPool(std::unique_ptr<ClientSession[]> sessions, uint32_t capacity, const Callbacks& callbacks)
+	: m_nodes(std::make_unique<SessionNode[]>(capacity)), m_sessions(std::move(sessions)), m_capacity(capacity),
+	m_callbacks(callbacks)
+{
+	for (uint32_t i = 0; i < m_capacity; ++i)
+	{
+		m_sessions[i].SetOwnerCallbacks({this, &ClientSessionPool::OnDisconnectRequest, &ClientSessionPool::OnReleaseReady});
+		m_nodes[i].session = &m_sessions[i];
+		m_nodes[i].nextNode = m_freeList;
+		m_freeList = &m_nodes[i];
+	}
+}
+
+void ClientSessionPool::SessionReferenceReleaser::operator()(ClientSession* session) const noexcept
+{
+	session->ReleaseLifetimeReference();
+}
+
+ClientSessionPool::SessionReference ClientSessionPool::TryAcquireSessionReference(uint32_t slotIndex) const
+{
+	Core::Sync::SRWReadLockGuard lock(m_lock);
+
+	if (!m_nodes || slotIndex >= m_capacity)
+	{
+		return {};
+	}
+
+	const SessionNode& node = m_nodes[slotIndex];
+	if (node.state != SessionNode::State::InUse)
+	{
+		return {};
+	}
+
+	// 읽기 락을 보유한 동안에는 Release가 이 슬롯을 RELEASING으로 바꿀 수 없습니다.
+	node.session->AddLifetimeReference();
+	return SessionReference{ node.session };
+}
+
+bool ClientSessionPool::TryBeginRelease(uint32_t sessionId)
+{
+	// 참조를 빌리는 순회자와 같은 락에서 반환 권한을 한 번만 확보한다.
+	Core::Sync::SRWWriteLockGuard lock(m_lock);
+	auto& node = m_nodes[sessionId];
+	if (node.state != SessionNode::State::InUse)
+		return false;
+
+	node.state = SessionNode::State::Releasing;
+	return true;
+}
+
+void ClientSessionPool::FinishReleaseWhenReady(ClientSession& session)
+{
+	// 참조가 남으면 마지막 참조를 반환하는 쪽이 OnReleaseReady에서 마무리한다.
+	if (session.RequestRelease())
+		CompleteRelease(&session);
+}
+
+void ClientSessionPool::CleanupDisconnectedSession(ClientSession& session)
+{
+	const SOCKET socket = session.DetachSocket();
+	if (socket != INVALID_SOCKET)
+	{
+		if (m_callbacks.closeSocket)
+			m_callbacks.closeSocket(socket);
+		else if (::closesocket(socket) == SOCKET_ERROR)
+			LOGE("failed to close client socket (error %d)", ::WSAGetLastError());
+	}
+
+	// 서비스가 원격 주소와 컨텍스트를 조회할 수 있도록 초기화 전에 알린다.
+	NotifyServiceDisconnect(&session);
+	session.OnDisconnect();
+
+	session.ResetSession();
+}
+
+void ClientSessionPool::CompleteRelease(ClientSession* clientSession)
+{
+	const uint32_t sessionId = clientSession->GetSessionID();
+
+	if (!m_nodes || sessionId >= m_capacity)
+	{
+		LOGE("invalid session id %u (capacity %u)", sessionId, m_capacity);
+		return;
+	}
+
+	SessionNode* node = &m_nodes[sessionId];
+
+	CleanupDisconnectedSession(*clientSession);
+
+	{
+		Core::Sync::SRWWriteLockGuard lockguard(m_lock);
+		node->nextNode = m_freeList;
+		m_freeList = node;
+
+		node->state = SessionNode::State::Free;
+	}
+}
+
+void ClientSessionPool::OnDisconnectRequest(void* context, ClientSession* session)
+{
+	static_cast<ClientSessionPool*>(context)->Release(session);
+}
+
+void ClientSessionPool::OnReleaseReady(void* context, ClientSession* session)
+{
+	ClientSessionPool* pool = static_cast<ClientSessionPool*>(context);
+
+	pool->CompleteRelease(session);
+}
+
+void ClientSessionPool::NotifyServiceDisconnect(ClientSession* clientSession)
+{
+	if (!m_callbacks.notifyDisconnect)
+		return;
+
+	// 접속을 알린 적 없는 세션은 종료도 알리지 않는다. 수락 직후 거절된
+	// 접속이나 접속 시퀀스가 중간에 실패한 세션이 여기 해당한다.
+	// 래치를 소비하는 스레드는 하나뿐이라 두 번 알리지도 않는다.
+	if (!clientSession->ConsumeServiceConnectNotified())
+		return;
+
+	m_callbacks.notifyDisconnect(m_callbacks.disconnectContext, clientSession);
 }
