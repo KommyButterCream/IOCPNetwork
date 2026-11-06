@@ -37,7 +37,6 @@ public:
 	};
 
 private:
-	bool m_destroyFlag = false;
 
 	// 역할. Initialize 에서 한 번 정해지고 그 뒤로 바뀌지 않는다.
 	// 세션이 어떤 I/O 에도 등록되기 전에 쓰이므로 원자 접근이 필요 없다.
@@ -48,7 +47,7 @@ private:
 	// 예전에는 평범한 enum 멤버였다. 그런데 쓰는 쪽과 읽는 쪽이 다른 스레드다.
 	//   쓰기 : HeartbeatThread    -> MarkHeartbeatTimeout (HEARTBEAT_TIMEOUT)
 	//          IOCP 워커          -> 접속/인증 시퀀스 (CONNECTED, AUTH_PENDING, ESTABLISHED)
-	//          반납 경로          -> ResetSession / Finalize (CONNECT_READY)
+	//          반납 경로          -> ResetSession (CONNECT_READY)
 	//   읽기 : IOCP 워커          -> HandleRecv 안의 IsEstablished() 로
 	//                                서비스 패킷 디스패치 여부를 가른다
 	//          앱 스레드          -> StopServer -> DisconnectAllSessions
@@ -159,7 +158,6 @@ public:
 	// --- 기본 동작 ---
 	bool Initialize(SESSION_ROLE sessionType, uint32_t sessionId);
 	void ResetSession();
-	void Finalize();
 	bool OnConnect();
 	bool OnDisconnect();
 
@@ -485,7 +483,7 @@ private:
 	void ReleaseUnpostedIO();
 	[[nodiscard]] bool BeginIOCancellation();
 	void ReissueCancelIo();
-	void ResetLifetimeState();
+	void CheckCleanupPreconditions() const;
 	void SetConnectReadyState();
 
 	// 종료 시 송신 큐, Job 큐, 수신 버퍼 순서로 해제한다.

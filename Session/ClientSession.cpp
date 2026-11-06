@@ -58,7 +58,14 @@ ClientSession::ClientSession()
 
 ClientSession::~ClientSession()
 {
-	Finalize();
+	CheckCleanupPreconditions();
+	if (m_ioCancelCompleteEvent)
+		::CloseHandle(m_ioCancelCompleteEvent);
+
+	SetSessionContext(nullptr);
+	// 현재 송신을 먼저 반환한 뒤 송신 큐, Job 큐, 수신 링을 해제한다.
+	m_currentSendPacket.Reset();
+	ReleaseMemoryResources();
 }
 
 bool ClientSession::Initialize(SESSION_ROLE sessionType, uint32_t sessionId)
@@ -107,27 +114,7 @@ void ClientSession::ResetSession()
 	// 지금 순서는 맞다.
 	ClearDisconnectReason();
 
-	if (m_clientSocket != INVALID_SOCKET)
-	{
-		ENGINE_VIOLATION("session %u reset with a live socket %d. it was not detached",
-			GetSessionID(), static_cast<int>(m_clientSocket));
-	}
-
-	// IO 카운트는 여기서 강제로 0 으로 만들지 않는다.
-	//
-	// 이전에는 InterlockedExchange(&m_ioCount, 0) 였다. 그런데 이 시점에
-	// 다른 스레드의 완료 처리가 아직 돌고 있으면, 그 스레드의 DecrementIO 가
-	// 0 에서 하나 더 내려가 -1 이 되고 단정에 걸렸다. 실제로 관측된 현상이다.
-	//
-	// 카운트를 그대로 두면 늦게 도착한 DecrementIO 가 정상적으로 0 으로 내려간다.
-	// 0 이 아닌 상태로 여기 도달한 것 자체가 버그이므로 크게 남긴다.
-	ResetLifetimeState();
-	const LONG remainingIo = ::ReadAcquire(&m_ioCount);
-	if (remainingIo != 0)
-	{
-		ENGINE_VIOLATION("session %u reset while %ld IO operations are still outstanding. the counter is left as is so a late DecrementIO does not go negative",
-			GetSessionID(), remainingIo);
-	}
+	CheckCleanupPreconditions();
 
 	::InterlockedExchange(&m_closing, 0);
 	::InterlockedExchange(&m_cancelIo, 0);
@@ -169,11 +156,7 @@ void ClientSession::ResetSession()
 	// 소비되지만 통지 배선이 없는 구성도 있어 여기서 확실히 지운다.
 	::InterlockedExchange(&m_serviceConnectNotified, 0);
 
-	if (m_sessionContext)
-	{
-		delete m_sessionContext;
-		m_sessionContext = nullptr;
-	}
+	SetSessionContext(nullptr);
 
 	if (m_sendPacketQueue)
 	{
@@ -183,7 +166,6 @@ void ClientSession::ResetSession()
 	// 수신 링을 비운다. 이게 없으면 세션이 끊길 때 링에 남아 있던 바이트가
 	// 그대로 살아남아, 이 슬롯을 재사용하는 다음 클라이언트의 스트림 앞에
 	// 붙는다. 그 클라이언트는 첫 바이트부터 남의 데이터를 헤더로 읽는다.
-	// (RecvPacketBuffer::Reset 은 지금까지 아무도 부르지 않고 있었다)
 	//
 	// GetReceiveBuffer 는 널 검사 없이 역참조하는데, ResetSession 은 정리
 	// 경로에서도 불리므로 포인터로 직접 다룬다.
@@ -213,92 +195,6 @@ void ClientSession::ResetSession()
 		m_recvOverlapped.Clear();
 		m_sendOverlapped.Clear();
 	}
-}
-
-void ClientSession::Finalize()
-{
-	if (m_destroyFlag)
-	{
-		return;
-	}
-
-	ResetLifetimeState();
-	const LONG remainingIo = ::ReadAcquire(&m_ioCount);
-	if (remainingIo != 0)
-	{
-		ENGINE_VIOLATION("session %u finalized while %ld IO operations are still outstanding. completions were most likely dropped when the IOCP stopped",
-			GetSessionID(), remainingIo);
-	}
-
-	SetClientSessionState(ClientSessionState::NONE);
-	SetServerSessionState(ServerSessionState::NONE);
-
-	if (m_clientSocket != INVALID_SOCKET)
-	{
-		ENGINE_VIOLATION("session %u finalized with a live socket %d. it was not detached",
-			GetSessionID(), static_cast<int>(m_clientSocket));
-	}
-
-	::InterlockedExchange(&m_closing, 0);
-	::InterlockedExchange(&m_ioCount, 0);
-	::InterlockedExchange(&m_cancelIo, 0);
-
-	if (m_ioCancelCompleteEvent)
-	{
-		::ResetEvent(m_ioCancelCompleteEvent);
-		::CloseHandle(m_ioCancelCompleteEvent);
-		m_ioCancelCompleteEvent = nullptr;
-	}
-
-	m_destroyFlag = true;
-	ClearRemoteAddress();
-
-	if (m_sessionContext)
-	{
-		delete m_sessionContext;
-		m_sessionContext = nullptr;
-	}
-
-	m_ownerCallbacks = {};
-
-	// 미완료 IO가 정리된 뒤 세션이 보관한 송신 패킷을 반환합니다.
-	m_currentSendPacket.Reset();
-	m_sendOffset = 0;
-
-	// 송신 큐 / 잡 큐 / 수신 링.
-	ReleaseMemoryResources();
-
-	SetConnectReadyState();
-
-	::InterlockedExchange(&m_sending, 0);
-	::InterlockedExchange(&m_processing, 0);
-	::InterlockedExchange(&m_recvPaused, 0);
-	::InterlockedExchange(&m_recvPauseCount, 0);
-
-	// 거부 로그 억제 상태도 지운다. 남겨 두면 다음 접속의 첫 거부가
-	// 지난 접속의 창에 걸려 조용히 삼켜진다.
-	for (uint32_t i = 0; i < static_cast<uint32_t>(SendRejectReason::Count); ++i)
-	{
-		::InterlockedExchange64(&m_sendRejectLogTick[i], 0);
-		::InterlockedExchange(&m_sendRejectSuppressed[i], 0);
-	}
-
-	::InterlockedExchange64(&m_lastRecvTick, 0);
-	::InterlockedExchange64(&m_lastHeartbeatTick, 0);
-
-	if (GetSessionRole() == SESSION_ROLE::CLIENT)
-	{
-		m_connectOverlapped.Clear();
-	}
-	else if (GetSessionRole() == SESSION_ROLE::SERVER)
-	{
-		m_recvOverlapped.Clear();
-		m_sendOverlapped.Clear();
-	}
-
-	m_packetMemoryPool = nullptr;
-	m_jobMemoryPool = nullptr;
-
 }
 
 bool ClientSession::OnConnect()

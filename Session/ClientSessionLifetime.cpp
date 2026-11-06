@@ -9,14 +9,18 @@
 
 using namespace Core::Util;
 
-void ClientSession::ResetLifetimeState()
+void ClientSession::CheckCleanupPreconditions() const
 {
-	Core::Sync::SRWWriteLockGuard lock(m_lifetimeLock);
-	if (m_lifetimeReferences != 0)
-	{
-		ENGINE_VIOLATION("session %u cleaned up with outstanding lifetime references", GetSessionID());
-	}
-	m_releasePending = false;
+	if (m_clientSocket != INVALID_SOCKET)
+		ENGINE_VIOLATION("session %u cleaned up with a live socket", GetSessionID());
+
+	const LONG outstanding = GetOutstandingIOCount();
+	if (outstanding != 0)
+		ENGINE_VIOLATION("session %u cleaned up with %ld outstanding IO operations", GetSessionID(), outstanding);
+
+	Core::Sync::SRWReadLockGuard lock(m_lifetimeLock);
+	if (m_lifetimeReferences != 0 || m_releasePending)
+		ENGINE_VIOLATION("session %u cleaned up with outstanding lifetime references or pending release", GetSessionID());
 }
 
 void ClientSession::AddLifetimeReference()
