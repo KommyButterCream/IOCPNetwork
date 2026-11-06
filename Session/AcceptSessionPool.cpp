@@ -10,7 +10,7 @@
 
 using namespace Core::Util;
 
-std::unique_ptr<AcceptSessionPool> AcceptSessionPool::Create(uint32_t capacity)
+std::unique_ptr<AcceptSessionPool> AcceptSessionPool::Create(uint32_t capacity, CloseSocketFunc closeSocketFunc)
 {
 	auto sessions = std::make_unique<AcceptSession[]>(capacity);
 	for (uint32_t i = 0; i < capacity; ++i)
@@ -22,11 +22,11 @@ std::unique_ptr<AcceptSessionPool> AcceptSessionPool::Create(uint32_t capacity)
 		}
 	}
 
-	return std::unique_ptr<AcceptSessionPool>(new AcceptSessionPool(std::move(sessions), capacity));
+	return std::unique_ptr<AcceptSessionPool>(new AcceptSessionPool(std::move(sessions), capacity, closeSocketFunc));
 }
 
-AcceptSessionPool::AcceptSessionPool(std::unique_ptr<AcceptSession[]> sessions, uint32_t capacity)
-	: m_sessions(std::move(sessions)), m_capacity(capacity)
+AcceptSessionPool::AcceptSessionPool(std::unique_ptr<AcceptSession[]> sessions, uint32_t capacity, CloseSocketFunc closeSocketFunc)
+	: m_sessions(std::move(sessions)), m_capacity(capacity), m_closeSocketFunc(closeSocketFunc)
 {
 }
 
@@ -90,11 +90,6 @@ IOWaitResult AcceptSessionPool::WaitForAllAcceptIOComplete(uint32_t timeout_ms)
 	}
 
 	return { IOWaitStatus::Completed };
-}
-
-void AcceptSessionPool::SetSocketCloseFunc(CloseSocketFunc closeSocketFunc)
-{
-	m_closeSocketFunc = closeSocketFunc;
 }
 
 // 풀 소멸 시 수락 세션이 아직 보유한 소켓을 진단하고 닫는다.

@@ -11,7 +11,7 @@ class AcceptSession;
 class AcceptSessionPool
 {
 public:
-	[[nodiscard]] static std::unique_ptr<AcceptSessionPool> Create(uint32_t capacity);
+	[[nodiscard]] static std::unique_ptr<AcceptSessionPool> Create(uint32_t capacity, CloseSocketFunc closeSocketFunc);
 	~AcceptSessionPool();
 
 	AcceptSession* GetSession(uint32_t sessionId);
@@ -24,10 +24,9 @@ public:
 
 	// 풀 전체에 하나의 대기 시간을 적용한다.
 	IOWaitResult WaitForAllAcceptIOComplete(uint32_t timeout_ms);
-	void SetSocketCloseFunc(CloseSocketFunc closeSocketFunc);
 
 private:
-	AcceptSessionPool(std::unique_ptr<AcceptSession[]> sessions, uint32_t capacity);
+	AcceptSessionPool(std::unique_ptr<AcceptSession[]> sessions, uint32_t capacity, CloseSocketFunc closeSocketFunc);
 	void CloseRemainingAcceptSockets();
 	void CloseAcceptSocket(uintptr_t socket);
 

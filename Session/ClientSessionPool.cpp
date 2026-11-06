@@ -55,7 +55,8 @@ ClientSessionPool::SessionReference ClientSessionPool::TryAcquireSessionReferenc
 }
 
 std::unique_ptr<ClientSessionPool> ClientSessionPool::Create(uint32_t capacity,
-	TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig)
+	TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig,
+	const Callbacks& callbacks)
 {
 	auto sessions = std::make_unique<ClientSession[]>(capacity);
 	for (uint32_t i = 0; i < capacity; ++i)
@@ -73,14 +74,16 @@ std::unique_ptr<ClientSessionPool> ClientSessionPool::Create(uint32_t capacity,
 		}
 	}
 
-	return std::unique_ptr<ClientSessionPool>(new ClientSessionPool(std::move(sessions), capacity));
+	return std::unique_ptr<ClientSessionPool>(new ClientSessionPool(std::move(sessions), capacity, callbacks));
 }
 
-ClientSessionPool::ClientSessionPool(std::unique_ptr<ClientSession[]> sessions, uint32_t capacity)
-	: m_nodes(std::make_unique<SessionNode[]>(capacity)), m_sessions(std::move(sessions)), m_capacity(capacity)
+ClientSessionPool::ClientSessionPool(std::unique_ptr<ClientSession[]> sessions, uint32_t capacity, const Callbacks& callbacks)
+	: m_nodes(std::make_unique<SessionNode[]>(capacity)), m_sessions(std::move(sessions)), m_capacity(capacity),
+	m_callbacks(callbacks)
 {
 	for (uint32_t i = 0; i < m_capacity; ++i)
 	{
+		m_sessions[i].SetEventHandler(&m_callbacks.eventHandler);
 		m_sessions[i].SetReleaseReadyFunc(&ClientSessionPool::OnReleaseReady, this);
 		m_nodes[i].session = &m_sessions[i];
 		m_nodes[i].nextNode = m_freeList;
@@ -178,7 +181,7 @@ void ClientSessionPool::Release(ClientSession* clientSession)
 
 void ClientSessionPool::NotifyServiceDisconnect(ClientSession* clientSession)
 {
-	if (!m_disconnectNotifyFunc)
+	if (!m_callbacks.notifyDisconnect)
 		return;
 
 	// 접속을 알린 적 없는 세션은 종료도 알리지 않는다. 수락 직후 거절된
@@ -187,7 +190,7 @@ void ClientSessionPool::NotifyServiceDisconnect(ClientSession* clientSession)
 	if (!clientSession->ConsumeServiceConnectNotified())
 		return;
 
-	m_disconnectNotifyFunc(m_disconnectNotifyContext, clientSession);
+	m_callbacks.notifyDisconnect(m_callbacks.disconnectContext, clientSession);
 }
 
 void ClientSessionPool::OnReleaseReady(void* context, BaseSession* session)
@@ -210,9 +213,9 @@ void ClientSessionPool::CompleteRelease(ClientSession* clientSession)
 
 	SessionNode* node = &m_nodes[sessionId];
 
-	if (m_closeSocketFunc)
+	if (m_callbacks.closeSocket)
 	{
-		m_closeSocketFunc(clientSession->DetachSocket());
+		m_callbacks.closeSocket(clientSession->DetachSocket());
 	}
 
 	// 서비스에 먼저 알린다.
@@ -350,9 +353,9 @@ void ClientSessionPool::DisconnectAllSessions()
 
 		if (session != nullptr && session->IsTransportConnected())
 		{
-			if (m_closeSocketFunc)
+			if (m_callbacks.closeSocket)
 			{
-				m_closeSocketFunc(session->DetachSocket());
+				m_callbacks.closeSocket(session->DetachSocket());
 			}
 
 			// 종료 중에도 알린다.
@@ -562,25 +565,4 @@ uint32_t ClientSessionPool::GetOutstandingIOCount() const
 	}
 
 	return total;
-}
-
-void ClientSessionPool::SetDisconnectNotifyFunc(SessionDisconnectNotifyFunc notifyFunc, void* context)
-{
-	m_disconnectNotifyFunc = notifyFunc;
-	m_disconnectNotifyContext = context;
-}
-
-void ClientSessionPool::SetSocketCloseFunc(CloseSocketFunc closeSocketFunc)
-{
-	m_closeSocketFunc = closeSocketFunc;
-}
-
-void ClientSessionPool::SetEventHandler(ISessionEvent* handler)
-{
-	m_eventHandler = handler;
-
-	for (uint32_t i = 0; i < m_capacity; ++i)
-	{
-		m_sessions[i].SetEventHandler(m_eventHandler);
-	}
 }

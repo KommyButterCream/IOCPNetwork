@@ -28,18 +28,15 @@ bool SessionManager::Initialize(
 	if (m_acceptSessionPool || m_clientSessionPool)
 		return false;
 
-	auto acceptPool = AcceptSessionPool::Create(acceptSessionCount);
+	auto acceptPool = AcceptSessionPool::Create(acceptSessionCount, closeSocketFunc);
 	if (!acceptPool)
 		return false;
 
-	auto clientPool = ClientSessionPool::Create(clientSessionCount, jobMemoryPool, packetMemoryPool, bufferConfig);
+	auto clientPool = ClientSessionPool::Create(clientSessionCount, jobMemoryPool, packetMemoryPool, bufferConfig,
+		{ .eventHandler = *this, .closeSocket = closeSocketFunc,
+		  .notifyDisconnect = disconnectNotifyFunc, .disconnectContext = disconnectNotifyContext });
 	if (!clientPool)
 		return false;
-
-	acceptPool->SetSocketCloseFunc(closeSocketFunc);
-	clientPool->SetSocketCloseFunc(closeSocketFunc);
-	clientPool->SetEventHandler(this);
-	clientPool->SetDisconnectNotifyFunc(disconnectNotifyFunc, disconnectNotifyContext);
 
 	m_acceptSessionPool = std::move(acceptPool);
 	m_clientSessionPool = std::move(clientPool);

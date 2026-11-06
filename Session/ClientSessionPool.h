@@ -20,6 +20,15 @@ class TlsMemoryPool;
 
 class ClientSessionPool
 {
+public:
+	struct Callbacks
+	{
+		ISessionEvent& eventHandler;
+		CloseSocketFunc closeSocket;
+		SessionDisconnectNotifyFunc notifyDisconnect;
+		void* disconnectContext;
+	};
+
 private:
 	struct SessionNode;
 
@@ -28,24 +37,14 @@ private:
 	SessionNode* m_freeList = nullptr;		// 프리 리스트 헤드
 	uint32_t m_capacity = 0;
 	mutable SRWLOCK m_lock = SRWLOCK_INIT;
-	ISessionEvent* m_eventHandler = nullptr;
-	CloseSocketFunc m_closeSocketFunc = nullptr;
+	const Callbacks m_callbacks;
 
-	// 세션이 실제로 반납될 때 서비스에 종료를 알린다.
-	//
-	// 이 통지를 부르는 자리는 이 풀 하나여야 한다. 예전에는 IOCPServer 의
-	// 정상 종료 처리 한 곳에만 있어서, 그 경로를 지나지 않는 종료
-	// (RST / 하트비트 타임아웃 / 파싱 실패 / 접속 시퀀스 실패 / 서버 종료)
-	// 는 서비스에 전혀 알려지지 않았다. 세션에 자원을 매달아 둔 서비스는
-	// 그만큼을 흘렸다. (실측: churn 60회 중 접속 40건에 종료 통지 20건)
-	SessionDisconnectNotifyFunc m_disconnectNotifyFunc = nullptr;
-	void* m_disconnectNotifyContext = nullptr;
-
-	ClientSessionPool(std::unique_ptr<ClientSession[]> sessions, uint32_t capacity);
+	ClientSessionPool(std::unique_ptr<ClientSession[]> sessions, uint32_t capacity, const Callbacks& callbacks);
 
 public:
 	[[nodiscard]] static std::unique_ptr<ClientSessionPool> Create(uint32_t capacity,
-		TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig);
+		TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig,
+		const Callbacks& callbacks);
 	~ClientSessionPool();
 
 	// 세션 획득
@@ -84,15 +83,6 @@ public:
 	// 타임아웃이다. 왜 두 개를 두는지는 HeartbeatConfig 주석 참고.
 	uint32_t DisconnectZombieSessions(uint64_t nowTick, uint64_t heartbeatTimeout_ms,
 		uint64_t stalledPeerTimeout_ms, uint64_t releaseBudget_ms);
-
-	// Session Close 함수 포인터 설정
-	// closesocket 을 하나의 함수에서만 수행되도록 강제!
-	void SetSocketCloseFunc(CloseSocketFunc closeSocketFunc);
-
-	void SetEventHandler(ISessionEvent* handler);
-
-	// 세션 종료를 서비스에 알릴 진입점을 건다.
-	void SetDisconnectNotifyFunc(SessionDisconnectNotifyFunc notifyFunc, void* context);
 
 	// 지금 이 풀의 세션들이 들고 있는 미완료 I/O 총합.
 	// 하네스가 시나리오 경계에서 회계를 검사한다. 정상 종료 후에는 0 이어야 한다.
