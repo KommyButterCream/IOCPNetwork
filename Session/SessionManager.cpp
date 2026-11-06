@@ -3,6 +3,7 @@
 #include "AcceptSession.h"
 
 #include "../Diagnostics/EngineAssert.h"
+#include <utility> // for std::move
 
 using namespace Core::Util;
 #include "AcceptSessionPool.h"
@@ -20,21 +21,27 @@ SessionManager::~SessionManager()
 
 bool SessionManager::Initialize(const uint32_t acceptSessionCount, const uint32_t clientSessionCount, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, CloseSocketFunc closeSocketFunc, const SessionBufferConfig& bufferConfig)
 {
+	// 실행 중인 풀을 교체하면 기존 세션을 사용하는 워커의 참조가 무효화된다.
+	if (m_acceptSessionPool || m_clientSessionPool)
+		return false;
+
+	auto acceptPool = AcceptSessionPool::Create(acceptSessionCount);
+	if (!acceptPool)
+		return false;
+
+	auto clientPool = ClientSessionPool::Create(clientSessionCount, jobMemoryPool, packetMemoryPool, bufferConfig);
+	if (!clientPool)
+		return false;
+
+	acceptPool->SetSocketCloseFunc(closeSocketFunc);
+	clientPool->SetSocketCloseFunc(closeSocketFunc);
+	clientPool->SetEventHandler(this);
+
+	m_acceptSessionPool = std::move(acceptPool);
+	m_clientSessionPool = std::move(clientPool);
+
 	m_acceptSessionCount = acceptSessionCount;
 	m_clientSessionCount = clientSessionCount;
-
-	m_acceptSessionPool = new AcceptSessionPool(acceptSessionCount);
-	if (!m_acceptSessionPool || !m_acceptSessionPool->IsReady())
-		return false;
-
-	m_acceptSessionPool->SetSocketCloseFunc(closeSocketFunc);
-
-	m_clientSessionPool = new ClientSessionPool(clientSessionCount, jobMemoryPool, packetMemoryPool, bufferConfig);
-	if (!m_clientSessionPool || !m_clientSessionPool->IsReady())
-		return false;
-
-	m_clientSessionPool->SetSocketCloseFunc(closeSocketFunc);
-	m_clientSessionPool->SetEventHandler(this);
 
 	return true;
 }
@@ -44,17 +51,8 @@ void SessionManager::Finalize()
 	m_acceptSessionCount = 0;
 	m_clientSessionCount = 0;
 
-	if (m_acceptSessionPool)
-	{
-		delete m_acceptSessionPool;
-		m_acceptSessionPool = nullptr;
-	}
-
-	if (m_clientSessionPool)
-	{
-		delete m_clientSessionPool;
-		m_clientSessionPool = nullptr;
-	}
+	m_acceptSessionPool.reset();
+	m_clientSessionPool.reset();
 }
 
 AcceptSession* SessionManager::GetAcceptSession(const uint32_t sessionId)
@@ -73,20 +71,20 @@ uint32_t SessionManager::GetAcceptSessionCount() const noexcept
 	return m_acceptSessionCount;
 }
 
-void SessionManager::RequestAllAcceptIOCancel()
+void SessionManager::CancelAllAcceptIORequests()
 {
 	if (!m_acceptSessionPool)
 		return;
 
-	m_acceptSessionPool->RequestAllAcceptIOCancel();
+	m_acceptSessionPool->CancelAllAcceptIORequests();
 }
 
-bool SessionManager::WaitForAllAcceptIOCancelComplete(const uint32_t timeout_ms)
+bool SessionManager::WaitForAllAcceptIOComplete(const uint32_t timeout_ms)
 {
 	if (!m_acceptSessionPool)
 		return false;
 
-	return m_acceptSessionPool->WaitForAllAcceptIOCancelComplete(timeout_ms);
+	return m_acceptSessionPool->WaitForAllAcceptIOComplete(timeout_ms);
 }
 
 bool SessionManager::IsClientSessionFull() const
@@ -155,7 +153,7 @@ uint32_t SessionManager::GetOutstandingIOCount() const
 	uint32_t total = 0;
 
 	if (m_acceptSessionPool)
-		total += m_acceptSessionPool->GetOutstandingIOCount();
+		total += m_acceptSessionPool->GetAcceptIOCount();
 
 	if (m_clientSessionPool)
 		total += m_clientSessionPool->GetOutstandingIOCount();

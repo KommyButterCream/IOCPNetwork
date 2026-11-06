@@ -7,10 +7,10 @@
 #include <Windows.h>
 #include <stdint.h>
 #include "ISessionEvent.h"
+#include <memory> // for std::unique_ptr
 
 #include "../Buffer/SessionBufferConfig.h"
 
-struct SessionNode;
 
 class ISession;
 class BaseSession;
@@ -20,8 +20,10 @@ class TlsMemoryPool;
 class ClientSessionPool
 {
 private:
-	ClientSession* m_sessions = nullptr;		// 주소가 연속된 Session 객체 배열 생성
-	SessionNode* m_nodes = nullptr;			// 연속 배열
+	struct SessionNode;
+
+	std::unique_ptr<SessionNode[]> m_nodes;
+	std::unique_ptr<ClientSession[]> m_sessions;
 	SessionNode* m_freeList = nullptr;		// 프리 리스트 헤드
 	uint32_t m_capacity = 0;
 	mutable SRWLOCK m_lock = SRWLOCK_INIT;
@@ -38,16 +40,12 @@ private:
 	SessionDisconnectNotifyFunc m_disconnectNotifyFunc = nullptr;
 	void* m_disconnectNotifyContext = nullptr;
 
-	// 생성자는 실패를 반환할 수 없다. 세션 하나라도 준비에 실패하면 여기가
-	// false 로 남고, SessionManager 가 그걸 보고 초기화를 실패시킨다.
-	// 이게 없으면 세션을 하나도 못 잡는 서버가 정상 기동한 것처럼 보인다.
-	bool m_ready = false;
+	ClientSessionPool(std::unique_ptr<ClientSession[]> sessions, uint32_t capacity);
 
 public:
-	explicit ClientSessionPool(uint32_t capacity, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig);
+	[[nodiscard]] static std::unique_ptr<ClientSessionPool> Create(uint32_t capacity,
+		TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig);
 	~ClientSessionPool();
-
-	bool IsReady() const { return m_ready; }
 
 	// 세션 획득
 	//
@@ -113,6 +111,16 @@ public:
 	uint32_t GetOutstandingIOCount() const;
 
 private:
+	struct SessionReferenceReleaser
+	{
+		void operator()(ClientSession* session) const noexcept;
+	};
+
+	using SessionReference = std::unique_ptr<ClientSession, SessionReferenceReleaser>;
+
+	[[nodiscard]] SessionReference TryAcquireSessionReference(uint32_t slotIndex) const;
+
+
 	// 반납의 뒷부분. 소켓을 닫고 상태를 되돌린 뒤 프리 리스트에 올린다.
 	// Release 가 그 자리에서 부르거나, 마지막 DecrementIO 가 부른다.
 	void CompleteRelease(ClientSession* clientSession);

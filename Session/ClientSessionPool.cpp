@@ -3,67 +3,92 @@
 #include "ClientSession.h"
 
 #include "../Diagnostics/EngineAssert.h"
-#include "SessionNode.h"
-
-#include <string.h> // for strncmp
-
+#include <memory>  // for std::make_unique, std::unique_ptr
+#include <utility> // for std::move
 #include "../../Core/Sync/SRWLockGuard.h"
 #include "../../Core/Util/Logger.h"
 
 using namespace Core::Util;
 
-ClientSessionPool::ClientSessionPool(uint32_t capacity, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig)
+namespace
 {
-	m_capacity = capacity;
+	enum SESSION_POOL_STATE : LONG
+	{
+		SESSION_POOL_FREE = 0,
+		SESSION_POOL_IN_USE = 1,
+		SESSION_POOL_RELEASING = 2
+	};
+}
 
-	m_sessions = new ClientSession[m_capacity];
-	if (!m_sessions)
-		return;
+struct ClientSessionPool::SessionNode
+{
+	// 세션 객체는 풀이 소유하고, 노드는 해당 슬롯을 가리킨다.
+	ClientSession* session = nullptr;
+	SessionNode* nextNode = nullptr;
 
-	m_nodes = new SessionNode[m_capacity];
-	if (!m_nodes)
-		return;
+	volatile LONG poolState = SESSION_POOL_FREE;
+};
 
-	// 초기 프리 리스트 구성
+void ClientSessionPool::SessionReferenceReleaser::operator()(ClientSession* session) const noexcept
+{
+	session->ReleaseLifetimeReference();
+}
+
+ClientSessionPool::SessionReference ClientSessionPool::TryAcquireSessionReference(uint32_t slotIndex) const
+{
+	Core::Sync::SRWReadLockGuard lock(m_lock);
+
+	if (!m_nodes || slotIndex >= m_capacity)
+	{
+		return {};
+	}
+
+	const SessionNode& node = m_nodes[slotIndex];
+	if (::ReadAcquire(&node.poolState) != SESSION_POOL_IN_USE)
+	{
+		return {};
+	}
+
+	// 읽기 락을 보유한 동안에는 Release가 이 슬롯을 RELEASING으로 바꿀 수 없습니다.
+	node.session->AddLifetimeReference();
+	return SessionReference{ node.session };
+}
+
+std::unique_ptr<ClientSessionPool> ClientSessionPool::Create(uint32_t capacity,
+	TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig)
+{
+	auto sessions = std::make_unique<ClientSession[]>(capacity);
+	for (uint32_t i = 0; i < capacity; ++i)
+	{
+		if (!sessions[i].Initialize(SESSION_ROLE::SERVER, i))
+		{
+			ENGINE_VIOLATION("failed to initialize client session %u of %u", i, capacity);
+			return nullptr;
+		}
+
+		if (!sessions[i].InitializeMemoryPool(jobMemoryPool, packetMemoryPool, bufferConfig))
+		{
+			ENGINE_VIOLATION("failed to bind memory pools to client session %u of %u", i, capacity);
+			return nullptr;
+		}
+	}
+
+	return std::unique_ptr<ClientSessionPool>(new ClientSessionPool(std::move(sessions), capacity));
+}
+
+ClientSessionPool::ClientSessionPool(std::unique_ptr<ClientSession[]> sessions, uint32_t capacity)
+	: m_nodes(std::make_unique<SessionNode[]>(capacity)), m_sessions(std::move(sessions)), m_capacity(capacity)
+{
 	for (uint32_t i = 0; i < m_capacity; ++i)
 	{
-		if (!m_sessions[i].Initialize(SESSION_ROLE::SERVER, i))
-		{
-			ENGINE_VIOLATION("failed to initialize client session %u of %u", i, m_capacity);
-			return;
-		}
-
-		if (!m_sessions[i].InitializeMemoryPool(jobMemoryPool, packetMemoryPool, bufferConfig))
-		{
-			ENGINE_VIOLATION("failed to bind memory pools to client session %u of %u", i, m_capacity);
-			return;
-		}
-
-		// 마지막 완료가 반납을 마무리할 수 있도록 진입점을 걸어 둔다.
 		m_sessions[i].SetReleaseReadyFunc(&ClientSessionPool::OnReleaseReady, this);
-
 		m_nodes[i].session = &m_sessions[i];
 		m_nodes[i].nextNode = m_freeList;
 		m_freeList = &m_nodes[i];
 	}
-
-	m_ready = true;
 }
 
-ClientSessionPool::~ClientSessionPool()
-{
-	if (m_sessions)
-	{
-		delete[] m_sessions;
-		m_sessions = nullptr;
-	}
-
-	if (m_nodes)
-	{
-		delete[] m_nodes;
-		m_nodes = nullptr;
-	}
-}
+ClientSessionPool::~ClientSessionPool() = default;
 
 ClientSession* ClientSessionPool::Acquire()
 {
@@ -103,21 +128,18 @@ void ClientSessionPool::Release(ClientSession* clientSession)
 
 	SessionNode* node = &m_nodes[sessionId];
 
-	// 반납은 세션당 정확히 한 번만 수행되어야 한다.
-	// 같은 세션에 대해 아래 경로들이 동시에 들어올 수 있다.
-	//   - WSASend 실패 -> HandleSocketError -> NotifyDisconnect
-	//   - RECV 0바이트(정상 종료) -> HandleSessionDisconnected
-	//   - HeartbeatThread 의 좀비 세션 정리
-	// 이 전이를 이긴 스레드만 아래 정리를 수행하고 나머지는 즉시 돌아간다.
-	// 가드가 없으면 같은 노드가 프리 리스트에 두 번 들어가
-	// node->nextNode == node 인 자기참조 루프가 만들어지고,
-	// 그 이후 Acquire 는 사용 중인 같은 세션을 반복해서 배포한다.
-	if (::InterlockedCompareExchange(&node->poolState, SESSION_POOL_RELEASING, SESSION_POOL_IN_USE) != SESSION_POOL_IN_USE)
 	{
-		// 동시 disconnect 경로가 실제로 겹쳤다는 신호다. 드물게 발생하고
-		// 정상 처리되지만, 프리 리스트 가드가 동작했다는 유일한 증거이므로 남긴다.
-		LOGI("session %u release skipped (already releasing or not in use)", sessionId);
-		return;
+		// 순회자가 사용 중인 슬롯을 확인하고 참조를 확보하는 구간과
+		// 같은 락을 사용하여, 두 동작 사이에 반환이 시작되는 것을 막습니다.
+		Core::Sync::SRWWriteLockGuard lock(m_lock);
+
+		if (::InterlockedCompareExchange(&node->poolState, SESSION_POOL_STATE::SESSION_POOL_RELEASING, SESSION_POOL_IN_USE) != SESSION_POOL_IN_USE)
+		{
+			// 동시 disconnect 경로가 실제로 겹쳤다는 신호다. 드물게 발생하고
+			// 정상 처리되지만, 프리 리스트 가드가 동작했다는 유일한 증거이므로 남긴다.
+			LOGI("session %u release skipped (already releasing or not in use)", sessionId);
+			return;
+		}
 	}
 
 	if (clientSession->IsTransportConnected())
@@ -261,13 +283,8 @@ uint32_t ClientSessionPool::CountSessionsFromAddress(const char* ipAddress) cons
 
 	for (uint32_t i = 0; i < m_capacity; ++i)
 	{
-		if (::ReadAcquire(&m_nodes[i].poolState) == SESSION_POOL_FREE)
-		{
-			continue;
-		}
-
-		// 임대 중인 세션의 주소만 본다. 반납된 세션의 주소는 지워진다.
-		if (::strncmp(m_sessions[i].GetClientIPAddress(), ipAddress, INET_ADDRSTRLEN) == 0)
+		auto session = TryAcquireSessionReference(i);
+		if (session && session->HasRemoteAddress(ipAddress))
 		{
 			++count;
 		}
@@ -383,7 +400,8 @@ uint32_t ClientSessionPool::SendHeartbeatRequests()
 
 	for (uint32_t i = 0; i < m_capacity; ++i)
 	{
-		ClientSession* session = &m_sessions[i];
+		auto session = TryAcquireSessionReference(i);
+
 		if (!session || session->GetSessionRole() != SESSION_ROLE::SERVER)
 		{
 			continue;
@@ -422,7 +440,8 @@ uint32_t ClientSessionPool::DisconnectZombieSessions(uint64_t nowTick, uint64_t 
 
 	for (uint32_t i = 0; i < m_capacity; ++i)
 	{
-		ClientSession* session = &m_sessions[i];
+		auto session = TryAcquireSessionReference(i);
+
 		if (!session || !session->IsTransportConnected())
 		{
 			continue;
@@ -467,21 +486,8 @@ uint32_t ClientSessionPool::DisconnectZombieSessions(uint64_t nowTick, uint64_t 
 			continue;
 		}
 
-		// 여기서부터가 막힐 수 있는 구간이다.
-		
-		// Release 안에는 최대 10초짜리 WaitForIOCancelComplete 가 있고,
-		// 이 루프는 좀비 수만큼 그 대기를 직렬로 쌓는다. 부르는 쪽은
-		// HeartbeatThread 한 스레드이므로 그 시간 동안 하트비트 발송과
-		// accept 슬롯 보충이 함께 멈춘다.
-		
-		// 하트비트 발송이 멈추면 멀쩡한 세션도 응답할 기회를 잃고 좀비로
-		// 판정된다. 실측한 연쇄다 — 정리 한 건이 2초일 때 좀비 6개면
-		// 발송 간격이 17초로 벌어지고(주기는 5초), 정상 응답하던 세션이
-		// 타임아웃 판정으로 끊겼다.
-	
-		// 그래서 한 주기에 쓸 시간에 상한을 둔다. 남은 좀비는 다음 주기가
-		// 가져간다. 한 건은 예산과 무관하게 처리하므로 예산이 아무리
-		// 작아도 정리가 영원히 밀리지는 않는다.
+		// 타임아웃 세션 하나는 시간 예산과 관계없이 반환을 요청한다.
+		// 이후 순회 시간이 예산에 도달하면 남은 세션은 다음 주기에 확인한다.
 		if (disconnectedCount > 0 && ::GetTickCount64() - passBeginTick >= releaseBudget_ms)
 		{
 			LOGW("zombie release budget of %llu ms is used up after %u sessions. the rest are left for the next cycle",
@@ -504,7 +510,7 @@ uint32_t ClientSessionPool::DisconnectZombieSessions(uint64_t nowTick, uint64_t 
 			session->NoteDisconnectReason(DisconnectReason::HeartbeatTimeout);
 		}
 		session->MarkHeartbeatTimeout();
-		Release(session);
+		Release(session.get());
 		++disconnectedCount;
 	}
 

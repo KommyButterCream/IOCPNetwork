@@ -44,15 +44,14 @@ protected:
 	// 단위에 있어 인라인되지 않으므로 컴파일러가 값을 레지스터에 눌러
 	// 담아두지 못한다는 것. 둘 다 설정 하나로(LTCG/WPO) 사라지는 전제다.
 	//
-	// AcceptSession::m_slotOwned 가 같은 부류의 문제를 먼저 맞았다 —
+	// AcceptSession::m_sessionOwned 가 같은 부류의 문제를 먼저 맞았다 —
 	// 상태가 원자적이지 않아 두 스레드가 같은 슬롯을 비었다고 읽었다.
 	// 그쪽은 CAS 플래그를 따로 뒀지만 나머지 상태는 그대로 남아 있었다.
 	//
 	// 저장은 volatile LONG 이고 접근은 반드시 Interlocked 로만 한다.
-	// 읽기 관용구는 IsReleasePending / GetOutstandingIOCount 와 같다.
+	// 읽기 방식은 GetOutstandingIOCount와 같다.
 	volatile LONG m_clientSessionState = static_cast<LONG>(ClientSessionState::NONE);
 	volatile LONG m_serverSessionState = static_cast<LONG>(ServerSessionState::NONE);
-	volatile LONG m_acceptSessionState = static_cast<LONG>(AcceptSessionState::NONE);
 
 	// 이 세션이 왜 끝났는가. 서비스의 종료 훅으로 그대로 올라간다.
 	// 먼저 쓴 값이 이긴다 (NoteDisconnectReason 주석).
@@ -65,7 +64,8 @@ protected:
 	volatile LONG m_closing = 0;
 	volatile LONG m_ioCount = 0;
 	// I/O와 준비 큐·워커의 참조를 함께 셉니다. 모두 반환되기 전에는 세션을 재사용하지 않습니다.
-	volatile LONG m_lifetimeReferences = 0;
+	mutable SRWLOCK m_lifetimeLock = SRWLOCK_INIT;
+	LONG m_lifetimeReferences = 0;
 	volatile LONG m_cancelIo = 0;
 
 	// 반납 예약. 1 이면 "I/O와 작업 수명 참조가 모두 끝나는 대로 이 세션을 반납하라".
@@ -74,7 +74,9 @@ protected:
 	// 성공한 스레드 하나만 마무리를 수행한다. RequestRelease 를 부른
 	// 스레드와 마지막 ReleaseLifetimeReference를 하는 스레드가 동시에 "내가 마지막"
 	// 이라고 판단할 수 있어, 둘 중 하나만 고르는 장치가 필요하다.
-	volatile LONG m_releasePending = 0;
+	bool m_releasePending = false;
+
+	void ResetLifetimeState();
 
 	ReleaseReadyFunc m_releaseReadyFunc = nullptr;
 	void* m_releaseReadyContext = nullptr;
@@ -87,7 +89,6 @@ public:
 	virtual void ResetSession();
 	virtual void Finalize();
 
-	virtual bool OnAccept() = 0;
 	virtual bool OnConnect() = 0;
 	virtual bool OnDisconnect();
 
@@ -105,8 +106,7 @@ public:
 
 	// --- 상태 관리 ---
 	//
-	// 역할별로 쓰는 것이 하나씩 정해져 있다. accept 세션은 Accept 상태만,
-	// 서버 역할 세션은 Server 상태만 쓴다.
+	// 연결 세션은 역할에 따라 Client 상태 또는 Server 상태를 사용한다.
 	//
 	// 헤더에 남겨 인라인시킨다. Interlocked 는 내장 함수라 DLL 호출이 생기지
 	// 않으므로, 접근자를 .cpp 로 내리면 호출 비용만 늘고 얻는 것이 없다.
@@ -131,15 +131,6 @@ public:
 	ServerSessionState GetServerSessionState() const
 	{
 		return static_cast<ServerSessionState>(::ReadAcquire(&m_serverSessionState));
-	}
-
-	void SetAcceptSessionState(AcceptSessionState sessionState)
-	{
-		::InterlockedExchange(&m_acceptSessionState, static_cast<LONG>(sessionState));
-	}
-	AcceptSessionState GetAcceptSessionState() const
-	{
-		return static_cast<AcceptSessionState>(::ReadAcquire(&m_acceptSessionState));
 	}
 
 	// --- 타입 및 식별자 ---
@@ -251,6 +242,9 @@ public:
 	LONG GetOutstandingIOCount() const;
 
 protected:
+	// 이번 취소 주기의 첫 요청이면 완료 이벤트를 초기화하고 true를 반환한다.
+	[[nodiscard]] bool BeginIOCancellation();
+
 	// 취소가 걸린 뒤에도 남아 있는 "발행되지 않은" 카운트를 놓을 기회.
 	//
 	// BeginIO 는 발행 지점이 카운트를 먼저 올리게 해서 취소 대기가 통과하지

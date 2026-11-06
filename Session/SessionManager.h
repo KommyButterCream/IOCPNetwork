@@ -10,6 +10,7 @@
 #include "ISessionEvent.h"
 
 #include "../Buffer/SessionBufferConfig.h"
+#include <memory> // for std::unique_ptr
 
 class ISession;
 class AcceptSession;
@@ -31,8 +32,8 @@ private:
 	SessionManager& operator = (SessionManager&& rhs) noexcept = delete;
 
 private:
-	AcceptSessionPool* m_acceptSessionPool = nullptr;
-	ClientSessionPool* m_clientSessionPool = nullptr;
+	std::unique_ptr<AcceptSessionPool> m_acceptSessionPool;
+	std::unique_ptr<ClientSessionPool> m_clientSessionPool;
 
 	uint32_t m_acceptSessionCount = 0;
 	uint32_t m_clientSessionCount = 0;
@@ -46,8 +47,8 @@ public:
 	AcceptSession* GetAcceptSession(const uint32_t sessionId);
 	uint32_t GetAcceptSessionCount() const noexcept;
 
-	void RequestAllAcceptIOCancel();
-	bool WaitForAllAcceptIOCancelComplete(const uint32_t timeout_ms);
+	void CancelAllAcceptIORequests();
+	bool WaitForAllAcceptIOComplete(const uint32_t timeout_ms);
 
 	// Client Session //
 public:

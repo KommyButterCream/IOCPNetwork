@@ -1,11 +1,13 @@
 ﻿#pragma once
 
 #include <stdint.h>
-
+#include <memory> // for std::unique_ptr
 
 #include "ISession.h"
 #include "BaseSession.h"
 #include "SessionContext.h"
+
+
 
 #include "../Network/OverlappedEx.h"
 #include "../Protocol/PacketID.h"
@@ -40,14 +42,13 @@ private:
 
 	// Client / Server Role
 	OverlappedEx m_recvOverlapped{};
-	RecvPacketBuffer* m_recvPacketBuffer = nullptr;
+	std::unique_ptr<RecvPacketBuffer> m_recvPacketBuffer;
 
 	// 이 세션의 버퍼 크기 정책. InitializeMemoryPool 에서 받아 보관한다.
 	// 송신 상한 검사가 여기를 본다.
 	SessionBufferConfig m_bufferConfig;
 
 	OverlappedEx m_sendOverlapped{};
-	SendPacketQueue* m_sendPacketQueue = nullptr;
 
 	// 송신 중인 패킷을 소유합니다.
 	// 부분 송신이면 유지하고, 최종 완료 또는 안전한 종료 정리 시 반환합니다.
@@ -56,9 +57,9 @@ private:
 
 	Job* m_currentJob = nullptr;
 
+	std::unique_ptr<SendPacketQueue> m_sendPacketQueue;
 
-
-	SessionJobQueue* m_jobQueue = nullptr;
+	std::unique_ptr<SessionJobQueue> m_jobQueue;
 
 	volatile LONG m_sending = 0; // sending flag: 0 = not sending, 1 = sending (Interlocked)
 	volatile LONG m_processing = 0; // processing flag: 0 = idle, 1 = being processed by a worker
@@ -89,6 +90,7 @@ private:
 	SessionContext* m_sessionContext = nullptr;
 
 	// IP Address & Port
+	mutable SRWLOCK m_remoteAddressLock = SRWLOCK_INIT;
 	char m_clientIPAddress[INET_ADDRSTRLEN] = { 0, };
 	uint16_t m_clientPort = 0;
 	volatile LONGLONG m_lastRecvTick = 0;
@@ -102,7 +104,6 @@ public:
 	void ResetSession() override;
 	void Finalize() override;
 
-	bool OnAccept() override;
 	bool OnConnect() override;
 	bool OnDisconnect() override;
 
@@ -231,7 +232,7 @@ public:
 
 	// 접속 폭주 방어에서 같은 주소의 접속 수를 셀 때 쓴다.
 	// 세션이 비어 있으면 빈 문자열이다.
-	const char* GetClientIPAddress() const { return m_clientIPAddress; }
+	[[nodiscard]] bool HasRemoteAddress(const char* ipAddress) const;
 	void ClearRemoteAddress();
 	void UpdateLastRecvTick();
 	void UpdateLastHeartbeatTick();
@@ -285,8 +286,7 @@ private:
 	// (왜 필요한지는 BaseSession::ReleaseUnpostedIO 주석)
 	void ReleaseUnpostedIO() override;
 
-	// InitializeMemoryPool 이 잡은 자원만 되돌린다.
-	// 그쪽의 실패 정리와 Finalize 가 함께 쓴다. 부분 생성 상태에서도 안전하다.
+	// 종료 시 송신 큐, Job 큐, 수신 버퍼 순서로 해제한다.
 	void ReleaseMemoryResources();
 
 public:

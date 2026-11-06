@@ -242,9 +242,6 @@
     <ClInclude Include="..\Session\SessionManager.h">
       <Filter>Session</Filter>
     </ClInclude>
-    <ClInclude Include="..\Session\SessionNode.h">
-      <Filter>Session</Filter>
-    </ClInclude>
     <ClInclude Include="..\Memory\EnginePoolConfig.h" />
     <ClInclude Include="..\Memory\EnginePoolBuilder.h" />
     <ClInclude Include="..\EngineApi.h" />

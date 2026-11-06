@@ -20,9 +20,11 @@
 #include "../Protocol/SystemPacket.h"
 #include "../Buffer/PacketHandle.h"
 #include "../Buffer/SharedPacketHandle.h"
+#include "../../Core/Sync/SRWLockGuard.h"
+#include <cstring> // for std::strncmp, std::memcpy
 
 #include <utility> // for std::move
-#include <memory> // for std::construct_at
+#include <memory>  // for std::construct_at, std::make_unique
 #pragma comment(lib, "ws2_32.lib") // for WinSock2
 
 using namespace Core::Util;
@@ -185,7 +187,6 @@ void ClientSession::Finalize()
 	m_sendOffset = 0;
 
 	// 송신 큐 / 잡 큐 / 수신 링.
-	// InitializeMemoryPool 의 실패 정리와 같은 코드를 쓴다.
 	ReleaseMemoryResources();
 
 	if (GetSessionRole() == SESSION_ROLE::CLIENT)
@@ -230,11 +231,6 @@ void ClientSession::Finalize()
 
 }
 
-bool ClientSession::OnAccept()
-{
-	return false;
-}
-
 bool ClientSession::OnConnect()
 {
 	if (GetSessionRole() == SESSION_ROLE::CLIENT)
@@ -246,13 +242,19 @@ bool ClientSession::OnConnect()
 		SetServerSessionState(ServerSessionState::CONNECTED);
 	}
 
-	// 접속 1건에 로그 2줄을 쓰던 것을 한 줄로 합친다.
-	// 원격 주소는 서버 역할에서만 채워진다 (SetRemoteAddress 는 HandleAccept 가 호출).
-	// 클라이언트 역할이면 비어 있으므로 찍지 않는다.
-	if (m_clientIPAddress[0] != '\0')
+	char ipAddress[sizeof(m_clientIPAddress)] = {};
+	uint16_t port = 0;
+
+	{
+		Core::Sync::SRWReadLockGuard lock(m_remoteAddressLock);
+		std::memcpy(ipAddress, m_clientIPAddress, sizeof(ipAddress));
+		port = m_clientPort;
+	}
+
+	if (ipAddress[0] != '\0')
 	{
 		LOGI("session %u connected from %s:%u (role %d)",
-			GetSessionID(), m_clientIPAddress, m_clientPort, static_cast<int>(GetSessionRole()));
+			GetSessionID(), ipAddress, port, static_cast<int>(GetSessionRole()));
 	}
 	else
 	{
@@ -288,73 +290,31 @@ bool ClientSession::InitializeMemoryPool(TlsMemoryPool* jobMemoryPool, TlsMemory
 		return false;
 	}
 
-	m_bufferConfig = bufferConfig;
+	// 세 자원을 모두 준비한 뒤 세션에 등록한다.
+	auto recvPacketBuffer = std::make_unique<RecvPacketBuffer>();
+	if (!recvPacketBuffer->Initialize(packetMemoryPool, bufferConfig.recvRingSize, bufferConfig.maxRecvPacketSize))
+		return false;
 
+	auto jobQueue = std::make_unique<SessionJobQueue>(GetSessionRole(), jobMemoryPool, packetMemoryPool);
+
+	auto sendPacketQueue = std::make_unique<SendPacketQueue>();
+	if (!sendPacketQueue->Initialize(bufferConfig.sendQueueDepth))
+		return false;
+
+	m_bufferConfig = bufferConfig;
 	m_jobMemoryPool = jobMemoryPool;
 	m_packetMemoryPool = packetMemoryPool;
-
-	// 아래 어느 단계에서 실패하든 정리는 ReleaseMemoryResources 한 곳에서 한다.
-	//
-	// 예전에는 단계마다 되감기 코드를 계단식으로 복제했다. 다섯 벌이 조금씩
-	// 달랐고, 그중 하나는 m_sendPacketQueue 를 Finalize 없이 delete 해서
-	// 큐가 들고 있던 것을 반환하지 않았다. 단계를 하나 추가하면 여섯 번째
-	// 사본이 늘어나는 구조였다.
-
-	m_recvPacketBuffer = new RecvPacketBuffer();
-	if (!m_recvPacketBuffer ||
-		!m_recvPacketBuffer->Initialize(packetMemoryPool, m_bufferConfig.recvRingSize, m_bufferConfig.maxRecvPacketSize))
-	{
-		ReleaseMemoryResources();
-		return false;
-	}
-
-	m_jobQueue = new SessionJobQueue(GetSessionRole(), jobMemoryPool, packetMemoryPool);
-	if (!m_jobQueue)
-	{
-		ReleaseMemoryResources();
-		return false;
-	}
-
-	m_sendPacketQueue = new SendPacketQueue();
-	if (!m_sendPacketQueue ||
-		!m_sendPacketQueue->Initialize(m_bufferConfig.sendQueueDepth))
-	{
-		ReleaseMemoryResources();
-		return false;
-	}
-
+	m_recvPacketBuffer = std::move(recvPacketBuffer);
+	m_jobQueue = std::move(jobQueue);
+	m_sendPacketQueue = std::move(sendPacketQueue);
 	return true;
 }
 
-// InitializeMemoryPool 이 잡은 것만 되돌린다.
-// 실패 정리와 Finalize 가 같은 코드를 쓰게 하려고 뺐다.
-//
-// 순서는 Finalize 가 쓰던 것을 그대로 따른다.
-//
-// 부분 생성 상태에서 불려도 안전하다. 세 자원의 Finalize/Reset 은 전부
-// 널 검사로 시작한다.
 void ClientSession::ReleaseMemoryResources()
 {
-	if (m_sendPacketQueue)
-	{
-		m_sendPacketQueue->Finalize();
-		delete m_sendPacketQueue;
-		m_sendPacketQueue = nullptr;
-	}
-
-	if (m_jobQueue)
-	{
-		m_jobQueue->Reset();
-		delete m_jobQueue;
-		m_jobQueue = nullptr;
-	}
-
-	if (m_recvPacketBuffer)
-	{
-		m_recvPacketBuffer->Finalize();
-		delete m_recvPacketBuffer;
-		m_recvPacketBuffer = nullptr;
-	}
+	m_sendPacketQueue.reset();
+	m_jobQueue.reset();
+	m_recvPacketBuffer.reset();
 }
 
 bool ClientSession::IsReady() const
@@ -443,12 +403,12 @@ RecvPacketBuffer& ClientSession::GetReceiveBuffer()
 
 const SendPacketQueue* ClientSession::GetSendPacketQueue() const
 {
-	return m_sendPacketQueue;
+	return m_sendPacketQueue.get();
 }
 
 SendPacketQueue* ClientSession::GetSendPacketQueue()
 {
-	return m_sendPacketQueue;
+	return m_sendPacketQueue.get();
 }
 
 bool ClientSession::HasPendingSend() const
@@ -1291,17 +1251,27 @@ void ClientSession::SetRemoteAddress(const char* ipAddress, uint16_t port)
 	if (ipAddress == nullptr)
 		return;
 
-	// 이전에는 memcpy_s(..., ipAddress, INET_ADDRSTRLEN) 로 소스에서 무조건
-	// 22바이트를 읽었다. ipAddress 가 그보다 짧은 버퍼면 범위를 넘어 읽는다.
-	// strncpy_s + _TRUNCATE 는 널 종료까지만 읽고, 대상 크기를 넘으면 자른다.
+	Core::Sync::SRWWriteLockGuard lock(m_remoteAddressLock);
 	::strncpy_s(m_clientIPAddress, sizeof(m_clientIPAddress), ipAddress, _TRUNCATE);
 	m_clientPort = port;
 }
 
 void ClientSession::ClearRemoteAddress()
 {
+	Core::Sync::SRWWriteLockGuard lock(m_remoteAddressLock);
 	memset(m_clientIPAddress, 0, sizeof(m_clientIPAddress));
 	m_clientPort = 0;
+}
+
+bool ClientSession::HasRemoteAddress(const char* ipAddress) const
+{
+	if (!ipAddress || ipAddress[0] == '\0')
+	{
+		return false;
+	}
+
+	Core::Sync::SRWReadLockGuard lock(m_remoteAddressLock);
+	return std::strncmp(m_clientIPAddress, ipAddress, sizeof(m_clientIPAddress)) == 0;
 }
 
 void ClientSession::UpdateLastRecvTick()

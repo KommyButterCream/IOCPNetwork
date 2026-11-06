@@ -16,7 +16,6 @@ enum class SESSION_ROLE
 	NONE,
 	CLIENT,
 	SERVER,
-	ACCEPT,
 };
 
 
@@ -41,15 +40,5 @@ enum class ServerSessionState
 	AUTH_PENDING,
 	ESTABLISHED,
 	HEARTBEAT_TIMEOUT,
-	DISCONNECTED,
-};
-
-enum class AcceptSessionState
-{
-	NONE,
-	ACCEPT_READY,
-	ACCEPT_WAIT,
-	ACCEPT_COMPLETE,
-	ACCEPT_ABORTED,
 	DISCONNECTED,
 };

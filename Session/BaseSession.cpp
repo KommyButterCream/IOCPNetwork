@@ -4,6 +4,7 @@
 
 #include "../Diagnostics/EngineAssert.h"
 
+#include "../../Core/Sync/SRWLockGuard.h"
 #include "../../Core/Util/Logger.h"
 
 using namespace Core::Util;
@@ -40,7 +41,6 @@ void BaseSession::ResetSession()
 {
 	SetClientSessionState(ClientSessionState::NONE);
 	SetServerSessionState(ServerSessionState::NONE);
-	SetAcceptSessionState(AcceptSessionState::NONE);
 
 	// 지난 접속의 종료 사유를 지운다. 남겨 두면 이 슬롯을 다음에 쓰는
 	// 접속이 끝날 때 남의 사유를 물려받는다.
@@ -64,10 +64,7 @@ void BaseSession::ResetSession()
 	//
 	// 카운트를 그대로 두면 늦게 도착한 DecrementIO 가 정상적으로 0 으로 내려간다.
 	// 0 이 아닌 상태로 여기 도달한 것 자체가 버그이므로 크게 남긴다.
-	if (::ReadAcquire(&m_lifetimeReferences) != 0)
-	{
-		ENGINE_VIOLATION("session %u cleaned up with outstanding lifetime references", GetSessionID());
-	}
+	ResetLifetimeState();
 	const LONG remainingIo = ::ReadAcquire(&m_ioCount);
 	if (remainingIo != 0)
 	{
@@ -77,11 +74,6 @@ void BaseSession::ResetSession()
 
 	::InterlockedExchange(&m_closing, 0);
 	::InterlockedExchange(&m_cancelIo, 0);
-
-	// 반납을 마친 세션에 예약이 남아 있으면, 다음 접속이 이 세션을 쓰다가
-	// 첫 완료에서 곧바로 반납된다. 마무리 경로를 거쳐 왔다면 토큰은 이미
-	// 소비되어 0 이지만, 그렇지 않은 경로로 리셋될 수도 있어 여기서 지운다.
-	::InterlockedExchange(&m_releasePending, 0);
 
 	// 취소 완료 이벤트는 여기서 되돌리지 않는다.
 	//
@@ -105,10 +97,7 @@ void BaseSession::Finalize()
 	// 통지는 버려진다. 그러면 그 몫의 DecrementIO 가 영영 실행되지 않아
 	// 카운트가 0 이 아닌 상태로 여기 도달한다.
 	// 종료 경로이므로 치명적이지 않다. 남기고 계속 진행한다.
-	if (::ReadAcquire(&m_lifetimeReferences) != 0)
-	{
-		ENGINE_VIOLATION("session %u cleaned up with outstanding lifetime references", GetSessionID());
-	}
+	ResetLifetimeState();
 	const LONG remainingIo = ::ReadAcquire(&m_ioCount);
 	if (remainingIo != 0)
 	{
@@ -118,7 +107,6 @@ void BaseSession::Finalize()
 
 	SetClientSessionState(ClientSessionState::NONE);
 	SetServerSessionState(ServerSessionState::NONE);
-	SetAcceptSessionState(AcceptSessionState::NONE);
 
 	if (m_clientSocket != INVALID_SOCKET)
 	{
@@ -129,7 +117,6 @@ void BaseSession::Finalize()
 	::InterlockedExchange(&m_closing, 0);
 	::InterlockedExchange(&m_ioCount, 0);
 	::InterlockedExchange(&m_cancelIo, 0);
-	::InterlockedExchange(&m_releasePending, 0);
 
 	if (m_ioCancelCompleteEvent)
 	{
@@ -141,23 +128,45 @@ void BaseSession::Finalize()
 	m_destroyFlag = true;
 }
 
+void BaseSession::ResetLifetimeState()
+{
+	Core::Sync::SRWWriteLockGuard lock(m_lifetimeLock);
+	if (m_lifetimeReferences != 0)
+	{
+		ENGINE_VIOLATION("session %u cleaned up with outstanding lifetime references", GetSessionID());
+	}
+	m_releasePending = false;
+}
+
 void BaseSession::AddLifetimeReference()
 {
-	::InterlockedIncrement(&m_lifetimeReferences);
+	Core::Sync::SRWWriteLockGuard lock(m_lifetimeLock);
+	++m_lifetimeReferences;
 }
 
 void BaseSession::ReleaseLifetimeReference()
 {
-	// 마지막 참조 반환 후에는 세션이 재사용될 수 있어 콜백 정보를 먼저 읽습니다.
-	const auto callback = m_releaseReadyFunc;
-	void* context = m_releaseReadyContext;
-	const LONG remaining = ::InterlockedDecrement(&m_lifetimeReferences);
-	if (remaining < 0)
+	ReleaseReadyFunc callback = nullptr;
+	void* context = nullptr;
 	{
-		ENGINE_VIOLATION("session lifetime reference count went negative (%ld)", remaining);
-		return;
+		Core::Sync::SRWWriteLockGuard lock(m_lifetimeLock);
+		if (m_lifetimeReferences == 0)
+		{
+			ENGINE_VIOLATION("session %u released a lifetime reference with none outstanding", GetSessionID());
+			return;
+		}
+
+		// 마지막 참조인지 확인하고 반환 예약을 소비하는 동안 새 참조가 끼어들 수 없다.
+		if (--m_lifetimeReferences == 0 && m_releasePending)
+		{
+			m_releasePending = false;
+			callback = m_releaseReadyFunc;
+			context = m_releaseReadyContext;
+		}
 	}
-	if (remaining == 0 && ::InterlockedExchange(&m_releasePending, 0) == 1 && callback)
+
+	// 콜백에서 세션을 초기화하고 풀에 돌려주므로 수명 락을 먼저 해제한다.
+	if (callback)
 	{
 		callback(context, this);
 	}
@@ -189,25 +198,22 @@ void BaseSession::DecrementIO()
 
 void BaseSession::SetReleaseReadyFunc(ReleaseReadyFunc releaseReadyFunc, void* context)
 {
+	Core::Sync::SRWWriteLockGuard lock(m_lifetimeLock);
 	m_releaseReadyFunc = releaseReadyFunc;
 	m_releaseReadyContext = context;
 }
 
 bool BaseSession::RequestRelease()
 {
-	// 예약을 먼저 공개한 뒤 참조 수를 확인합니다. 마지막 참조 반환과 겹쳐도
-	// 예약 토큰을 가져간 한 스레드만 실제 반납을 수행합니다.
-	::InterlockedExchange(&m_releasePending, 1);
-	if (::ReadAcquire(&m_lifetimeReferences) != 0)
-	{
-		return false;
-	}
-	return (::InterlockedExchange(&m_releasePending, 0) == 1);
+	Core::Sync::SRWWriteLockGuard lock(m_lifetimeLock);
+	m_releasePending = m_lifetimeReferences != 0;
+	return !m_releasePending;
 }
 
 bool BaseSession::IsReleasePending() const
 {
-	return (::ReadAcquire(&m_releasePending) == 1);
+	Core::Sync::SRWReadLockGuard lock(m_lifetimeLock);
+	return m_releasePending;
 }
 
 LONG BaseSession::GetOutstandingIOCount() const
@@ -215,19 +221,25 @@ LONG BaseSession::GetOutstandingIOCount() const
 	return ::ReadAcquire(&m_ioCount);
 }
 
+bool BaseSession::BeginIOCancellation()
+{
+	if (::InterlockedExchange(&m_cancelIo, 1) != 0)
+		return false;
+
+	if (m_ioCancelCompleteEvent)
+	{
+		::ResetEvent(m_ioCancelCompleteEvent);
+	}
+
+	return true;
+}
+
 bool BaseSession::CancelPendingIO()
 {
 	if (m_clientSocket != INVALID_SOCKET)
 	{
-		if (::InterlockedExchange(&m_cancelIo, 1) == 0)
+		if (BeginIOCancellation())
 		{
-			// 이 주기의 신호를 받기 전에 이전 주기의 잔상을 지운다.
-			// 되돌리는 자리는 여기 하나뿐이다 (ResetSession 의 주석 참고).
-			if (m_ioCancelCompleteEvent)
-			{
-				::ResetEvent(m_ioCancelCompleteEvent);
-			}
-
 			LOGI("session %u cancelling pending IO (count %ld)",
 				GetSessionID(), ::ReadAcquire(&m_ioCount));
 
@@ -435,9 +447,6 @@ bool BaseSession::OnDisconnect()
 			break;
 		case SESSION_ROLE::SERVER:
 			SetServerSessionState(ServerSessionState::DISCONNECTED);
-			break;
-		case SESSION_ROLE::ACCEPT:
-			SetAcceptSessionState(AcceptSessionState::DISCONNECTED);
 			break;
 		default:
 			break;

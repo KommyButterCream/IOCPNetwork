@@ -97,7 +97,6 @@
     <ClInclude Include="..\Session\SessionDefs.h" />
     <ClInclude Include="..\Session\SessionJobQueue.h" />
     <ClInclude Include="..\Session\SessionManager.h" />
-    <ClInclude Include="..\Session\SessionNode.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\Core\Core\Core.vcxproj">
