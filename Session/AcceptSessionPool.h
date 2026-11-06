@@ -3,7 +3,6 @@
 #include <stdint.h>
 #include <memory> // for std::unique_ptr
 
-#include "ISessionEvent.h"
 #include "SessionDefs.h"
 
 class AcceptSession;

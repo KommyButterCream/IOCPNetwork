@@ -84,8 +84,7 @@ ClientSessionPool::ClientSessionPool(std::unique_ptr<ClientSession[]> sessions, 
 {
 	for (uint32_t i = 0; i < m_capacity; ++i)
 	{
-		m_sessions[i].SetEventHandler(&m_callbacks.eventHandler);
-		m_sessions[i].SetReleaseReadyFunc(&ClientSessionPool::OnReleaseReady, this);
+		m_sessions[i].SetOwnerCallbacks({this, &ClientSessionPool::OnDisconnectRequest, &ClientSessionPool::OnReleaseReady});
 		m_nodes[i].session = &m_sessions[i];
 		m_nodes[i].nextNode = m_freeList;
 		m_freeList = &m_nodes[i];
@@ -174,6 +173,11 @@ void ClientSessionPool::NotifyServiceDisconnect(ClientSession* clientSession)
 		return;
 
 	m_callbacks.notifyDisconnect(m_callbacks.disconnectContext, clientSession);
+}
+
+void ClientSessionPool::OnDisconnectRequest(void* context, ClientSession* session)
+{
+	static_cast<ClientSessionPool*>(context)->Release(session);
 }
 
 void ClientSessionPool::OnReleaseReady(void* context, ClientSession* session)

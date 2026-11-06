@@ -6,7 +6,6 @@
 #include <ws2ipdef.h> // for INET_ADDRSTRLEN
 
 #include "SessionJobQueue.h"
-#include "ISessionEvent.h"
 
 #include "../Buffer/RecvPacketBuffer.h"
 #include "../Buffer/SendPacketQueue.h"
@@ -260,7 +259,7 @@ void ClientSession::Finalize()
 		m_sessionContext = nullptr;
 	}
 
-	m_eventHandler = nullptr;
+	m_ownerCallbacks = {};
 
 	// 미완료 IO가 정리된 뒤 세션이 보관한 송신 패킷을 반환합니다.
 	m_currentSendPacket.Reset();
@@ -1250,16 +1249,11 @@ void ClientSession::HandleSocketError(int errorCode, IO_OPERATION ioOperation)
 	DecrementIO();
 }
 
-void ClientSession::SetEventHandler(ISessionEvent* handler)
-{
-	m_eventHandler = handler;
-}
-
 void ClientSession::NotifyDisconnect()
 {
-	if (m_eventHandler)
+	if (m_ownerCallbacks.requestDisconnect)
 	{
-		m_eventHandler->OnDisconnectRequest(this);
+		m_ownerCallbacks.requestDisconnect(m_ownerCallbacks.owner, this);
 	}
 }
 

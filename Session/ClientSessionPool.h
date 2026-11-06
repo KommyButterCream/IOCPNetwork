@@ -6,7 +6,6 @@
 
 #include <Windows.h>
 #include <stdint.h>
-#include "ISessionEvent.h"
 #include "SessionDefs.h"
 #include <memory> // for std::unique_ptr
 
@@ -22,7 +21,6 @@ class ClientSessionPool
 public:
 	struct Callbacks
 	{
-		ISessionEvent& eventHandler;
 		CloseSocketFunc closeSocket;
 		SessionDisconnectNotifyFunc notifyDisconnect;
 		void* disconnectContext;
@@ -117,6 +115,7 @@ private:
 	void CompleteRelease(ClientSession* clientSession);
 
 	// ClientSession 이 마지막 DecrementIO 에서 부르는 진입점.
+	static void OnDisconnectRequest(void* context, ClientSession* session);
 	static void OnReleaseReady(void* context, ClientSession* session);
 
 	// 접속을 알린 적 있는 세션에 한해 종료를 한 번만 알린다.

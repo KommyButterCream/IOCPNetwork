@@ -7,20 +7,18 @@
 #include <Windows.h>
 #include <stdint.h>
 
-#include "ISessionEvent.h"
 #include "SessionDefs.h"
 
 #include "../Buffer/SessionBufferConfig.h"
 #include <memory> // for std::unique_ptr
 
-class ISession;
 class AcceptSession;
 class ClientSession;
 class ClientSessionPool;
 class AcceptSessionPool;
 class TlsMemoryPool;
 
-class SessionManager : public ISessionEvent
+class SessionManager
 {
 public:
 	SessionManager();
@@ -87,6 +85,4 @@ public:
 		uint64_t stalledPeerTimeout_ms, uint64_t releaseBudget_ms);
 
 
-private:
-	void OnDisconnectRequest(ISession* session) override;
 };

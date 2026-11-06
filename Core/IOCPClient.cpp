@@ -247,10 +247,7 @@ bool IOCPClient::StartClient(const char* serverIp, const uint16_t port, const Se
 	}
 	if (!m_session->InitializeMemoryPool(m_jobMemoryPool, m_packetMemoryPool, bufferConfig))
 		return false;
-	m_session->SetEventHandler(this);
-
-	// 마지막 완료가 종료 절차를 마무리할 수 있도록 진입점을 걸어 둔다.
-	m_session->SetReleaseReadyFunc(&IOCPClient::OnReleaseReady, this);
+	m_session->SetOwnerCallbacks({this, &IOCPClient::OnDisconnectRequest, &IOCPClient::OnReleaseReady});
 
 	// 세션에 소켓 설정
 	m_session->SetClientSocket(m_clientSocket);
@@ -325,7 +322,7 @@ void IOCPClient::StopClient()
 	if (m_session)
 	{
 		m_session->NoteDisconnectReason(DisconnectReason::LocalShutdown);
-		OnDisconnectRequest(m_session);
+		RequestDisconnect(m_session);
 
 		// 기다리는 자리는 여기 하나로 남겼다.
 		//
@@ -488,7 +485,7 @@ void IOCPClient::HandleSocketError(OverlappedEx* overlappedEx, ClientSession* se
 		//
 		// 종료를 먼저 요청하고 카운트는 마지막에 내린다.
 		session->NoteDisconnectReason(DisconnectReason::SocketError);
-		OnDisconnectRequest(session);
+		RequestDisconnect(session);
 
 		HandleRecvCancelled(overlappedEx, session);
 
@@ -510,7 +507,7 @@ void IOCPClient::HandleSocketError(OverlappedEx* overlappedEx, ClientSession* se
 
 		// 송신이 죽은 연결도 마찬가지다. 수신 쪽 주석 참고.
 		session->NoteDisconnectReason(DisconnectReason::SocketError);
-		OnDisconnectRequest(session);
+		RequestDisconnect(session);
 
 		HandleSendCancelled(overlappedEx, session);
 
@@ -543,7 +540,7 @@ void IOCPClient::HandleConnect(uint32_t sessionId, DWORD bytesTransferred)
 
 	if (!connectSequenceOk)
 	{
-		OnDisconnectRequest(m_session);
+		RequestDisconnect(m_session);
 	}
 
 	// 이 함수의 마지막 줄이어야 한다. 여기서 지연된 disconnect 마무리가
@@ -653,7 +650,7 @@ void IOCPClient::HandleConnectCancelled(OverlappedEx* overlappedEx, ClientSessio
 	// disconnect 를 먼저 요청하고, ConnectEx 몫의 카운트는 마지막에 내린다.
 	// 순서를 바꾸면 카운트가 0 이 된 사이에 disconnect 가 소켓을 닫고,
 	// 그 뒤 이 함수가 세션을 계속 만지게 된다.
-	OnDisconnectRequest(clientSession);
+	RequestDisconnect(clientSession);
 
 	clientSession->DecrementIO();
 }
@@ -801,7 +798,7 @@ void IOCPClient::HandleRecv(OverlappedEx* overlappedEx, ClientSession* session, 
 	// disconnect 를 먼저 요청하고 카운트는 마지막에 내린다. (서버 쪽 HandleRecv 와 같다)
 	if (disconnectAfterHandling)
 	{
-		OnDisconnectRequest(clientSession);
+		RequestDisconnect(clientSession);
 	}
 
 	// 이 함수의 마지막 줄이어야 한다.
@@ -886,7 +883,7 @@ void IOCPClient::HandleSessionDisconnected(OverlappedEx* overlappedEx, ClientSes
 	if (overlappedEx->operation == IO_OPERATION::RECV)
 	{
 		session->NoteDisconnectReason(DisconnectReason::PeerClosed);
-		OnDisconnectRequest(session);
+		RequestDisconnect(session);
 	}
 	else
 	{
@@ -1059,7 +1056,7 @@ bool IOCPClient::PostConnect(ClientSession* clientSession)
 			// 접속이 성립한 적이 없으므로 종료 통지도 없다.
 			// (HandleConnectCancelled 의 같은 자리 주석 참고)
 
-			OnDisconnectRequest(clientSession);
+			RequestDisconnect(clientSession);
 
 			// ConnectEx 가 실패했으므로 위에서 올린 몫을 내린다.
 			// 다른 경로와 같은 규칙으로 마지막에 둔다.
@@ -1098,9 +1095,13 @@ ClientSession* IOCPClient::ResolveOwnSession(ISession* session, const char* call
 	return m_session;
 }
 
-void IOCPClient::OnDisconnectRequest(ISession* session)
+void IOCPClient::OnDisconnectRequest(void* context, ClientSession* session)
 {
-	ClientSession* clientSession = ResolveOwnSession(session, "OnDisconnectRequest");
+	static_cast<IOCPClient*>(context)->RequestDisconnect(session);
+}
+
+void IOCPClient::RequestDisconnect(ClientSession* clientSession)
+{
 	if (!clientSession)
 		return;
 

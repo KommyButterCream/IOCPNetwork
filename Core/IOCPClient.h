@@ -2,7 +2,6 @@
 
 #include "IOCPCore.h"
 #include "ClientLivenessConfig.h"
-#include "../Session/ISessionEvent.h"
 #include "../Session/DisconnectReason.h"
 #include "../Job/HandlerContext.h"
 #include "../Buffer/SessionBufferConfig.h"
@@ -30,18 +29,7 @@ class SessionContext;
 
 #define INET_ADDRSTRLEN  22
 
-// ISessionEvent 를 직접 상속하는 이유. (서버는 그렇지 않다)
-//
-// 세션의 종료 요청(OnDisconnectRequest)을 받는 주체가 서버와 클라이언트에서
-// 다르다. 서버는 그 신호로 세션을 풀에 반납해야 하므로 풀을 가진
-// SessionManager 가 받는다. 클라이언트는 세션이 m_session 하나뿐이고 반납할
-// 풀이 없으니 자기가 직접 받는다.
-//
-// 그래서 IOCPServer 는 IOCPCore 만 상속하고, 이쪽만 다중 상속이다. 같은
-// 이벤트가 두 가지로 배선된 것처럼 보이지만 받아서 할 일이 다르다.
-// (어댑터 멤버를 끼워 단일 상속으로 맞출 수도 있으나, 클래스와 간접 호출을
-//  하나씩 늘려 가독성 흠 하나를 바꾸는 거래라 하지 않는다)
-class IOCPClient : public IOCPCore, public ISessionEvent
+class IOCPClient : public IOCPCore
 {
 public:
 	IOCP_ENGINE_API IOCPClient();
@@ -88,7 +76,7 @@ private:
 
 	// 종료 절차를 한 스레드만 수행하게 하는 게이트.
 	//
-	// OnDisconnectRequest 는 여러 경로에서 동시에 들어온다.
+	// RequestDisconnect 는 여러 경로에서 동시에 들어온다.
 	//   - 앱 스레드의 StopClient()
 	//   - ConnectEx 취소 완료 처리(HandleConnectCancelled)
 	//   - recv/send 소켓 오류 -> ClientSession::NotifyDisconnect
@@ -181,19 +169,18 @@ private:
 	bool SendSystemAuthRequest(ClientSession* session);
 	bool HandleSystemPacket(ClientSession* session, uint16_t packetId, const char* packetData, uint32_t packetSize);
 
-	IOCP_ENGINE_API void OnDisconnectRequest(ISession* session) override;
+	void RequestDisconnect(ClientSession* session);
+	static void OnDisconnectRequest(void* context, ClientSession* session);
 
 	// 종료 절차의 뒷부분. 소켓을 닫고 세션 상태를 정리한다.
-	// OnDisconnectRequest 가 그 자리에서 부르거나(남은 I/O 가 없을 때),
+	// RequestDisconnect 가 그 자리에서 부르거나(남은 I/O 가 없을 때),
 	// 마지막 DecrementIO 가 부른다.
 	void CompleteDisconnect(ClientSession* clientSession);
 
 	// ClientSession 이 마지막 DecrementIO 에서 부르는 진입점.
 	static void OnReleaseReady(void* context, ClientSession* session);
 
-	// ISessionEvent 의 시그니처가 ISession* 로 고정돼 있어 기반 타입이
-	// 들어오는 유일한 지점이다. 그 포인터가 정말 이 클라이언트의 세션인지
-	// 확인해서 돌려준다. 아니면 nullptr 과 함께 위반을 남긴다.
+	// 서비스가 넘긴 세션이 이 클라이언트 소유인지 확인한다.
 	ClientSession* ResolveOwnSession(ISession* session, const char* calledFrom);
 
 public:

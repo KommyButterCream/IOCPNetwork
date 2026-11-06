@@ -27,8 +27,7 @@ void ClientSession::AddLifetimeReference()
 
 void ClientSession::ReleaseLifetimeReference()
 {
-	ReleaseReadyFunc callback = nullptr;
-	void* context = nullptr;
+	OwnerCallbacks callbacks{};
 	{
 		Core::Sync::SRWWriteLockGuard lock(m_lifetimeLock);
 		if (m_lifetimeReferences == 0)
@@ -41,15 +40,14 @@ void ClientSession::ReleaseLifetimeReference()
 		if (--m_lifetimeReferences == 0 && m_releasePending)
 		{
 			m_releasePending = false;
-			callback = m_releaseReadyFunc;
-			context = m_releaseReadyContext;
+			callbacks = m_ownerCallbacks;
 		}
 	}
 
 	// 콜백에서 세션을 초기화하고 풀에 돌려주므로 수명 락을 먼저 해제한다.
-	if (callback)
+	if (callbacks.releaseReady)
 	{
-		callback(context, this);
+		callbacks.releaseReady(callbacks.owner, this);
 	}
 }
 
@@ -77,11 +75,10 @@ void ClientSession::DecrementIO()
 	ReleaseLifetimeReference();
 }
 
-void ClientSession::SetReleaseReadyFunc(ReleaseReadyFunc releaseReadyFunc, void* context)
+void ClientSession::SetOwnerCallbacks(OwnerCallbacks callbacks)
 {
 	Core::Sync::SRWWriteLockGuard lock(m_lifetimeLock);
-	m_releaseReadyFunc = releaseReadyFunc;
-	m_releaseReadyContext = context;
+	m_ownerCallbacks = callbacks;
 }
 
 bool ClientSession::RequestRelease()

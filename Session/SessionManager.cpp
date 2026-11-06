@@ -33,7 +33,7 @@ bool SessionManager::Initialize(
 		return false;
 
 	auto clientPool = ClientSessionPool::Create(clientSessionCount, jobMemoryPool, packetMemoryPool, bufferConfig,
-		{ .eventHandler = *this, .closeSocket = closeSocketFunc,
+		{ .closeSocket = closeSocketFunc,
 		  .notifyDisconnect = disconnectNotifyFunc, .disconnectContext = disconnectNotifyContext });
 	if (!clientPool)
 		return false;
@@ -202,22 +202,4 @@ uint32_t SessionManager::DisconnectZombieSessions(uint64_t heartbeatTimeout_ms,
 
 	return m_clientSessionPool->DisconnectZombieSessions(::GetTickCount64(), heartbeatTimeout_ms,
 		stalledPeerTimeout_ms, releaseBudget_ms);
-}
-
-void SessionManager::OnDisconnectRequest(ISession* session)
-{
-	if (!m_clientSessionPool)
-		return;
-
-	ENGINE_CHECK_RETVOID(session != nullptr, "OnDisconnectRequest called with a null session");
-
-	const uint32_t sessionId = session->GetSessionID();
-	ClientSession* clientSession = m_clientSessionPool->GetSession(sessionId);
-
-	// 다른 풀에서도 같은 ID를 쓸 수 있으므로 요청을 보낸 객체까지 확인한다.
-	ENGINE_CHECK_RETVOID(clientSession == session,
-		"disconnect request does not belong to this session pool (session %u)",
-		sessionId);
-
-	ReleaseClientSession(clientSession);
 }

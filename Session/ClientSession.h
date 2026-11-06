@@ -17,7 +17,6 @@ class Job;
 class SessionJobQueue;
 class RecvPacketBuffer;
 class TlsMemoryPool;
-class ISessionEvent;
 class PacketHandle;
 class SharedPacketHandle;
 
@@ -30,7 +29,12 @@ public:
 	~ClientSession() override;
 
 	// 마지막 수명 참조를 반환한 스레드가 소유자에게 반납 완료 처리를 맡긴다.
-	using ReleaseReadyFunc = void (*)(void* context, ClientSession* session);
+	struct OwnerCallbacks
+	{
+		void* owner;
+		void (*requestDisconnect)(void*, ClientSession*);
+		void (*releaseReady)(void*, ClientSession*);
+	};
 
 private:
 	bool m_destroyFlag = false;
@@ -86,8 +90,7 @@ private:
 	// 이라고 판단할 수 있어, 둘 중 하나만 고르는 장치가 필요하다.
 	bool m_releasePending = false;
 
-	ReleaseReadyFunc m_releaseReadyFunc = nullptr;
-	void* m_releaseReadyContext = nullptr;
+	OwnerCallbacks m_ownerCallbacks{};
 
 	HANDLE m_ioCancelCompleteEvent = nullptr;
 
@@ -141,7 +144,6 @@ private:
 	// (MarkServiceConnectNotified / ConsumeServiceConnectNotified 주석 참고)
 	volatile LONG m_serviceConnectNotified = 0;
 
-	ISessionEvent* m_eventHandler = nullptr;
 
 	// 서비스 로직별 세션 컨텍스트
 	SessionContext* m_sessionContext = nullptr;
@@ -291,7 +293,7 @@ public:
 	//
 	// 그래서 기다리지 않는다. 반납을 예약해 두고, 마지막 완료가 카운트를
 	// 0 으로 내리는 그 자리에서 마무리한다.
-	void SetReleaseReadyFunc(ReleaseReadyFunc releaseReadyFunc, void* context);
+	void SetOwnerCallbacks(OwnerCallbacks callbacks);
 
 	// 반납을 예약한다.
 	//   true  : 남은 수명 참조가 없고 마무리 권한을 이 스레드가 잡았다.
@@ -491,7 +493,6 @@ private:
 
 public:
 	// Callback Func
-	void SetEventHandler(ISessionEvent* handler);
 	void NotifyDisconnect();
 
 };

@@ -2,6 +2,10 @@
 
 #include <stdint.h>
 
+class ClientSession;
+using CloseSocketFunc = void (*)(uintptr_t);
+using SessionDisconnectNotifyFunc = void (*)(void* context, ClientSession* session);
+
 enum class IOWaitStatus { Completed, TimedOut, Failed };
 
 struct IOWaitResult
