@@ -402,9 +402,6 @@ public:
 	// 성공하면 핸들이 비워지고 큐가 소유한다.
 	// 실패하면 호출자가 소유권을 유지한다.
 	[[nodiscard]]
-	bool EnqueueJob(JobHandle&& jobHandle, bool& wasEmpty);
-
-	[[nodiscard]]
 	bool SubmitJob(JobHandle&& jobHandle);
 
 	// 성공하면 packet은 비워지고 송신 큐가 소유한다.

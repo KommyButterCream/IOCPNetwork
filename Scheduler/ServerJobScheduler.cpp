@@ -163,7 +163,7 @@ void ServerJobScheduler::WorkerThreadLoop(ServerJobWorker& worker, uint32_t work
 		session->UpdateProcessingFlag(0);
 
 		// 드레인 중에 새로 들어온 Job 이 있으면 다시 큐에 올린다.
-		if (!session->GetJobQueue().IsEmpty())
+		if (session->GetJobQueue().HasRunnableJobs())
 		{
 			if (session->IsProcessingReady())
 			{

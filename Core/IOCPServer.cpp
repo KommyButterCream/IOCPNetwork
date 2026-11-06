@@ -31,7 +31,6 @@
 #include "../Session/SessionManager.h"
 #include "../Session/ClientSession.h"
 #include "../Session/AcceptSession.h"
-#include "../Session/SessionJobQueue.h"
 #include "../Job/JobHandle.h"
 #include "../../Core/Util/Logger.h"
 
@@ -1645,31 +1644,10 @@ bool IOCPServer::SubmitPacketJob(ISession* session, uint16_t packetId, PacketHan
 		return false;
 	}
 
-	bool wasEmpty = false;
-
-	if (!clientSession->GetJobQueue().Enqueue(std::move(jobHandle), wasEmpty))
-	{
-		LOGE("session %u failed to enqueue a job for packet id %u",
-			clientSession->GetSessionID(), packetId);
-
+	if (!clientSession->SubmitJob(std::move(jobHandle)))
 		return false;
-	}
 
-	// The queue now owns the Job and its packet handle.
-
-	// 스케줄 조건에서 wasEmpty 를 뺐다.
-	//
-	// 예전 규약은 "큐가 비어 있었을 때만 스케줄한다" 였다. 대개는 맞지만
-	// 복구 불가 상태를 하나 만든다 — ServerReadySessionQueue::Enqueue 가 실패하면
-	// 큐에는 Job 이 남고 스케줄은 되지 않은 상태가 된다. 그 뒤에 오는
-	// 패킷은 wasEmpty == false 를 보고 스케줄을 건너뛰므로, 그 세션은
-	// 영구히 스케줄되지 않는다.
-	//
-	// 중복 Enqueue 를 실제로 막는 것은 아래 CAS 다. wasEmpty 는 그 CAS 를
-	// 아끼는 최적화였을 뿐이고, 그 최적화가 위 상태를 복구 불가로 만든다.
-	// CAS 만 남기면 패킷마다 다시 시도하므로 일시적 Enqueue 실패가 스스로
-	// 복구된다. 값은 원자 연산 하나(패킷당 수십 cycle)이고, 실측된 잡당
-	// 비용(약 32us)에 비하면 무시할 수준이다.
+	// 준비 큐 등록에 실패했던 세션도 다음 Job에서 다시 스케줄할 수 있다.
 	if (!clientSession->IsProcessingReady())
 	{
 		// 이미 스케줄되어 있거나 워커가 처리 중이다. 그 워커가 드레인을

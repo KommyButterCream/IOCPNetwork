@@ -5,69 +5,56 @@
 #endif
 
 #include <Windows.h>
-#include <stdint.h>
-
 #include "SessionDefs.h"
 #include "../Job/JobHandle.h"
 
-
-class Job;
-class TlsMemoryPool;
-enum class SESSION_ROLE;
-
-// 세션별 JobQueue (singly-linked list) - SRWLock 으로 보호
-class SessionJobQueue
+class SessionJobQueue final
 {
 public:
-	SessionJobQueue(SESSION_ROLE sessionRole, TlsMemoryPool* jobMemoryPool);
+	SessionJobQueue(SESSION_ROLE role, TlsMemoryPool& jobPool);
 	~SessionJobQueue();
 
+	// 락과 연결 목록을 소유하므로 큐 객체의 복사를 금지한다.
+	SessionJobQueue(const SessionJobQueue&) = delete;
+	SessionJobQueue& operator=(const SessionJobQueue&) = delete;
+
+	// 성공할 때만 Job의 소유권을 받아 큐 끝에 넣는다.
+	[[nodiscard]] bool Enqueue(JobHandle&& job);
+
+	// 서버 워커가 첫 Job을 꺼낸다. 비었거나 정지했으면 빈 핸들을 반환한다.
+	[[nodiscard]] JobHandle Dequeue();
+
+	// 클라이언트 워커가 첫 Job을 기다린다. 정지하면 빈 핸들을 반환한다.
+	[[nodiscard]] JobHandle WaitDequeue();
+
+	// 새 등록과 인출을 막고 대기 중인 워커를 깨운다.
+	void RequestStop();
+
+	// 서버 워커가 다시 스케줄할 수 있는 Job이 있는지 확인한다.
+	[[nodiscard]] bool HasRunnableJobs() const;
+
+	// 정지 전에 등록된 잔여 Job을 포함한 현재 개수를 반환한다.
+	[[nodiscard]] uint32_t GetCount() const;
+
+	// 이번 연결에서 기록한 최대 대기 개수를 반환한다.
+	[[nodiscard]] uint32_t GetPeakCount() const;
+
 private:
-	SESSION_ROLE m_sessionRole = SESSION_ROLE::NONE;
+	friend class ClientSession;
 
-	Job* m_head = nullptr;
-	Job* m_tail = nullptr;
-	mutable SRWLOCK m_srwLock = SRWLOCK_INIT;
-	CONDITION_VARIABLE m_cv = CONDITION_VARIABLE_INIT;
-	int32_t m_count = 0;
-
-	// 여태 도달한 최고 깊이. m_count 와 같은 락이 지킨다.
-	int32_t m_peakCount = 0;
-
-	TlsMemoryPool* m_jobMemoryPool = nullptr;
-
-
-	bool m_stopFlag = false;
-
-public:
-	// 성공하면 핸들이 비워지고 큐가 소유한다.
-	// 실패하면 호출자가 소유권을 유지한다.
-	[[nodiscard]]
-	bool Enqueue(JobHandle&& jobHandle, bool& wasEmpty);
-
-	// 대기 없이 꺼낸다. 큐가 비어 있으면 빈 핸들을 반환한다.
-	[[nodiscard]]
-	JobHandle Dequeue();
-	void WakeUp();
-
-	// Job이 들어오거나 중지 요청이 올 때까지 기다린다.
-	// 큐가 비어 있고 중지 요청이 있으면 빈 핸들을 반환한다.
-	[[nodiscard]]
-	JobHandle WaitForDequeueComplete();
-
+	// 이전 연결의 사용자가 모두 떠난 뒤 잔여 Job을 버리고 재사용을 준비한다.
 	void Reset();
 
-	bool IsEmpty() const;
+	// 쓰기 락을 보유한 호출자가 첫 Job의 소유권을 가져간다.
+	JobHandle DequeueLocked();
 
-	// Valid Jobs from this queue's pool are accepted without a depth limit.
-	// Empty handles and handles from a different pool are rejected.
-	// A slow consumer can retain queued Jobs and their packet buffers.
-	// Count and peak updates are protected by the queue lock.
-	uint32_t GetCount() const;
-
-	// 이 큐가 여태 도달한 최고 깊이. 세션이 재사용되면 Reset 이 지운다.
-	uint32_t GetPeakCount() const;
-
-	// 구간 측정용. 하네스가 시나리오 경계에서 쓴다.
-	void ResetPeakCount();
+	const SESSION_ROLE m_role;
+	TlsMemoryPool& m_jobPool;
+	mutable SRWLOCK m_lock = SRWLOCK_INIT;
+	CONDITION_VARIABLE m_cv = CONDITION_VARIABLE_INIT;
+	Job* m_head = nullptr;
+	Job* m_tail = nullptr;
+	uint32_t m_count = 0;
+	uint32_t m_peakCount = 0;
+	bool m_stopped = false;
 };

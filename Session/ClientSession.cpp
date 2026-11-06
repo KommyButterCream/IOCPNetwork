@@ -378,6 +378,9 @@ bool ClientSession::OnDisconnect()
 
 bool ClientSession::InitializeMemoryPool(TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig)
 {
+	if (!jobMemoryPool)
+		return false;
+
 	if (!bufferConfig.IsValid())
 	{
 		ENGINE_VIOLATION("session %u received an invalid buffer config (recv %u/ring %u, send %u, queue %u)",
@@ -391,7 +394,7 @@ bool ClientSession::InitializeMemoryPool(TlsMemoryPool* jobMemoryPool, TlsMemory
 	if (!recvPacketBuffer->Initialize(packetMemoryPool, bufferConfig.recvRingSize, bufferConfig.maxRecvPacketSize))
 		return false;
 
-	auto jobQueue = std::make_unique<SessionJobQueue>(GetSessionRole(), jobMemoryPool);
+	auto jobQueue = std::make_unique<SessionJobQueue>(GetSessionRole(), *jobMemoryPool);
 
 	auto sendPacketQueue = std::make_unique<SendPacketQueue>();
 	if (!sendPacketQueue->Initialize(bufferConfig.sendQueueDepth))
@@ -975,44 +978,14 @@ bool ClientSession::OnSendCompleted(const DWORD bytesTransferred)
 	return true;
 }
 
-bool ClientSession::EnqueueJob(JobHandle&& jobHandle, bool& wasEmpty)
-{
-	wasEmpty = false;
-
-	if (!jobHandle)
-	{
-		return false;
-	}
-
-	if (!m_jobQueue)
-	{
-		ENGINE_VIOLATION(
-			"session %u cannot enqueue a job : "
-			"the session job queue is not initialized",
-			GetSessionID());
-
-		return false;
-	}
-	// 세션 JobQueue에 enqueue
-	if (!m_jobQueue->Enqueue(std::move(jobHandle), wasEmpty))
-	{
-		LOGE("session %u failed to enqueue a job", GetSessionID());
-
-		ENGINE_BREAK_IF_DEBUGGER();
-
-		return false;
-	}
-
-	return true;
-}
-
-// 성공하면 큐가 Job을 소유하고 호출자의 핸들은 비워진다.
-// 실패하면 호출자의 핸들이 소유권을 유지한다.
 bool ClientSession::SubmitJob(JobHandle&& jobHandle)
 {
-	bool wasEmpty = false;
-
-	return EnqueueJob(std::move(jobHandle), wasEmpty);
+	if (!m_jobQueue)
+	{
+		ENGINE_VIOLATION("session %u has no job queue", GetSessionID());
+		return false;
+	}
+	return m_jobQueue->Enqueue(std::move(jobHandle));
 }
 
 // 이유별로 1초에 한 줄만 통과시킨다. 자세한 사정은 헤더의 선언 주석 참고.

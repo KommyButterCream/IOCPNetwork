@@ -1,6 +1,7 @@
 ﻿#include "ClientSessionPool.h"
 
 #include "ClientSession.h"
+#include "SessionJobQueue.h"
 
 #include "../Diagnostics/EngineAssert.h"
 #include <memory>  // for std::make_unique, std::unique_ptr
@@ -298,7 +299,11 @@ void ClientSessionPool::RequestAllRecvSendIOCancel()
 	{
 		auto session = TryAcquireSessionReference(i);
 
-		if (session && session->IsTransportConnected())
+		if (!session)
+			continue;
+		session->GetJobQueue().RequestStop();
+
+		if (session->IsTransportConnected())
 		{
 			if (!session->CancelPendingIO())
 			{

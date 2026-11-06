@@ -9,7 +9,9 @@ class JobDeleter final
 {
 public:
     explicit JobDeleter(TlsMemoryPool& pool) noexcept : m_pool(&pool) {}
+
     void operator()(Job* job) const noexcept;
+
     [[nodiscard]] TlsMemoryPool* GetPool() const noexcept { return m_pool; }
 
 private:

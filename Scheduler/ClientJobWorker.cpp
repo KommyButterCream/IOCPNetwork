@@ -81,13 +81,13 @@ void ClientJobWorker::Finalize()
 	}
 
 	// 정지 요청만 먼저 보낸다.
-	// Run() 은 SessionJobQueue::WaitDequeueJob 에서 조건 변수로 블로킹되므로
-	// 정지 이벤트만으로는 깨어나지 않는다. WakeUp 으로 깨워야 조인이 성립한다.
+	// Run() 은 SessionJobQueue::WaitDequeue 에서 조건 변수로 블로킹되므로
+	// 정지 이벤트만으로는 깨어나지 않는다. 큐 정지 요청으로 깨워야 조인이 성립한다.
 	RequestStop();
 
 	if (m_clientSession)
 	{
-		m_clientSession->GetJobQueue().WakeUp();
+		m_clientSession->GetJobQueue().RequestStop();
 	}
 
 	Join();
@@ -103,7 +103,7 @@ void ClientJobWorker::Run()
 	while (!IsStopRequested())
 	{
 		{
-			auto jobHandle = m_clientSession->GetJobQueue().WaitForDequeueComplete();
+			auto jobHandle = m_clientSession->GetJobQueue().WaitDequeue();
 
 			if (!jobHandle)
 			{
