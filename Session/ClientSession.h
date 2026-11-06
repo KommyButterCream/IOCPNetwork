@@ -6,7 +6,6 @@
 #include "ISession.h"
 #include "SessionDefs.h"
 #include "DisconnectReason.h"
-#include "SessionContext.h"
 
 #include "../Network/OverlappedEx.h"
 #include "../Protocol/PacketID.h"

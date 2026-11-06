@@ -227,9 +227,6 @@
     <ClInclude Include="..\Session\ISessionEvent.h">
       <Filter>Session</Filter>
     </ClInclude>
-    <ClInclude Include="..\Session\SessionContext.h">
-      <Filter>Session</Filter>
-    </ClInclude>
     <ClInclude Include="..\Session\SessionDefs.h">
       <Filter>Session</Filter>
     </ClInclude>

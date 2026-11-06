@@ -3,6 +3,5 @@
 #include "Core/IOCPServer.h"
 #include "Core/IOCPClient.h"
 #include "Session/ISession.h"
-#include "Session/SessionContext.h"
 #include "Job/HandlerContext.h"
 #include "Protocol/PacketHeader.h"

@@ -2,7 +2,12 @@
 #include <cstdint> // for uint32_t
 #include "../Buffer/PacketHandle.h"
 #include "../Buffer/SharedPacketHandle.h"
-#include "SessionContext.h"
+
+class SessionContext
+{
+public:
+	virtual ~SessionContext() = default;
+};
 
 // 빌려 쓰는 연결 인터페이스입니다. 포인터를 보관해도 연결 수명이 늘어나지 않습니다.
 // 공개 메서드에도 엔진의 기존 스레드·수명 규약이 적용됩니다.
