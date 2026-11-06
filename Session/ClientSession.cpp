@@ -391,7 +391,7 @@ bool ClientSession::InitializeMemoryPool(TlsMemoryPool* jobMemoryPool, TlsMemory
 	if (!recvPacketBuffer->Initialize(packetMemoryPool, bufferConfig.recvRingSize, bufferConfig.maxRecvPacketSize))
 		return false;
 
-	auto jobQueue = std::make_unique<SessionJobQueue>(GetSessionRole(), jobMemoryPool, packetMemoryPool);
+	auto jobQueue = std::make_unique<SessionJobQueue>(GetSessionRole(), jobMemoryPool);
 
 	auto sendPacketQueue = std::make_unique<SendPacketQueue>();
 	if (!sendPacketQueue->Initialize(bufferConfig.sendQueueDepth))
@@ -994,7 +994,7 @@ bool ClientSession::EnqueueJob(JobHandle&& jobHandle, bool& wasEmpty)
 		return false;
 	}
 	// 세션 JobQueue에 enqueue
-	if (!m_jobQueue->EnqueueJob(std::move(jobHandle), wasEmpty))
+	if (!m_jobQueue->Enqueue(std::move(jobHandle), wasEmpty))
 	{
 		LOGE("session %u failed to enqueue a job", GetSessionID());
 

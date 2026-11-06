@@ -6,30 +6,24 @@
 
 #include "../../Core/Util/Logger.h"
 #include "../Job/JobHandle.h"
-#include "../Memory/EngineMemoryPoolHelper.h"
 
 using namespace Core::Util;
 
 namespace
 {
-	// JobHandle보다 나중에 생성하여, Job 반환 전에 빌린 주소와 별도 데이터를 정리합니다.
+	// JobHandle보다 나중에 생성하여, Job 반환 전에 현재 Job 연결을 해제합니다.
 	class ClientJobScope final
 	{
 	public:
-		ClientJobScope(ClientSession& session, Job& job, TlsMemoryPool& packetMemoryPool)
-			: m_session(session), m_job(job), m_packetMemoryPool(packetMemoryPool)
+		ClientJobScope(ClientSession& session, Job& job)
+			: m_session(session)
 		{
-			m_session.SetCurrentJob(&m_job);
+			m_session.SetCurrentJob(&job);
 		}
 
 		~ClientJobScope()
 		{
 			m_session.SetCurrentJob(nullptr);
-			// Packet은 Job의 핸들이 반환합니다. DB/System만 기존 패킷 풀 반환 정책을 따릅니다.
-			if (const char* data = m_job.GetNonPacketData())
-			{
-				MEMORY_POOL::ReleasePacket(m_packetMemoryPool, data);
-			}
 		}
 
 		ClientJobScope(const ClientJobScope&) = delete;
@@ -37,8 +31,6 @@ namespace
 
 	private:
 		ClientSession& m_session;
-		Job& m_job;
-		TlsMemoryPool& m_packetMemoryPool;
 	};
 }
 
@@ -52,7 +44,7 @@ ClientJobWorker::~ClientJobWorker()
 	Finalize();
 }
 
-bool ClientJobWorker::Initialize(ClientSession* clientSession, TlsMemoryPool* packetMemoryPool)
+bool ClientJobWorker::Initialize(ClientSession* clientSession)
 {
 	if (m_clientSession)
 	{
@@ -60,14 +52,14 @@ bool ClientJobWorker::Initialize(ClientSession* clientSession, TlsMemoryPool* pa
 		return false;
 	}
 
-	if (!clientSession || !packetMemoryPool)
+	if (!clientSession)
 	{
-		LOGE("client session or packet memory pool is null");
+		LOGE("client session is null");
 		return false;
 	}
 
 	m_clientSession = clientSession;
-	m_packetMemoryPool = packetMemoryPool;
+
 
 	if (!Start())
 	{
@@ -103,7 +95,7 @@ void ClientJobWorker::Finalize()
 	LOGI("client session scheduler stopped");
 
 	m_clientSession = nullptr;
-	m_packetMemoryPool = nullptr;
+
 }
 
 void ClientJobWorker::Run()
@@ -111,14 +103,14 @@ void ClientJobWorker::Run()
 	while (!IsStopRequested())
 	{
 		{
-			auto jobHandle = m_clientSession->GetJobQueue().WaitDequeueJob();
+			auto jobHandle = m_clientSession->GetJobQueue().WaitForDequeueComplete();
 
 			if (!jobHandle)
 			{
 				break;
 			}
 
-			ClientJobScope jobScope(*m_clientSession, *jobHandle, *m_packetMemoryPool);
+			ClientJobScope jobScope(*m_clientSession, *jobHandle);
 
 			jobHandle->Execute();
 		}

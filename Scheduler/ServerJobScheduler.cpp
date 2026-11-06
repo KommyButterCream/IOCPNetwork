@@ -9,7 +9,6 @@
 #include "../Job/Job.h"
 #include "../Session/ClientSession.h"
 #include "../Session/SessionJobQueue.h"
-#include "../Memory/EngineMemoryPoolHelper.h"
 #include "../Job/JobHandle.h"
 #include "../../Core/Util/Logger.h"
 
@@ -43,7 +42,7 @@ ServerJobScheduler::~ServerJobScheduler()
 	Finalize();
 }
 
-bool ServerJobScheduler::Initialize(uint32_t workerCount, ServerReadySessionQueue* readySessionQueue, TlsMemoryPool* packetMemoryPool)
+bool ServerJobScheduler::Initialize(uint32_t workerCount, ServerReadySessionQueue* readySessionQueue)
 {
 	// 실행 중인 워커의 큐와 소유 테이블을 덮어쓰지 않습니다.
 	if (!m_workers.empty())
@@ -59,7 +58,6 @@ bool ServerJobScheduler::Initialize(uint32_t workerCount, ServerReadySessionQueu
 	}
 
 	m_serverReadySessionQueue = readySessionQueue;
-	m_packetMemoryPool = packetMemoryPool;
 
 	try
 	{
@@ -106,7 +104,6 @@ void ServerJobScheduler::Finalize()
 {
 	StopAndDestroyWorkers();
 	m_serverReadySessionQueue = nullptr;
-	m_packetMemoryPool = nullptr;
 }
 
 void ServerJobScheduler::StopAndDestroyWorkers()
@@ -158,15 +155,9 @@ void ServerJobScheduler::WorkerThreadLoop(ServerJobWorker& worker, uint32_t work
 		// 큐에서 넘겨받은 수명 참조는 이 반복의 마지막까지 유지합니다.
 		std::unique_ptr<ClientSession, SessionReferenceDeleter> sessionReference(session);
 
-		while (auto jobHandle = session->GetJobQueue().DequeueJob())
+		while (auto jobHandle = session->GetJobQueue().Dequeue())
 		{
 			jobHandle->Execute();
-
-			// DB/System 데이터의 기존 반환 정책은 유지한다.
-			if (const char* data = jobHandle->GetNonPacketData())
-			{
-				MEMORY_POOL::ReleasePacket(*m_packetMemoryPool, data);
-			}
 		}
 
 		session->UpdateProcessingFlag(0);

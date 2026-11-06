@@ -8,14 +8,13 @@ using namespace Core::Util;
 #include "SessionDefs.h"
 
 #include "../Job/Job.h"
-#include "../Memory/EngineMemoryPoolHelper.h"
 #include "../Job/JobHandle.h"
 
-SessionJobQueue::SessionJobQueue(SESSION_ROLE sessionRole, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool)
+SessionJobQueue::SessionJobQueue(SESSION_ROLE sessionRole, TlsMemoryPool* jobMemoryPool)
 {
 	m_sessionRole = sessionRole;
 	m_jobMemoryPool = jobMemoryPool;
-	m_packetMemoryPool = packetMemoryPool;
+
 }
 
 SessionJobQueue::~SessionJobQueue()
@@ -23,7 +22,7 @@ SessionJobQueue::~SessionJobQueue()
 	Reset();
 }
 
-bool SessionJobQueue::EnqueueJob(JobHandle&& jobHandle, bool& wasEmpty)
+bool SessionJobQueue::Enqueue(JobHandle&& jobHandle, bool& wasEmpty)
 {
 	wasEmpty = false;
 
@@ -75,7 +74,7 @@ bool SessionJobQueue::EnqueueJob(JobHandle&& jobHandle, bool& wasEmpty)
 	return true;
 }
 
-JobHandle SessionJobQueue::DequeueJob()
+JobHandle SessionJobQueue::Dequeue()
 {
 	JobHandle result(nullptr, JobDeleter{ *m_jobMemoryPool });
 
@@ -132,7 +131,7 @@ void SessionJobQueue::WakeUp()
 	::WakeConditionVariable(&m_cv);
 }
 
-JobHandle SessionJobQueue::WaitDequeueJob()
+JobHandle SessionJobQueue::WaitForDequeueComplete()
 {
 	JobHandle result(nullptr, JobDeleter{ *m_jobMemoryPool });
 
@@ -189,11 +188,6 @@ void SessionJobQueue::Reset()
 
 		// 현재 Job을 연결 목록에서 분리한다.
 		jobHandle->m_next = nullptr;
-
-		if (const char* data = jobHandle->GetNonPacketData())
-		{
-			MEMORY_POOL::ReleasePacket(*m_packetMemoryPool, data);
-		}
 	}
 
 	m_head = nullptr;

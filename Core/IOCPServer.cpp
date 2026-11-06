@@ -212,7 +212,7 @@ bool IOCPServer::StartServer(const char* ipAddress, const uint16_t port, const u
 		sessionProcessorThreadCount = ::GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
 	if (sessionProcessorThreadCount == 0)
 		sessionProcessorThreadCount = 1;
-	if (!m_serverJobScheduler->Initialize(sessionProcessorThreadCount, m_serverReadySessionQueue, m_packetMemoryPool))
+	if (!m_serverJobScheduler->Initialize(sessionProcessorThreadCount, m_serverReadySessionQueue))
 	{
 		LOGE("failed to initialize the ready session scheduler");
 		return false;
@@ -1647,7 +1647,7 @@ bool IOCPServer::SubmitPacketJob(ISession* session, uint16_t packetId, PacketHan
 
 	bool wasEmpty = false;
 
-	if (!clientSession->GetJobQueue().EnqueueJob(std::move(jobHandle), wasEmpty))
+	if (!clientSession->GetJobQueue().Enqueue(std::move(jobHandle), wasEmpty))
 	{
 		LOGE("session %u failed to enqueue a job for packet id %u",
 			clientSession->GetSessionID(), packetId);

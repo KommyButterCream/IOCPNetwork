@@ -12,7 +12,7 @@ class IOCPCore;
 typedef bool (*DBHandlerFunc)(IDBConnection* dbConnection, const char* query, uint32_t queryLength, const HandlerContext& context);
 typedef bool (*SystemHandlerFunc)(IOCPCore* iocpCore, const void* param, uint32_t paramSize, const HandlerContext& context);
 
-// 엔진 내부 작업 분류입니다. 데이터 소유권은 각 처리 경로에서 정의합니다.
+// 엔진 내부 작업 분류입니다. 데이터는 Job의 핸들이 소유합니다.
 enum class JobType : uint8_t
 {
 	NONE,

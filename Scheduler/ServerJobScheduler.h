@@ -12,7 +12,6 @@
 #include "../../Core/Concurrency/ThreadBase.h"
 
 class ServerReadySessionQueue;
-class TlsMemoryPool;
 class ServerJobScheduler;
 
 // ThreadBase 는 객체 1개당 스레드 1개이므로, 워커 N개를 두려면
@@ -51,7 +50,7 @@ public:
 public:
 	// 수명 관리 함수는 외부 제어 스레드에서 직렬로 호출합니다.
 	// 종료 시 큐도 중지되므로 재시작하려면 새로 초기화한 큐를 전달합니다.
-	bool Initialize(uint32_t workerCount, ServerReadySessionQueue* readySessionQueue, TlsMemoryPool* packetMemoryPool);
+	bool Initialize(uint32_t workerCount, ServerReadySessionQueue* readySessionQueue);
 	void Finalize();
 
 	// ServerJobWorker 가 호출한다. 정지 판정은 워커의 정지 이벤트로 한다.
@@ -60,7 +59,7 @@ public:
 private:
 	std::vector<std::unique_ptr<ServerJobWorker>> m_workers;
 	ServerReadySessionQueue* m_serverReadySessionQueue = nullptr;
-	TlsMemoryPool* m_packetMemoryPool = nullptr;
+
 
 	void StopAndDestroyWorkers();
 };

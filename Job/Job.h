@@ -20,19 +20,13 @@ public:
     [[nodiscard]] bool SetPacketJob(PacketHandlerFunc handler, ISession* session,
         uint16_t packetId, PacketHandle&& packet, const HandlerContext& context);
 
-    // Preserve legacy non-packet ownership: existing scheduler/queue paths
-    // return the buffer. These setters do not adopt a PacketHandle.
+    // 빈 데이터도 허용하며, 설정에 성공한 경우에만 소유권을 이전한다.
     [[nodiscard]] bool SetDBJob(DBHandlerFunc handler, IDBConnection* connection,
-        const char* data, uint32_t size, const HandlerContext& context);
+        PacketHandle&& payload, const HandlerContext& context);
     [[nodiscard]] bool SetSystemJob(SystemHandlerFunc handler, IOCPCore* core,
-        const void* data, uint32_t size, const HandlerContext& context);
+        PacketHandle&& payload, const HandlerContext& context);
 
     [[nodiscard]] JobType GetType() const noexcept { return m_type; }
-    // Borrowed access for existing non-packet cleanup only.
-    [[nodiscard]] const char* GetNonPacketData() const noexcept
-    {
-        return m_type == JobType::DB || m_type == JobType::SYSTEM ? m_data : nullptr;
-    }
 
     [[nodiscard]] PacketHandle TakePacket() noexcept;
     void Execute();
@@ -41,7 +35,6 @@ private:
     friend class SessionJobQueue;
     Job* m_next = nullptr;
     void* m_target = nullptr;
-    const char* m_data = nullptr;
     union
     {
         PacketHandlerFunc m_packetFunc = nullptr;
@@ -49,8 +42,7 @@ private:
         SystemHandlerFunc m_systemFunc;
     };
     const HandlerContext* m_context = nullptr;
-    uint32_t m_size = 0;
     uint16_t m_packetId = 0;
     JobType m_type = JobType::NONE;
-    PacketHandle m_packetHandle;
+    PacketHandle m_payload;
 };

@@ -19,7 +19,7 @@ enum class SESSION_ROLE;
 class SessionJobQueue
 {
 public:
-	SessionJobQueue(SESSION_ROLE sessionRole, TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool);
+	SessionJobQueue(SESSION_ROLE sessionRole, TlsMemoryPool* jobMemoryPool);
 	~SessionJobQueue();
 
 private:
@@ -35,7 +35,7 @@ private:
 	int32_t m_peakCount = 0;
 
 	TlsMemoryPool* m_jobMemoryPool = nullptr;
-	TlsMemoryPool* m_packetMemoryPool = nullptr;
+
 
 	bool m_stopFlag = false;
 
@@ -43,17 +43,17 @@ public:
 	// 성공하면 핸들이 비워지고 큐가 소유한다.
 	// 실패하면 호출자가 소유권을 유지한다.
 	[[nodiscard]]
-	bool EnqueueJob(JobHandle&& jobHandle, bool& wasEmpty);
+	bool Enqueue(JobHandle&& jobHandle, bool& wasEmpty);
 
 	// 대기 없이 꺼낸다. 큐가 비어 있으면 빈 핸들을 반환한다.
 	[[nodiscard]]
-	JobHandle DequeueJob();
+	JobHandle Dequeue();
 	void WakeUp();
 
 	// Job이 들어오거나 중지 요청이 올 때까지 기다린다.
 	// 큐가 비어 있고 중지 요청이 있으면 빈 핸들을 반환한다.
 	[[nodiscard]]
-	JobHandle WaitDequeueJob();
+	JobHandle WaitForDequeueComplete();
 
 	void Reset();
 

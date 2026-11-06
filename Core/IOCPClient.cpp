@@ -260,7 +260,7 @@ bool IOCPClient::StartClient(const char* serverIp, const uint16_t port, const Se
 	if (!m_clientJobWorker)
 		return false;
 
-	if (!m_clientJobWorker->Initialize(m_session, m_packetMemoryPool))
+	if (!m_clientJobWorker->Initialize(m_session))
 	{
 		LOGE("failed to initialize the client session scheduler");
 		return false;
