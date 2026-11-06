@@ -109,6 +109,10 @@ private:
 	[[nodiscard]] SessionReference TryAcquireSessionReference(uint32_t slotIndex) const;
 
 
+	bool TryBeginRelease(uint32_t sessionId);
+	void FinishReleaseWhenReady(ClientSession& session);
+	void CleanupDisconnectedSession(ClientSession& session);
+
 	// 반납의 뒷부분. 소켓을 닫고 상태를 되돌린 뒤 프리 리스트에 올린다.
 	// Release 가 그 자리에서 부르거나, 마지막 DecrementIO 가 부른다.
 	void CompleteRelease(ClientSession* clientSession);

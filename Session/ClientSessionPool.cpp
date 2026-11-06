@@ -129,20 +129,10 @@ void ClientSessionPool::Release(ClientSession* clientSession)
 		return;
 	}
 
-	SessionNode* node = &m_nodes[sessionId];
-
+	if (!TryBeginRelease(sessionId))
 	{
-		// 순회자가 사용 중인 슬롯을 확인하고 참조를 확보하는 구간과
-		// 같은 락을 사용하여, 두 동작 사이에 반환이 시작되는 것을 막습니다.
-		Core::Sync::SRWWriteLockGuard lock(m_lock);
-
-		if (::InterlockedCompareExchange(&node->poolState, SESSION_POOL_STATE::SESSION_POOL_RELEASING, SESSION_POOL_IN_USE) != SESSION_POOL_IN_USE)
-		{
-			// 동시 disconnect 경로가 실제로 겹쳤다는 신호다. 드물게 발생하고
-			// 정상 처리되지만, 프리 리스트 가드가 동작했다는 유일한 증거이므로 남긴다.
-			LOGI("session %u release skipped (already releasing or not in use)", sessionId);
-			return;
-		}
+		LOGI("session %u release skipped (already releasing or not in use)", sessionId);
+		return;
 	}
 
 	if (clientSession->IsTransportConnected())
@@ -153,30 +143,22 @@ void ClientSessionPool::Release(ClientSession* clientSession)
 		}
 	}
 
-	// 여기서 기다리지 않는다.
-	//
-	// 예전에는 WaitForIOCancelComplete(10초) 였다. 이 함수는 완료 핸들러
-	// 안에서도 불린다(HandleRecv 안의 시스템 패킷 처리가 송신에 실패하면
-	// HandleSocketError -> NotifyDisconnect -> 여기로 온다). 그때 그 핸들러는
-	// 자기 몫의 IO 카운트를 아직 들고 있으므로, 대기는 자기 자신이 내려놓기를
-	// 기다리는 꼴이 된다. 내려놓을 스레드가 바로 대기 중인 자신이니 풀리지
-	// 않고 10초를 꽉 채운다.
-	//
-	// 실측(bench 1회): "IO cancel timed out" 204회, 그 직전에 찍힌
-	// "CancelIoEx found nothing to cancel but N IO operations are still
-	// counted" 142회. 취소할 I/O 는 없는데 카운트만 남아 있는 상태 —
-	// 남아 있던 그 카운트가 대기 중인 스레드 자신의 몫이었다.
-	//
-	// 순서를 바꿔서는 풀 수 없다. HandleRecv 는 세션 사용을 끝낼 때까지
-	// 카운트를 들고 있어야 하고(그게 "카운트 0 = 아무도 안 만짐" 의 근거다),
-	// 반납은 카운트 0 을 봐야 진행할 수 있다. 두 요구가 정면으로 부딪힌다.
-	// 그래서 막지 않는다 — 예약해 두고 마지막 완료가 마무리한다.
-	if (!clientSession->RequestRelease())
-	{
-		return;
-	}
+	FinishReleaseWhenReady(*clientSession);
+}
 
-	CompleteRelease(clientSession);
+bool ClientSessionPool::TryBeginRelease(uint32_t sessionId)
+{
+	// 참조를 빌리는 순회자와 같은 락에서 반환 권한을 한 번만 확보한다.
+	Core::Sync::SRWWriteLockGuard lock(m_lock);
+	return ::InterlockedCompareExchange(&m_nodes[sessionId].poolState,
+		SESSION_POOL_RELEASING, SESSION_POOL_IN_USE) == SESSION_POOL_IN_USE;
+}
+
+void ClientSessionPool::FinishReleaseWhenReady(ClientSession& session)
+{
+	// 참조가 남으면 마지막 참조를 반환하는 쪽이 OnReleaseReady에서 마무리한다.
+	if (session.RequestRelease())
+		CompleteRelease(&session);
 }
 
 void ClientSessionPool::NotifyServiceDisconnect(ClientSession* clientSession)
@@ -213,25 +195,7 @@ void ClientSessionPool::CompleteRelease(ClientSession* clientSession)
 
 	SessionNode* node = &m_nodes[sessionId];
 
-	if (m_callbacks.closeSocket)
-	{
-		m_callbacks.closeSocket(clientSession->DetachSocket());
-	}
-
-	// 서비스에 먼저 알린다.
-	//
-	// OnDisconnect 보다 앞이어야 한다. 그쪽이 원격 주소를 지우므로,
-	// 뒤에 알리면 서비스는 "누가 끊겼는지" 를 아이디로만 알게 된다.
-	// 프리 리스트에 올리기 전이어야 하는 것은 더 분명하다 — 올린 뒤에는
-	// 이 세션이 다른 접속에 임대된 상태일 수 있다.
-	NotifyServiceDisconnect(clientSession);
-
-	if (!clientSession->OnDisconnect())
-	{
-		ENGINE_VIOLATION("session %u OnDisconnect reported failure during release", sessionId);
-	}
-
-	clientSession->ResetSession();
+	CleanupDisconnectedSession(*clientSession);
 
 	{
 		Core::Sync::SRWWriteLockGuard lockguard(m_lock);
@@ -243,6 +207,25 @@ void ClientSessionPool::CompleteRelease(ClientSession* clientSession)
 		// 반대로 프리 리스트에 있는 노드를 RELEASING 으로 보게 된다.
 		::InterlockedExchange(&node->poolState, SESSION_POOL_FREE);
 	}
+}
+
+void ClientSessionPool::CleanupDisconnectedSession(ClientSession& session)
+{
+	const SOCKET socket = session.DetachSocket();
+	if (socket != INVALID_SOCKET)
+	{
+		if (m_callbacks.closeSocket)
+			m_callbacks.closeSocket(socket);
+		else if (::closesocket(socket) == SOCKET_ERROR)
+			LOGE("failed to close client socket (error %d)", ::WSAGetLastError());
+	}
+
+	// 서비스가 원격 주소와 컨텍스트를 조회할 수 있도록 초기화 전에 알린다.
+	NotifyServiceDisconnect(&session);
+	if (!session.OnDisconnect())
+		ENGINE_VIOLATION("session %u OnDisconnect reported failure during release", session.GetSessionID());
+
+	session.ResetSession();
 }
 
 uint32_t ClientSessionPool::GetSessionCount() const
@@ -344,39 +327,15 @@ IOWaitResult ClientSessionPool::WaitForAllRecvSendIOCancelComplete(const uint32_
 
 void ClientSessionPool::DisconnectAllSessions()
 {
-	if (!m_sessions)
-		return;
-
+	// 워커 종료 후에는 연결 상태와 관계없이 아직 대여 중인 세션을 회수한다.
 	for (uint32_t i = 0; i < m_capacity; ++i)
 	{
-		ClientSession* session = &m_sessions[i];
+		if (!TryBeginRelease(i))
+			continue;
 
-		if (session != nullptr && session->IsTransportConnected())
-		{
-			if (m_callbacks.closeSocket)
-			{
-				m_callbacks.closeSocket(session->DetachSocket());
-			}
-
-			// 종료 중에도 알린다.
-			//
-			// 서버가 내려갈 때 살아 있던 세션은 반납 경로를 지나지 않아
-			// 통지를 못 받았다. 그러면 "OnClientConnect 를 받은 세션은
-			// 반드시 OnClientDisconnect 를 받는다" 가 성립하지 않고,
-			// 서비스는 종료 시점에만 조용히 자원을 흘린다.
-			//
-			// 이 호출은 StopServer 를 부른 스레드(보통 앱 스레드)에서
-			// 실행된다. 운영 중의 통지가 워커 스레드에서 오는 것과 다르다.
-			session->NoteDisconnectReason(DisconnectReason::LocalShutdown);
-			NotifyServiceDisconnect(session);
-
-			if (!session->OnDisconnect())
-			{
-				ENGINE_VIOLATION("session %u OnDisconnect reported failure", session->GetSessionID());
-			}
-
-			session->ResetSession();
-		}
+		auto& session = m_sessions[i];
+		session.NoteDisconnectReason(DisconnectReason::LocalShutdown);
+		FinishReleaseWhenReady(session);
 	}
 }
 
