@@ -19,7 +19,6 @@ enum class IO_OPERATION;
 struct OverlappedEx;
 
 class ISession;
-class BaseSession;
 class ClientSession;
 class TlsMemoryPool;
 class ClientJobWorker;
@@ -189,8 +188,8 @@ private:
 	// 마지막 DecrementIO 가 부른다.
 	void CompleteDisconnect(ClientSession* clientSession);
 
-	// BaseSession 이 마지막 DecrementIO 에서 부르는 진입점.
-	static void OnReleaseReady(void* context, BaseSession* session);
+	// ClientSession 이 마지막 DecrementIO 에서 부르는 진입점.
+	static void OnReleaseReady(void* context, ClientSession* session);
 
 	// ISessionEvent 의 시그니처가 ISession* 로 고정돼 있어 기반 타입이
 	// 들어오는 유일한 지점이다. 그 포인터가 정말 이 클라이언트의 세션인지

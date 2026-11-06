@@ -1558,7 +1558,7 @@ uint32_t IOCPServer::GetOutstandingIOCount() const
 void IOCPServer::OnSessionDisconnectNotify(void* context, ClientSession* session)
 {
 	// 사유는 세션이 들고 있다. 끊기로 결정한 자리에서 표시해 두고
-	// (BaseSession::NoteDisconnectReason) 통지하는 자리에서 꺼낸다.
+	// (ClientSession::NoteDisconnectReason) 통지하는 자리에서 꺼낸다.
 	// 결정 지점이 여러 갈래라 인자로 실어 나르면 모든 경로의 시그니처가
 	// 바뀌는데, 정작 알아야 하는 것은 이 한 자리뿐이다.
 	const DisconnectReason reason = session->GetDisconnectReason();

@@ -42,7 +42,7 @@
     <ClCompile Include="..\Diagnostics\EngineDiagnostics.cpp" />
     <ClCompile Include="..\Session\AcceptSession.cpp" />
     <ClCompile Include="..\Session\AcceptSessionPool.cpp" />
-    <ClCompile Include="..\Session\BaseSession.cpp" />
+    <ClCompile Include="..\Session\ClientSessionLifetime.cpp" />
     <ClCompile Include="..\Session\ClientSession.cpp" />
     <ClCompile Include="..\Session\ClientSessionPool.cpp" />
     <ClCompile Include="..\Session\SessionJobQueue.cpp" />
@@ -87,7 +87,6 @@
     <ClInclude Include="..\Scheduler\ServerJobScheduler.h" />
     <ClInclude Include="..\Session\AcceptSession.h" />
     <ClInclude Include="..\Session\AcceptSessionPool.h" />
-    <ClInclude Include="..\Session\BaseSession.h" />
     <ClInclude Include="..\Session\ClientSession.h" />
     <ClInclude Include="..\Session\ClientSessionPool.h" />
     <ClInclude Include="..\Session\DisconnectReason.h" />

@@ -99,7 +99,7 @@
     <ClCompile Include="..\Diagnostics\EngineDiagnostics.cpp">
       <Filter>Diagnostics</Filter>
     </ClCompile>
-    <ClCompile Include="..\Session\BaseSession.cpp">
+    <ClCompile Include="..\Session\ClientSessionLifetime.cpp">
       <Filter>Session</Filter>
     </ClCompile>
     <ClCompile Include="..\Session\ClientSession.cpp">
@@ -210,9 +210,6 @@
       <Filter>Session</Filter>
     </ClInclude>
     <ClInclude Include="..\Session\AcceptSessionPool.h">
-      <Filter>Session</Filter>
-    </ClInclude>
-    <ClInclude Include="..\Session\BaseSession.h">
       <Filter>Session</Filter>
     </ClInclude>
     <ClInclude Include="..\Session\ClientSession.h">

@@ -14,7 +14,6 @@
 
 
 class ISession;
-class BaseSession;
 class ClientSession;
 class TlsMemoryPool;
 
@@ -117,8 +116,8 @@ private:
 	// Release 가 그 자리에서 부르거나, 마지막 DecrementIO 가 부른다.
 	void CompleteRelease(ClientSession* clientSession);
 
-	// BaseSession 이 마지막 DecrementIO 에서 부르는 진입점.
-	static void OnReleaseReady(void* context, BaseSession* session);
+	// ClientSession 이 마지막 DecrementIO 에서 부르는 진입점.
+	static void OnReleaseReady(void* context, ClientSession* session);
 
 	// 접속을 알린 적 있는 세션에 한해 종료를 한 번만 알린다.
 	// 반납 경로 전부가 이 함수를 지나야 한다.

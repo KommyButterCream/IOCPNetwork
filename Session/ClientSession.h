@@ -4,10 +4,9 @@
 #include <memory> // for std::unique_ptr
 
 #include "ISession.h"
-#include "BaseSession.h"
+#include "SessionDefs.h"
+#include "DisconnectReason.h"
 #include "SessionContext.h"
-
-
 
 #include "../Network/OverlappedEx.h"
 #include "../Protocol/PacketID.h"
@@ -23,17 +22,76 @@ class ISessionEvent;
 class PacketHandle;
 class SharedPacketHandle;
 
-
 #define INET_ADDRSTRLEN  22
 
-class ClientSession final : public BaseSession
+class ClientSession final : public ISession
 {
 public:
 	ClientSession();
 	~ClientSession() override;
 
-	// ClientSession 전용 멤버 변수
+	// 마지막 수명 참조를 반환한 스레드가 소유자에게 반납 완료 처리를 맡긴다.
+	using ReleaseReadyFunc = void (*)(void* context, ClientSession* session);
+
 private:
+	bool m_destroyFlag = false;
+
+	// 역할. Initialize 에서 한 번 정해지고 그 뒤로 바뀌지 않는다.
+	// 세션이 어떤 I/O 에도 등록되기 전에 쓰이므로 원자 접근이 필요 없다.
+	SESSION_ROLE m_sessionRole = SESSION_ROLE::NONE;
+
+	// 세션 상태.
+	//
+	// 예전에는 평범한 enum 멤버였다. 그런데 쓰는 쪽과 읽는 쪽이 다른 스레드다.
+	//   쓰기 : HeartbeatThread    -> MarkHeartbeatTimeout (HEARTBEAT_TIMEOUT)
+	//          IOCP 워커          -> 접속/인증 시퀀스 (CONNECTED, AUTH_PENDING, ESTABLISHED)
+	//          반납 경로          -> ResetSession / Finalize (CONNECT_READY)
+	//   읽기 : IOCP 워커          -> HandleRecv 안의 IsEstablished() 로
+	//                                서비스 패킷 디스패치 여부를 가른다
+	//          앱 스레드          -> StopServer -> DisconnectAllSessions
+	//
+	// 지금까지 드러나지 않은 것은 두 가지 우연 덕분이었다. x64 MSVC 에서
+	// 정렬된 4바이트 접근이 찢어지지 않는다는 것, 그리고 접근자가 다른 번역
+	// 단위에 있어 인라인되지 않으므로 컴파일러가 값을 레지스터에 눌러
+	// 담아두지 못한다는 것. 둘 다 설정 하나로(LTCG/WPO) 사라지는 전제다.
+	//
+	// AcceptSession::m_sessionOwned 가 같은 부류의 문제를 먼저 맞았다 —
+	// 상태가 원자적이지 않아 두 스레드가 같은 슬롯을 비었다고 읽었다.
+	// 그쪽은 CAS 플래그를 따로 뒀지만 나머지 상태는 그대로 남아 있었다.
+	//
+	// 저장은 volatile LONG 이고 접근은 반드시 Interlocked 로만 한다.
+	// 읽기 방식은 GetOutstandingIOCount와 같다.
+	volatile LONG m_clientSessionState = static_cast<LONG>(ClientSessionState::NONE);
+	volatile LONG m_serverSessionState = static_cast<LONG>(ServerSessionState::NONE);
+
+	// 이 세션이 왜 끝났는가. 서비스의 종료 훅으로 그대로 올라간다.
+	// 먼저 쓴 값이 이긴다 (NoteDisconnectReason 주석).
+	volatile LONG m_disconnectReason = static_cast<LONG>(DisconnectReason::Unknown);
+
+	SOCKET m_clientSocket = INVALID_SOCKET;
+
+	uint32_t m_sessionId = INVALID_SESSION_ID;
+
+	volatile LONG m_closing = 0;
+	volatile LONG m_ioCount = 0;
+	// I/O와 준비 큐·워커의 참조를 함께 셉니다. 모두 반환되기 전에는 세션을 재사용하지 않습니다.
+	mutable SRWLOCK m_lifetimeLock = SRWLOCK_INIT;
+	LONG m_lifetimeReferences = 0;
+	volatile LONG m_cancelIo = 0;
+
+	// 반납 예약. 1 이면 "I/O와 작업 수명 참조가 모두 끝나는 대로 이 세션을 반납하라".
+	//
+	// 이 플래그는 예약이면서 동시에 소유권 토큰이다. 1 -> 0 전이에
+	// 성공한 스레드 하나만 마무리를 수행한다. RequestRelease 를 부른
+	// 스레드와 마지막 ReleaseLifetimeReference를 하는 스레드가 동시에 "내가 마지막"
+	// 이라고 판단할 수 있어, 둘 중 하나만 고르는 장치가 필요하다.
+	bool m_releasePending = false;
+
+	ReleaseReadyFunc m_releaseReadyFunc = nullptr;
+	void* m_releaseReadyContext = nullptr;
+
+	HANDLE m_ioCancelCompleteEvent = nullptr;
+
 	TlsMemoryPool* m_jobMemoryPool = nullptr;
 	TlsMemoryPool* m_packetMemoryPool = nullptr;
 
@@ -96,19 +154,163 @@ private:
 	volatile LONGLONG m_lastRecvTick = 0;
 	volatile LONGLONG m_lastHeartbeatTick = 0;
 
-
-	// Override
 public:
 	// --- 기본 동작 ---
-	bool Initialize(SESSION_ROLE sessionType, uint32_t sessionId) override;
-	void ResetSession() override;
-	void Finalize() override;
+	bool Initialize(SESSION_ROLE sessionType, uint32_t sessionId);
+	void ResetSession();
+	void Finalize();
+	bool OnConnect();
+	bool OnDisconnect();
 
-	bool OnConnect() override;
-	bool OnDisconnect() override;
+	// --- 소켓 제어 ---
+	//
+	// AttachSocket 과 DetachSocket 은 짝이다. 붙일 때는 이미 들고 있지
+	// 않은지 검사하므로(사용 중인 세션이 재배포되면 그 경로로 온다)
+	// 본문이 .cpp 에 있다.
+	void AttachSocket(SOCKET socket);
+	SOCKET DetachSocket();
 
-	// ClientSession 전용 메서드
-public:
+	void SetClientSocket(SOCKET socket) { m_clientSocket = socket; }
+	SOCKET GetClientSocket() const { return m_clientSocket; }
+	bool IsSocketInvalid() const { return (m_clientSocket == INVALID_SOCKET); }
+
+	// --- 상태 관리 ---
+	//
+	// 연결 세션은 역할에 따라 Client 상태 또는 Server 상태를 사용한다.
+	//
+	// 헤더에 남겨 인라인시킨다. Interlocked 는 내장 함수라 DLL 호출이 생기지
+	// 않으므로, 접근자를 .cpp 로 내리면 호출 비용만 늘고 얻는 것이 없다.
+	//
+	// 주의: 값 하나로 여러 번 비교해야 하면 getter 를 여러 번 부르지 말고
+	// 지역 변수에 한 번 받아서 쓴다. 호출마다 다시 읽으므로 비교 도중에
+	// 값이 바뀌면 어느 분기에도 걸리지 않는 결과가 나온다.
+	// (IsTransportConnected 가 그 예다)
+	void SetClientSessionState(ClientSessionState sessionState)
+	{
+		::InterlockedExchange(&m_clientSessionState, static_cast<LONG>(sessionState));
+	}
+	ClientSessionState GetClientSessionState() const
+	{
+		return static_cast<ClientSessionState>(::ReadAcquire(&m_clientSessionState));
+	}
+
+	void SetServerSessionState(ServerSessionState sessionState)
+	{
+		::InterlockedExchange(&m_serverSessionState, static_cast<LONG>(sessionState));
+	}
+	ServerSessionState GetServerSessionState() const
+	{
+		return static_cast<ServerSessionState>(::ReadAcquire(&m_serverSessionState));
+	}
+
+	// --- 타입 및 식별자 ---
+	SESSION_ROLE GetSessionRole() const { return m_sessionRole; }
+	void SetSessionID(uint32_t sessionId) { m_sessionId = sessionId; }
+
+	// 서비스에 제공하는 세션 식별자의 공통 구현입니다.
+	uint32_t GetSessionID() const override { return m_sessionId; }
+
+	// --- 종료 사유 ---
+	//
+	// 끊기로 결정한 자리에서 부른다. 실제로 종료가 일어나는 자리가 아니라
+	// 이유를 아는 자리다. 그 둘은 대개 다르다.
+	//
+	// 먼저 쓴 값이 이긴다. 종료는 연쇄로 일어나기 때문이다 — 프로토콜
+	// 위반으로 끊기로 하면 곧 소켓이 닫히고 걸려 있던 I/O 가 10054 로
+	// 실패한다. 나중 것이 이기면 근본 원인이 매번 SocketError 로 덮인다.
+	void NoteDisconnectReason(DisconnectReason reason)
+	{
+		::InterlockedCompareExchange(&m_disconnectReason,
+			static_cast<LONG>(reason), static_cast<LONG>(DisconnectReason::Unknown));
+	}
+
+	DisconnectReason GetDisconnectReason() const
+	{
+		return static_cast<DisconnectReason>(::ReadAcquire(&m_disconnectReason));
+	}
+
+	// 세션을 재사용하기 전에 되돌린다. 남아 있으면 다음 접속의 종료가
+	// 지난 접속의 사유를 물려받는다.
+	void ClearDisconnectReason()
+	{
+		::InterlockedExchange(&m_disconnectReason, static_cast<LONG>(DisconnectReason::Unknown));
+	}
+
+	// --- I/O 수명 ---
+	//
+	// 엔진 내부 전용. ISession 에는 없다 (이유는 그쪽 주석).
+	// 이미 유효한 세션 참조를 가진 호출자만 추가할 수 있습니다.
+	void AddLifetimeReference();
+	// 마지막 참조라면 세션이 반환될 수 있으므로 호출 후 세션에 접근하지 않습니다.
+	void ReleaseLifetimeReference();
+	void IncrementIO();
+	void DecrementIO();
+
+	bool CancelPendingIO();
+	IOWaitResult WaitForIOCancelComplete(const uint32_t timeout_ms);
+
+	// I/O 발행을 시도한다. 발행 지점(PostReceive / PostCurrentSend)이
+	// IncrementIO 대신 부른다.
+	//
+	//   true  : 카운트를 하나 들고 나왔다. 부르는 쪽은 반드시 WSARecv/WSASend 를
+	//           걸어야 하고, 그 완료가 DecrementIO 를 한다.
+	//   false : 취소가 이미 걸렸다. 카운트는 이 함수가 되돌렸으므로 부르는
+	//           쪽이 따로 할 일은 없다.
+	//
+	// 주의: false 를 받은 뒤에는 세션을 만지면 안 된다. 되돌린 그 감소가
+	// 마지막이었다면 예약된 반납이 그 자리에서 끝나고 세션은 풀로 돌아간다.
+	// 정리할 것이 있으면 이 함수를 부르기 전에 끝내야 한다.
+	//
+	// 왜 필요한가
+	//   CancelIoEx 는 부르는 그 순간 걸려 있던 것만 취소하는데, 완료 핸들러는
+	//   마지막에 늘 다음 I/O 를 건다. 막지 않으면 카운트가 0 으로 내려오지
+	//   않아 WaitForIOCancelComplete 가 10초를 태우고, 미완료 I/O 를 안은
+	//   세션이 리셋된다. (실측: bench Phase 4 반복 8회 전부)
+	//
+	// 왜 검사보다 증가가 먼저인가
+	//   반대로 하면 검사를 통과한 채 멈춘 스레드가 있는 동안 카운트가 0 에
+	//   도달할 수 있다. 그러면 대기가 통과해 세션이 리셋되고, 그 뒤에 그
+	//   스레드가 I/O 를 걸어 죽은 세션에 미완료 I/O 를 남긴다.
+	//   (실측: 검사를 먼저 두었을 때 Phase 4 가 4회 중 1회 위반 2건으로 실패)
+	//   먼저 올려 두면 그 구간 내내 카운트가 0 이 아니므로 대기가 통과하지
+	//   못하고, 실제로 걸린 I/O 는 재취소가 걷어 간다.
+	bool BeginIO();
+
+	// 취소가 걸렸는가. 값싼 사전 확인용이다.
+	//
+	// 이것만으로는 발행을 막을 수 없다 (검사와 발행 사이에 취소가 걸린다).
+	// 발행 여부의 판단은 반드시 BeginIO 가 한다. 이 함수는 "카운트를 들고
+	// 있는 동안 미리 정리해 둬야 하는" 경우에만 쓴다 —
+	// PostCurrentSend 가 송신 엔트리를 되돌리는 자리가 그렇다.
+	bool IsIOCancelRequested() const;
+
+	// --- 지연 반납 ---
+	//
+	// 완료 핸들러 안에서 반납이 필요해지는 경로가 여럿이다. 그때 그 자리에서
+	// 카운트가 0 이 되기를 기다리면, 핸들러 자신이 들고 있는 몫 때문에
+	// 자기를 기다리게 된다(실측: bench 실행당 200회 이상의 10초 타임아웃).
+	//
+	// 그래서 기다리지 않는다. 반납을 예약해 두고, 마지막 완료가 카운트를
+	// 0 으로 내리는 그 자리에서 마무리한다.
+	void SetReleaseReadyFunc(ReleaseReadyFunc releaseReadyFunc, void* context);
+
+	// 반납을 예약한다.
+	//   true  : 남은 수명 참조가 없고 마무리 권한을 이 스레드가 잡았다.
+	//           부르는 쪽이 그 자리에서 마무리해야 한다.
+	//   false : 아직 I/O 또는 작업 참조가 남아 있거나, 다른 스레드가 이미
+	//           권한을 잡았다. 부르는 쪽은 즉시 돌아간다.
+	bool RequestRelease();
+
+	// 반납이 예약되어 있는가. 핸들러가 더 진행할지 판단할 때 쓴다.
+	bool IsReleasePending() const;
+
+	// --- 진단 ---
+	//
+	// 미완료 I/O 수입니다. 0이어도 준비 큐·Job 워커가 세션을 사용할 수 있습니다.
+	// 실제 세션 반환은 전체 수명 참조가 0일 때만 허용합니다.
+	// 하네스가 시나리오마다 회계를 검사하려면 밖에서 읽을 수 있어야 한다.
+	LONG GetOutstandingIOCount() const;
+
 	bool InitializeMemoryPool(TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig);
 
 	bool IsReady() const;
@@ -197,7 +399,6 @@ public:
 	bool PostCurrentSend();
 	bool OnSendCompleted(const DWORD bytesTransferred);
 
-
 	// 성공하면 핸들이 비워지고 큐가 소유한다.
 	// 실패하면 호출자가 소유권을 유지한다.
 	[[nodiscard]]
@@ -283,8 +484,11 @@ private:
 	void ResumeReceive();
 
 	// 취소가 걸린 뒤 남아 있는 일시정지의 IO 카운트를 놓는다.
-	// (왜 필요한지는 BaseSession::ReleaseUnpostedIO 주석)
-	void ReleaseUnpostedIO() override;
+	void ReleaseUnpostedIO();
+	[[nodiscard]] bool BeginIOCancellation();
+	void ReissueCancelIo();
+	void ResetLifetimeState();
+	void SetConnectReadyState();
 
 	// 종료 시 송신 큐, Job 큐, 수신 버퍼 순서로 해제한다.
 	void ReleaseMemoryResources();
@@ -294,21 +498,4 @@ public:
 	void SetEventHandler(ISessionEvent* handler);
 	void NotifyDisconnect();
 
-	// 여기에 서비스 훅(OnClientConnect / OnClientDisconnect / OnReceive /
-	// OnSend)이 protected 가상으로 네 개 더 있었다. 전부 죽은 선언이었다.
-	//
-	//   이 클래스는 final 이라 재정의가 문법적으로 불가능하고,
-	//   protected 라 밖에서 부를 수도 없고,
-	//   ClientSession 자신도 한 번도 부르지 않았고,
-	//   ISession / BaseSession 에 같은 이름이 없어 무언가를 재정의하던
-	//   것도 아니었다.
-	//
-	// 실제 훅은 IOCPServer / IOCPClient 쪽 동명 가상이고, 서비스는 그것을
-	// 재정의한다. 세션에 달린 사본은 같은 이름이 두 계층에 있다는 사실만으로
-	// "세션을 상속해서 받는 길도 있나" 를 찾게 만드는 함정이었다.
-	//
-	// ISession 을 순수 가상 14개에서 1개로 줄일 때의 판단과 같은 정리다 —
-	// virtual 은 재정의될 수 있다는 선언인데, 그게 참이 아니면 읽는 사람의
-	// 시간만 쓴다.
 };
-

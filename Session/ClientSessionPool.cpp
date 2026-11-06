@@ -175,12 +175,11 @@ void ClientSessionPool::NotifyServiceDisconnect(ClientSession* clientSession)
 	m_callbacks.notifyDisconnect(m_callbacks.disconnectContext, clientSession);
 }
 
-void ClientSessionPool::OnReleaseReady(void* context, BaseSession* session)
+void ClientSessionPool::OnReleaseReady(void* context, ClientSession* session)
 {
 	ClientSessionPool* pool = static_cast<ClientSessionPool*>(context);
 
-	// 이 풀에 담긴 세션은 전부 ClientSession 이다.
-	pool->CompleteRelease(static_cast<ClientSession*>(session));
+	pool->CompleteRelease(session);
 }
 
 void ClientSessionPool::CompleteRelease(ClientSession* clientSession)

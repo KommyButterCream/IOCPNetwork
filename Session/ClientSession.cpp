@@ -64,25 +64,27 @@ ClientSession::~ClientSession()
 
 bool ClientSession::Initialize(SESSION_ROLE sessionType, uint32_t sessionId)
 {
-	if (!BaseSession::Initialize(sessionType, sessionId))
-		return false;
+	m_sessionRole = sessionType;
+	SetSessionID(sessionId);
 
-	if (GetSessionRole() == SESSION_ROLE::CLIENT)
+	if (!m_ioCancelCompleteEvent)
 	{
-		SetClientSessionState(ClientSessionState::CONNECT_READY);
+		m_ioCancelCompleteEvent = ::CreateEvent(nullptr, TRUE, FALSE, nullptr);
+		if (!m_ioCancelCompleteEvent)
+			return false;
 	}
-	else if (GetSessionRole() == SESSION_ROLE::SERVER)
+	else
 	{
-		SetServerSessionState(ServerSessionState::CONNECT_READY);
+		::ResetEvent(m_ioCancelCompleteEvent);
 	}
+
+	SetConnectReadyState();
 
 	return true;
 }
 
-void ClientSession::ResetSession()
+void ClientSession::SetConnectReadyState()
 {
-	BaseSession::ResetSession();
-
 	if (GetSessionRole() == SESSION_ROLE::CLIENT)
 	{
 		SetClientSessionState(ClientSessionState::CONNECT_READY);
@@ -91,6 +93,57 @@ void ClientSession::ResetSession()
 	{
 		SetServerSessionState(ServerSessionState::CONNECT_READY);
 	}
+}
+
+void ClientSession::ResetSession()
+{
+	SetClientSessionState(ClientSessionState::NONE);
+	SetServerSessionState(ServerSessionState::NONE);
+
+	// 지난 접속의 종료 사유를 지운다. 남겨 두면 이 슬롯을 다음에 쓰는
+	// 접속이 끝날 때 남의 사유를 물려받는다.
+	//
+	// 서비스 통지보다 뒤여야 한다. ClientSessionPool::CompleteRelease 가
+	// NotifyServiceDisconnect -> OnDisconnect -> ResetSession 순으로 부르므로
+	// 지금 순서는 맞다.
+	ClearDisconnectReason();
+
+	if (m_clientSocket != INVALID_SOCKET)
+	{
+		ENGINE_VIOLATION("session %u reset with a live socket %d. it was not detached",
+			GetSessionID(), static_cast<int>(m_clientSocket));
+	}
+
+	// IO 카운트는 여기서 강제로 0 으로 만들지 않는다.
+	//
+	// 이전에는 InterlockedExchange(&m_ioCount, 0) 였다. 그런데 이 시점에
+	// 다른 스레드의 완료 처리가 아직 돌고 있으면, 그 스레드의 DecrementIO 가
+	// 0 에서 하나 더 내려가 -1 이 되고 단정에 걸렸다. 실제로 관측된 현상이다.
+	//
+	// 카운트를 그대로 두면 늦게 도착한 DecrementIO 가 정상적으로 0 으로 내려간다.
+	// 0 이 아닌 상태로 여기 도달한 것 자체가 버그이므로 크게 남긴다.
+	ResetLifetimeState();
+	const LONG remainingIo = ::ReadAcquire(&m_ioCount);
+	if (remainingIo != 0)
+	{
+		ENGINE_VIOLATION("session %u reset while %ld IO operations are still outstanding. the counter is left as is so a late DecrementIO does not go negative",
+			GetSessionID(), remainingIo);
+	}
+
+	::InterlockedExchange(&m_closing, 0);
+	::InterlockedExchange(&m_cancelIo, 0);
+
+	// 취소 완료 이벤트는 여기서 되돌리지 않는다.
+	//
+	// 되돌렸었다. 그런데 이 함수는 지연 반납의 마무리 경로에서도 불리고,
+	// 그 경로는 방금 DecrementIO 가 이벤트를 세운 직후다. 종료 절차의
+	// 대기자가 그 사이에 깨어나지 못하면 신호를 놓치고 10초를 태운다.
+	//
+	// 무장하는 쪽(CancelPendingIO)에서 되돌린다. 그러면 세워진 이벤트가
+	// 대기자 밑에서 사라지는 일이 없다. 대기는 언제나 무장 뒤에 오므로
+	// 재사용된 세션이 이전 주기의 신호를 물려받지도 않는다.
+
+	SetConnectReadyState();
 
 	::InterlockedExchange(&m_sending, 0);
 	::InterlockedExchange(&m_processing, 0);
@@ -170,8 +223,35 @@ void ClientSession::Finalize()
 		return;
 	}
 
-	BaseSession::Finalize();
+	ResetLifetimeState();
+	const LONG remainingIo = ::ReadAcquire(&m_ioCount);
+	if (remainingIo != 0)
+	{
+		ENGINE_VIOLATION("session %u finalized while %ld IO operations are still outstanding. completions were most likely dropped when the IOCP stopped",
+			GetSessionID(), remainingIo);
+	}
 
+	SetClientSessionState(ClientSessionState::NONE);
+	SetServerSessionState(ServerSessionState::NONE);
+
+	if (m_clientSocket != INVALID_SOCKET)
+	{
+		ENGINE_VIOLATION("session %u finalized with a live socket %d. it was not detached",
+			GetSessionID(), static_cast<int>(m_clientSocket));
+	}
+
+	::InterlockedExchange(&m_closing, 0);
+	::InterlockedExchange(&m_ioCount, 0);
+	::InterlockedExchange(&m_cancelIo, 0);
+
+	if (m_ioCancelCompleteEvent)
+	{
+		::ResetEvent(m_ioCancelCompleteEvent);
+		::CloseHandle(m_ioCancelCompleteEvent);
+		m_ioCancelCompleteEvent = nullptr;
+	}
+
+	m_destroyFlag = true;
 	ClearRemoteAddress();
 
 	if (m_sessionContext)
@@ -189,14 +269,7 @@ void ClientSession::Finalize()
 	// 송신 큐 / 잡 큐 / 수신 링.
 	ReleaseMemoryResources();
 
-	if (GetSessionRole() == SESSION_ROLE::CLIENT)
-	{
-		SetClientSessionState(ClientSessionState::CONNECT_READY);
-	}
-	else if (GetSessionRole() == SESSION_ROLE::SERVER)
-	{
-		SetServerSessionState(ServerSessionState::CONNECT_READY);
-	}
+	SetConnectReadyState();
 
 	::InterlockedExchange(&m_sending, 0);
 	::InterlockedExchange(&m_processing, 0);
@@ -226,8 +299,6 @@ void ClientSession::Finalize()
 
 	m_packetMemoryPool = nullptr;
 	m_jobMemoryPool = nullptr;
-
-	m_destroyFlag = true;
 
 }
 
@@ -277,7 +348,32 @@ bool ClientSession::OnConnect()
 bool ClientSession::OnDisconnect()
 {
 	ClearRemoteAddress();
-	return BaseSession::OnDisconnect();
+	if (::InterlockedExchange(&m_closing, 1) == 0)
+	{
+		if (m_clientSocket != INVALID_SOCKET)
+		{
+			// 소켓은 반드시 DetachSocket 으로 먼저 떼어낸 뒤 여기 와야 한다.
+			LOGE("session %u disconnecting with a live socket %d. it was not detached",
+				GetSessionID(), static_cast<int>(m_clientSocket));
+			ENGINE_BREAK_IF_DEBUGGER();
+		}
+
+		switch (m_sessionRole)
+		{
+		case SESSION_ROLE::CLIENT:
+			SetClientSessionState(ClientSessionState::DISCONNECTED);
+			break;
+		case SESSION_ROLE::SERVER:
+			SetServerSessionState(ServerSessionState::DISCONNECTED);
+			break;
+		default:
+			break;
+		}
+
+		LOGI("session %u disconnected (role %d)", GetSessionID(), static_cast<int>(m_sessionRole));
+	}
+
+	return true;
 }
 
 bool ClientSession::InitializeMemoryPool(TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig)
@@ -491,7 +587,7 @@ bool ClientSession::PostReceive()
 		return false;
 	}
 
-	// 취소가 걸린 뒤에는 새 수신을 걸지 않는다. (사정은 BaseSession::BeginIO 주석)
+	// 취소가 걸린 뒤에는 새 수신을 걸지 않는다. (사정은 ClientSession::BeginIO 주석)
 	//
 	// 아이디를 미리 읽어 둔다. BeginIO 가 false 를 돌려주면 그 안의 되돌림이
 	// 마지막 카운트였을 수 있고, 그러면 이 세션은 이미 풀로 돌아가 있다.
@@ -785,7 +881,7 @@ bool ClientSession::PostCurrentSend()
 	DWORD flags = 0;
 	DWORD bytesSent = 0;
 
-	// 취소가 걸린 뒤에는 새 송신을 걸지 않는다. (사정은 BaseSession::BeginIO 주석)
+	// 취소가 걸린 뒤에는 새 송신을 걸지 않는다. (사정은 ClientSession::BeginIO 주석)
 	//
 	// 정리를 BeginIO 앞에서 끝내는 것이 중요하다. 카운트를 들고 있는 동안은
 	// 세션이 반납되지 않으므로 여기서 패킷를 되돌리는 것이 안전하고,

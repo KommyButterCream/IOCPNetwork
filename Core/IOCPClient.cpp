@@ -1154,11 +1154,11 @@ void IOCPClient::OnDisconnectRequest(ISession* session)
 	CompleteDisconnect(clientSession);
 }
 
-void IOCPClient::OnReleaseReady(void* context, BaseSession* session)
+void IOCPClient::OnReleaseReady(void* context, ClientSession* session)
 {
 	IOCPClient* client = static_cast<IOCPClient*>(context);
 
-	client->CompleteDisconnect(static_cast<ClientSession*>(session));
+	client->CompleteDisconnect(session);
 }
 
 void IOCPClient::CompleteDisconnect(ClientSession* clientSession)
@@ -1182,7 +1182,7 @@ void IOCPClient::CompleteDisconnect(ClientSession* clientSession)
 	if (clientSession->ConsumeServiceConnectNotified())
 	{
 		// 사유는 세션이 들고 있다. 끊기로 결정한 자리에서 표시해 두고
-		// (BaseSession::NoteDisconnectReason) 통지하는 자리에서 꺼낸다.
+		// (ClientSession::NoteDisconnectReason) 통지하는 자리에서 꺼낸다.
 		const DisconnectReason reason = clientSession->GetDisconnectReason();
 
 		// 사정은 서버 쪽 OnSessionDisconnectNotify 의 같은 자리 주석 참고.

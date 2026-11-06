@@ -1,4 +1,4 @@
-﻿#include "BaseSession.h"
+﻿#include "ClientSession.h"
 
 #include "SessionDefs.h"
 
@@ -9,126 +9,7 @@
 
 using namespace Core::Util;
 
-BaseSession::BaseSession()
-{
-}
-
-BaseSession::~BaseSession()
-{
-	Finalize();
-}
-
-bool BaseSession::Initialize(SESSION_ROLE sessionType, uint32_t sessionId)
-{
-	m_sessionRole = sessionType;
-	SetSessionID(sessionId);
-
-	if (!m_ioCancelCompleteEvent)
-	{
-		m_ioCancelCompleteEvent = ::CreateEvent(nullptr, TRUE, FALSE, nullptr);
-		if (!m_ioCancelCompleteEvent)
-			return false;
-	}
-	else
-	{
-		::ResetEvent(m_ioCancelCompleteEvent);
-	}
-
-	return true;
-}
-
-void BaseSession::ResetSession()
-{
-	SetClientSessionState(ClientSessionState::NONE);
-	SetServerSessionState(ServerSessionState::NONE);
-
-	// 지난 접속의 종료 사유를 지운다. 남겨 두면 이 슬롯을 다음에 쓰는
-	// 접속이 끝날 때 남의 사유를 물려받는다.
-	//
-	// 서비스 통지보다 뒤여야 한다. ClientSessionPool::CompleteRelease 가
-	// NotifyServiceDisconnect -> OnDisconnect -> ResetSession 순으로 부르므로
-	// 지금 순서는 맞다.
-	ClearDisconnectReason();
-
-	if (m_clientSocket != INVALID_SOCKET)
-	{
-		ENGINE_VIOLATION("session %u reset with a live socket %d. it was not detached",
-			GetSessionID(), static_cast<int>(m_clientSocket));
-	}
-
-	// IO 카운트는 여기서 강제로 0 으로 만들지 않는다.
-	//
-	// 이전에는 InterlockedExchange(&m_ioCount, 0) 였다. 그런데 이 시점에
-	// 다른 스레드의 완료 처리가 아직 돌고 있으면, 그 스레드의 DecrementIO 가
-	// 0 에서 하나 더 내려가 -1 이 되고 단정에 걸렸다. 실제로 관측된 현상이다.
-	//
-	// 카운트를 그대로 두면 늦게 도착한 DecrementIO 가 정상적으로 0 으로 내려간다.
-	// 0 이 아닌 상태로 여기 도달한 것 자체가 버그이므로 크게 남긴다.
-	ResetLifetimeState();
-	const LONG remainingIo = ::ReadAcquire(&m_ioCount);
-	if (remainingIo != 0)
-	{
-		ENGINE_VIOLATION("session %u reset while %ld IO operations are still outstanding. the counter is left as is so a late DecrementIO does not go negative",
-			GetSessionID(), remainingIo);
-	}
-
-	::InterlockedExchange(&m_closing, 0);
-	::InterlockedExchange(&m_cancelIo, 0);
-
-	// 취소 완료 이벤트는 여기서 되돌리지 않는다.
-	//
-	// 되돌렸었다. 그런데 이 함수는 지연 반납의 마무리 경로에서도 불리고,
-	// 그 경로는 방금 DecrementIO 가 이벤트를 세운 직후다. 종료 절차의
-	// 대기자가 그 사이에 깨어나지 못하면 신호를 놓치고 10초를 태운다.
-	//
-	// 무장하는 쪽(CancelPendingIO)에서 되돌린다. 그러면 세워진 이벤트가
-	// 대기자 밑에서 사라지는 일이 없다. 대기는 언제나 무장 뒤에 오므로
-	// 재사용된 세션이 이전 주기의 신호를 물려받지도 않는다.
-}
-
-void BaseSession::Finalize()
-{
-	if (m_destroyFlag)
-	{
-		return;
-	}
-
-	// 종료 시점에는 IOCP 가 이미 멈춰 있을 수 있고, 그때 큐에 남아 있던 완료
-	// 통지는 버려진다. 그러면 그 몫의 DecrementIO 가 영영 실행되지 않아
-	// 카운트가 0 이 아닌 상태로 여기 도달한다.
-	// 종료 경로이므로 치명적이지 않다. 남기고 계속 진행한다.
-	ResetLifetimeState();
-	const LONG remainingIo = ::ReadAcquire(&m_ioCount);
-	if (remainingIo != 0)
-	{
-		ENGINE_VIOLATION("session %u finalized while %ld IO operations are still outstanding. completions were most likely dropped when the IOCP stopped",
-			GetSessionID(), remainingIo);
-	}
-
-	SetClientSessionState(ClientSessionState::NONE);
-	SetServerSessionState(ServerSessionState::NONE);
-
-	if (m_clientSocket != INVALID_SOCKET)
-	{
-		ENGINE_VIOLATION("session %u finalized with a live socket %d. it was not detached",
-			GetSessionID(), static_cast<int>(m_clientSocket));
-	}
-
-	::InterlockedExchange(&m_closing, 0);
-	::InterlockedExchange(&m_ioCount, 0);
-	::InterlockedExchange(&m_cancelIo, 0);
-
-	if (m_ioCancelCompleteEvent)
-	{
-		::ResetEvent(m_ioCancelCompleteEvent);
-		::CloseHandle(m_ioCancelCompleteEvent);
-		m_ioCancelCompleteEvent = nullptr;
-	}
-
-	m_destroyFlag = true;
-}
-
-void BaseSession::ResetLifetimeState()
+void ClientSession::ResetLifetimeState()
 {
 	Core::Sync::SRWWriteLockGuard lock(m_lifetimeLock);
 	if (m_lifetimeReferences != 0)
@@ -138,13 +19,13 @@ void BaseSession::ResetLifetimeState()
 	m_releasePending = false;
 }
 
-void BaseSession::AddLifetimeReference()
+void ClientSession::AddLifetimeReference()
 {
 	Core::Sync::SRWWriteLockGuard lock(m_lifetimeLock);
 	++m_lifetimeReferences;
 }
 
-void BaseSession::ReleaseLifetimeReference()
+void ClientSession::ReleaseLifetimeReference()
 {
 	ReleaseReadyFunc callback = nullptr;
 	void* context = nullptr;
@@ -172,13 +53,13 @@ void BaseSession::ReleaseLifetimeReference()
 	}
 }
 
-void BaseSession::IncrementIO()
+void ClientSession::IncrementIO()
 {
 	AddLifetimeReference();
 	::InterlockedIncrement(&m_ioCount);
 }
 
-void BaseSession::DecrementIO()
+void ClientSession::DecrementIO()
 {
 	const LONG ioCount = ::InterlockedDecrement(&m_ioCount);
 	if (ioCount < 0)
@@ -196,32 +77,32 @@ void BaseSession::DecrementIO()
 	ReleaseLifetimeReference();
 }
 
-void BaseSession::SetReleaseReadyFunc(ReleaseReadyFunc releaseReadyFunc, void* context)
+void ClientSession::SetReleaseReadyFunc(ReleaseReadyFunc releaseReadyFunc, void* context)
 {
 	Core::Sync::SRWWriteLockGuard lock(m_lifetimeLock);
 	m_releaseReadyFunc = releaseReadyFunc;
 	m_releaseReadyContext = context;
 }
 
-bool BaseSession::RequestRelease()
+bool ClientSession::RequestRelease()
 {
 	Core::Sync::SRWWriteLockGuard lock(m_lifetimeLock);
 	m_releasePending = m_lifetimeReferences != 0;
 	return !m_releasePending;
 }
 
-bool BaseSession::IsReleasePending() const
+bool ClientSession::IsReleasePending() const
 {
 	Core::Sync::SRWReadLockGuard lock(m_lifetimeLock);
 	return m_releasePending;
 }
 
-LONG BaseSession::GetOutstandingIOCount() const
+LONG ClientSession::GetOutstandingIOCount() const
 {
 	return ::ReadAcquire(&m_ioCount);
 }
 
-bool BaseSession::BeginIOCancellation()
+bool ClientSession::BeginIOCancellation()
 {
 	if (::InterlockedExchange(&m_cancelIo, 1) != 0)
 		return false;
@@ -234,7 +115,7 @@ bool BaseSession::BeginIOCancellation()
 	return true;
 }
 
-bool BaseSession::CancelPendingIO()
+bool ClientSession::CancelPendingIO()
 {
 	if (m_clientSocket != INVALID_SOCKET)
 	{
@@ -309,7 +190,7 @@ bool BaseSession::CancelPendingIO()
 	return true;
 }
 
-void BaseSession::ReissueCancelIo()
+void ClientSession::ReissueCancelIo()
 {
 	if (m_clientSocket == INVALID_SOCKET)
 		return;
@@ -320,7 +201,7 @@ void BaseSession::ReissueCancelIo()
 	::CancelIoEx(reinterpret_cast<HANDLE>(m_clientSocket), nullptr);
 }
 
-IOWaitResult BaseSession::WaitForIOCancelComplete(const uint32_t timeout_ms)
+IOWaitResult ClientSession::WaitForIOCancelComplete(const uint32_t timeout_ms)
 {
 	constexpr DWORD cancelRetryMs = 50;
 	const ULONGLONG deadline = ::GetTickCount64() + timeout_ms;
@@ -356,12 +237,12 @@ IOWaitResult BaseSession::WaitForIOCancelComplete(const uint32_t timeout_ms)
 	return { IOWaitStatus::Completed };
 }
 
-bool BaseSession::IsIOCancelRequested() const
+bool ClientSession::IsIOCancelRequested() const
 {
 	return (::ReadAcquire(&m_cancelIo) == 1);
 }
 
-bool BaseSession::BeginIO()
+bool ClientSession::BeginIO()
 {
 	// 증가가 먼저다. 이유는 헤더 주석 참고 —
 	// 이 카운트가 곧 "대기가 통과하지 못하게 하는 장벽" 이다.
@@ -379,37 +260,7 @@ bool BaseSession::BeginIO()
 	return false;
 }
 
-bool BaseSession::OnDisconnect()
-{
-	if (::InterlockedExchange(&m_closing, 1) == 0)
-	{
-		if (m_clientSocket != INVALID_SOCKET)
-		{
-			// 소켓은 반드시 DetachSocket 으로 먼저 떼어낸 뒤 여기 와야 한다.
-			LOGE("session %u disconnecting with a live socket %d. it was not detached",
-				GetSessionID(), static_cast<int>(m_clientSocket));
-			ENGINE_BREAK_IF_DEBUGGER();
-		}
-
-		switch (m_sessionRole)
-		{
-		case SESSION_ROLE::CLIENT:
-			SetClientSessionState(ClientSessionState::DISCONNECTED);
-			break;
-		case SESSION_ROLE::SERVER:
-			SetServerSessionState(ServerSessionState::DISCONNECTED);
-			break;
-		default:
-			break;
-		}
-
-		LOGI("session %u disconnected (role %d)", GetSessionID(), static_cast<int>(m_sessionRole));
-	}
-
-	return true;
-}
-
-void BaseSession::AttachSocket(SOCKET socket)
+void ClientSession::AttachSocket(SOCKET socket)
 {
 	if (m_clientSocket != INVALID_SOCKET)
 	{
@@ -422,7 +273,7 @@ void BaseSession::AttachSocket(SOCKET socket)
 	m_clientSocket = socket;
 }
 
-SOCKET BaseSession::DetachSocket()
+SOCKET ClientSession::DetachSocket()
 {
 	// 원자적으로 떼어낸다.
 	//
