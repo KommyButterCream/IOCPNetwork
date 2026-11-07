@@ -4,6 +4,18 @@
 #include "../Buffer/PacketHandle.h"
 #include "../Buffer/SharedPacketHandle.h"
 
+// Queued는 엔진 큐 등록 성공이며, 상대의 수신·처리 완료를 뜻하지 않습니다.
+enum class SendResult
+{
+    Queued,
+    NotReady,
+    Closed,
+    QueueFull,
+    InvalidPacket,
+    PacketTooLarge,
+    NoMemory
+};
+
 class SessionContext
 {
 public:
@@ -18,6 +30,9 @@ public:
     virtual ~ISession() = default;
     virtual uint32_t GetSessionID() const = 0;
     virtual bool IsEstablished() const = 0;
+    // 서비스 패킷을 전송합니다. 값으로 받은 핸들은 성공·실패 모두에서 소비합니다.
+    [[nodiscard]] virtual SendResult Send(PacketHandle packet) = 0;
+    [[nodiscard]] virtual SendResult Send(SharedPacketHandle packet) = 0;
     // 성공하면 패킷 소유권을 이전하고, 실패하면 호출자의 패킷을 유지합니다.
     virtual bool EnqueueSendPacket(PacketHandle&& packet) = 0;
     // 값으로 전달받은 공유 참조는 성공·실패 모두에서 소비합니다.

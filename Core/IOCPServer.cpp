@@ -1,4 +1,5 @@
-﻿#include "IOCPServer.h"
+﻿#include <cstring> // for std::memcpy
+#include "IOCPServer.h"
 #include "EngineExecutionScope.h"
 #include "BackgroundTaskGroup.h"
 #include "BackgroundTasks.h"
@@ -385,6 +386,12 @@ void IOCPServer::StopResources()
 
 bool IOCPServer::RegisterPacketHandler(uint16_t id, PacketHandlerFunc handler)
 {
+	try { return RegisterHandlerBinding(id, PacketHandler(handler)); }
+	catch (const std::bad_alloc&) { return false; }
+}
+
+bool IOCPServer::RegisterHandlerBinding(uint16_t id, PacketHandler handler)
+{
 	// 워커 또는 콜백에서 제어 락을 기다리지 않는다. 실행 중인 테이블은 불변이다.
 	if (EngineExecutionScope::IsActive() || Core::Concurrency::ThreadTimer::IsCallbackThread())
 		return false;
@@ -395,13 +402,40 @@ bool IOCPServer::RegisterPacketHandler(uint16_t id, PacketHandlerFunc handler)
 	{
 		if (!m_packetHandlerTable)
 			m_packetHandlerTable = std::make_unique<PacketHandlerTable>();
-		return m_packetHandlerTable->Register(id, handler);
+		return m_packetHandlerTable->Register(id, std::move(handler));
 	}
 	catch (const std::bad_alloc&)
 	{
 		LOGE("failed to allocate the packet handler table");
 		return false;
 	}
+}
+
+SendResult IOCPServer::Send(ISession& session, PacketHandle packet)
+{
+	return session.Send(std::move(packet));
+}
+
+SendResult IOCPServer::Send(ISession& session, SharedPacketHandle packet)
+{
+	return session.Send(std::move(packet));
+}
+
+SendResult IOCPServer::SendPacketCopy(ISession& session, uint16_t packetId, std::span<const std::byte> bytes)
+{
+	if (!m_memoryPools || !m_memoryPools->IsInitialized())
+		return SendResult::NotReady;
+	if (bytes.size() < sizeof(PACKET_HEADER) || !IsServicePacketId(packetId))
+		return SendResult::InvalidPacket;
+	if (bytes.size() > PACKET_SIZE_LIMIT)
+		return SendResult::PacketTooLarge;
+	auto packet = CreatePacket(bytes.size());
+	if (!packet)
+		return SendResult::NoMemory;
+	std::memcpy(packet.MutableView().data(), bytes.data(), bytes.size());
+	const PACKET_HEADER header(packetId, static_cast<uint16_t>(bytes.size()));
+	std::memcpy(packet.MutableView().data(), &header, sizeof(header));
+	return Send(session, std::move(packet));
 }
 
 PacketHandle IOCPServer::CreatePacket(std::size_t size) const
@@ -1012,7 +1046,8 @@ bool IOCPServer::HandleReceivedPacket(ClientSession& session, uint16_t packetId,
 {
 	if (IsServicePacketId(packetId))
 	{
-		if (InvokeServiceCallback("OnReceive", [&] { OnReceive(&session, packetId, std::move(packet)); }))
+		// 서비스 패킷은 등록된 핸들러의 Job으로 한 번만 전달합니다.
+		if (EnqueueJob(&session, packetId, std::move(packet)))
 			return true;
 		session.RequestDisconnect(DisconnectReason::ServiceError);
 		return false;

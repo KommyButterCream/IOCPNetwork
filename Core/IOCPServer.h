@@ -9,7 +9,8 @@
 #include "IOCPCore.h"
 #include "../Network/UniqueSocket.h"
 #include "HeartbeatConfig.h"
-#include "../Job/HandlerContext.h"
+#include "../HandlerTable/PacketHandler.h"
+#include <new> // for std::bad_alloc
 #include "../Session/DisconnectReason.h"
 #include "../Buffer/SessionBufferConfig.h"
 #include "../Memory/EnginePoolConfig.h"
@@ -99,32 +100,63 @@ public:
 	// 객체 파괴 및 서비스의 패킷 핸들 반환은 호출자가 별도로 동기화한다.
 	IOCP_ENGINE_API void StopServer();
 
+	// 서비스 패킷은 등록된 핸들러의 Job으로 자동 전달합니다. 미등록 패킷·Job 등록 실패 시 연결을 종료합니다.
 	// 핸들러 등록과 패킷 생성
 	// 정지 상태에서 등록한다. 같은 핸들러 재등록은 성공하며, 등록은 재시작 후에도 유지한다.
 	IOCP_ENGINE_API bool RegisterPacketHandler(uint16_t packetId, PacketHandlerFunc handler);
+
+	// 객체는 Stop 완료까지 유지하며, 패킷 참조는 콜백 중에만 유효합니다. 동일 등록은 허용합니다.
+	template<FixedServicePacket Packet, typename Owner, typename Result>
+	[[nodiscard]] bool RegisterHandler(Owner* owner, Result (Owner::*method)(ISession&, const Packet&))
+	{
+		try { return RegisterHandlerBinding(PacketTraits<Packet>::id, PacketHandler::Bind<Packet>(owner, method)); }
+		catch (const std::bad_alloc&) { return false; }
+	}
+	// 가변 길이 패킷은 헤더를 포함한 바이트 범위를 빌려 받으며, 세부 형식은 서비스에서 검사합니다.
+	template<typename Owner, typename Result>
+	[[nodiscard]] bool RegisterHandler(uint16_t packetId, Owner* owner,
+		Result (Owner::*method)(ISession&, std::span<const std::byte>))
+	{
+		try { return RegisterHandlerBinding(packetId, PacketHandler::Bind(owner, method)); }
+		catch (const std::bad_alloc&) { return false; }
+	}
+
 	[[nodiscard]] IOCP_ENGINE_API PacketHandle CreatePacket(std::size_t size) const;
 	[[nodiscard]] IOCP_ENGINE_API SharedPacketHandle CreateSharedPacket(PacketHandle packet) const;
 
+	// 서비스 송신입니다. Queued는 큐 등록 성공이며 전달한 핸들은 실패해도 소비합니다.
+	// 세션은 콜백에서 빌린 유효한 연결이어야 하며, 외부 송신과 Stop은 호출자가 동기화합니다.
+	[[nodiscard]] IOCP_ENGINE_API SendResult Send(ISession& session, PacketHandle packet);
+	[[nodiscard]] IOCP_ENGINE_API SendResult Send(ISession& session, SharedPacketHandle packet);
+	// 고정 패킷은 반환 전에 엔진 버퍼로 복사하며, ID와 길이는 타입 정의로 설정합니다.
+	template<FixedServicePacket Packet>
+	[[nodiscard]] SendResult Send(ISession& session, const Packet& packet)
+	{
+		return SendPacketCopy(session, PacketTraits<Packet>::id, std::as_bytes(std::span(&packet, 1)));
+	}
+
 protected:
-	// 서비스 작업 등록과 컨텍스트
-	// 패킷으로 Job을 초기화하고 큐에 등록한다. 실패 시 전달받은 패킷은 자동 반환한다.
-	IOCP_ENGINE_API bool EnqueueJob(ISession* session, uint16_t packetId, PacketHandle packetHandle);
+	// 기존 자유 함수 핸들러에 전달할 서비스 컨텍스트입니다.
 	// 핸들러에 전달할 서비스 객체를 파생 클래스에서 지정한다.
 	IOCP_ENGINE_API virtual void* GetServiceContext();
 
 	// 서비스 이벤트
-	virtual void OnClientConnect(ISession* session) = 0;
+	virtual void OnClientConnect(ISession* session) {}
 	// reason 은 이 세션이 왜 끝났는지다.
 	//
 	// 예전에는 인자가 세션 하나뿐이라 서비스가 알 수 있는 것이 "끝났다"
 	// 뿐이었다. 만석 거절과 프로토콜 위반과 하트비트 타임아웃과 서버 종료가
 	// 같은 신호로 도착했고, 엔진은 넷을 전부 알면서 로그로만 남기고 버렸다.
 	// (값 목록은 Session/DisconnectReason.h)
-	virtual void OnClientDisconnect(ISession* session, DisconnectReason reason) = 0;
-	virtual void OnReceive(ISession* session, uint16_t packetId, PacketHandle packetHandle) = 0;
-	virtual void OnSend(ISession* session, uint32_t bytesTransferred) = 0;
+	virtual void OnClientDisconnect(ISession* session, DisconnectReason reason) {}
+	virtual void OnSend(ISession* session, uint32_t bytesTransferred) {}
 
 private:
+	// 템플릿을 사용하는 소비 DLL에서도 호출하므로 내부 연결 함수는 export합니다.
+	IOCP_ENGINE_API bool RegisterHandlerBinding(uint16_t packetId, PacketHandler handler);
+	IOCP_ENGINE_API SendResult SendPacketCopy(ISession& session, uint16_t packetId, std::span<const std::byte> bytes);
+	bool EnqueueJob(ISession* session, uint16_t packetId, PacketHandle packet);
+
 	// 내부 타입
 	// for AcceptEX
 	using LPFN_ACCEPTEX = BOOL(__stdcall*)(

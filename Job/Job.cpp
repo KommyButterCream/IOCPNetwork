@@ -1,18 +1,19 @@
 #include "../Core/EngineExecutionScope.h"
 #include "Job.h"
+#include "../HandlerTable/PacketHandler.h"
 #include "../../Core/Util/Logger.h"
 #include <utility> // for std::move
 
 using namespace Core::Util;
 
-bool Job::InitializePacketJob(PacketHandlerFunc handler, ISession* session,
+bool Job::InitializePacketJob(const PacketHandler& handler, ISession* session,
     uint16_t packetId, PacketHandle&& packet, const HandlerContext& context)
 {
     if (m_type != JobType::NONE || !handler || !session || !packet || packet.Size() > UINT32_MAX)
         return false;
 
     m_payload = std::move(packet);
-    m_packetFunc = handler;
+    m_packetHandler = &handler;
     m_target = session;
     m_packetId = packetId;
     m_context = &context;
@@ -77,12 +78,12 @@ void Job::Execute()
             LOGE("packet job for id %u has no packet, skipping", m_packetId);
             break;
         }
-        if (m_packetFunc)
+        if (m_packetHandler)
         {
-            const bool result = m_packetFunc(static_cast<ISession*>(m_target),
+            const bool result = (*m_packetHandler)(static_cast<ISession*>(m_target),
                 reinterpret_cast<const char*>(bytes.data()),
                 size, *m_context);
-            // The callback may have transferred the packet. Do not read bytes here.
+            // 콜백이 패킷 소유권을 옮겼을 수 있으므로 이후에는 버퍼를 읽지 않습니다.
             if (!result)
                 LOGW("packet handler for id %u returned failure", m_packetId);
         }

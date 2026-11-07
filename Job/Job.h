@@ -3,9 +3,10 @@
 #include "JobDefs.h"
 
 class SessionJobQueue;
+class PacketHandler;
 
-// Job objects stay at their pool address; only their owning handles move.
-// Targets and HandlerContext are borrowed and must outlive execution.
+// Job은 풀의 고정 주소에 두고 소유 핸들만 이동합니다.
+// 핸들러·대상·컨텍스트는 빌린 참조이므로 작업 실행이 끝날 때까지 유지합니다.
 class alignas(64) Job final
 {
 public:
@@ -17,7 +18,7 @@ public:
     Job& operator=(Job&&) = delete;
 
     // 빈 Job을 패킷 처리 작업으로 초기화한다. 실패하면 전달받은 핸들의 소유권을 유지한다.
-    [[nodiscard]] bool InitializePacketJob(PacketHandlerFunc handler, ISession* session,
+    [[nodiscard]] bool InitializePacketJob(const PacketHandler& handler, ISession* session,
         uint16_t packetId, PacketHandle&& packet, const HandlerContext& context);
 
     // 빈 데이터도 허용하며, 설정에 성공한 경우에만 소유권을 이전한다.
@@ -37,7 +38,7 @@ private:
     void* m_target = nullptr;
     union
     {
-        PacketHandlerFunc m_packetFunc = nullptr;
+        const PacketHandler* m_packetHandler = nullptr;
         DBHandlerFunc m_dbFunc;
         SystemHandlerFunc m_systemFunc;
     };

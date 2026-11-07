@@ -101,6 +101,8 @@ public:
 	bool IsReceivePaused() const;
 	uint32_t GetRecvPauseCount() const;
 
+	[[nodiscard]] SendResult Send(PacketHandle packet) override;
+	[[nodiscard]] SendResult Send(SharedPacketHandle packet) override;
 	// 단독 송신은 성공할 때만 핸들을 인수하고 공유 송신은 전달된 참조를 소비한다.
 	[[nodiscard]] bool EnqueueSendPacket(PacketHandle&& packetHandle) override;
 	[[nodiscard]] bool EnqueueSharedSendPacket(SharedPacketHandle packetHandle) override;
@@ -150,8 +152,8 @@ private:
 	bool TryPauseReceive();
 	Reference TakeReceivePauseLocked();
 
-	bool CanEnqueueSend(std::span<const std::byte> bytes) const;
-	bool StartQueuedSend(bool enqueued);
+	SendResult ValidateSend(std::span<const std::byte> bytes, bool serviceOnly) const;
+	SendResult StartQueuedSend(bool enqueued);
 	void TrySendNext();
 	void PostCurrentSend();
 

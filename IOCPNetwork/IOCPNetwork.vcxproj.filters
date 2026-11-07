@@ -113,6 +113,12 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\HandlerTable\PacketHandler.h">
+      <Filter>HandlerTable</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Protocol\PacketTraits.h">
+      <Filter>Protocol</Filter>
+    </ClInclude>
     <ClInclude Include="..\Buffer\RecvPacketBuffer.h">
       <Filter>Buffer</Filter>
     </ClInclude>

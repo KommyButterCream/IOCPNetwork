@@ -1,4 +1,5 @@
-﻿#include "IOCPClient.h"
+﻿#include <cstring> // for std::memcpy
+#include "IOCPClient.h"
 #include "EngineExecutionScope.h"
 #include "BackgroundTaskGroup.h"
 #include "BackgroundTasks.h"
@@ -142,7 +143,7 @@ bool IOCPClient::StartResources(const char* serverIp, const uint16_t port, const
 	// 10초 타임아웃을 태웠다.
 	//
 	// 이제 그 대기가 없다. disconnect 는 예약만 하고, 마지막 완료가 마무리한다.
-	// 2개를 유지하는 이유는 다른 것이다 — 서비스 콜백(OnReceive 등)이 워커
+	// 2개를 유지하는 이유는 다른 것이다 — 접속·송신 완료 콜백이 워커
 	// 스레드에서 실행되므로, 하나가 서비스 코드에 붙들려 있어도 나머지 하나가
 	// 완료 통지를 계속 꺼낼 수 있어야 한다.
 	//
@@ -238,6 +239,12 @@ void IOCPClient::StopResources()
 
 bool IOCPClient::RegisterPacketHandler(uint16_t id, PacketHandlerFunc handler)
 {
+	try { return RegisterHandlerBinding(id, PacketHandler(handler)); }
+	catch (const std::bad_alloc&) { return false; }
+}
+
+bool IOCPClient::RegisterHandlerBinding(uint16_t id, PacketHandler handler)
+{
 	// 워커 또는 콜백에서 제어 락을 기다리지 않는다. 실행 중인 테이블은 불변이다.
 	if (EngineExecutionScope::IsActive() || Core::Concurrency::ThreadTimer::IsCallbackThread())
 		return false;
@@ -248,13 +255,40 @@ bool IOCPClient::RegisterPacketHandler(uint16_t id, PacketHandlerFunc handler)
 	{
 		if (!m_packetHandlerTable)
 			m_packetHandlerTable = std::make_unique<PacketHandlerTable>();
-		return m_packetHandlerTable->Register(id, handler);
+		return m_packetHandlerTable->Register(id, std::move(handler));
 	}
 	catch (const std::bad_alloc&)
 	{
 		LOGE("failed to allocate the packet handler table");
 		return false;
 	}
+}
+
+SendResult IOCPClient::Send(PacketHandle packet)
+{
+	return m_session ? m_session->Send(std::move(packet)) : SendResult::NotReady;
+}
+
+SendResult IOCPClient::Send(SharedPacketHandle packet)
+{
+	return m_session ? m_session->Send(std::move(packet)) : SendResult::NotReady;
+}
+
+SendResult IOCPClient::SendPacketCopy(uint16_t packetId, std::span<const std::byte> bytes)
+{
+	if (!m_memoryPools || !m_memoryPools->IsInitialized())
+		return SendResult::NotReady;
+	if (bytes.size() < sizeof(PACKET_HEADER) || !IsServicePacketId(packetId))
+		return SendResult::InvalidPacket;
+	if (bytes.size() > PACKET_SIZE_LIMIT)
+		return SendResult::PacketTooLarge;
+	auto packet = CreatePacket(bytes.size());
+	if (!packet)
+		return SendResult::NoMemory;
+	std::memcpy(packet.MutableView().data(), bytes.data(), bytes.size());
+	const PACKET_HEADER header(packetId, static_cast<uint16_t>(bytes.size()));
+	std::memcpy(packet.MutableView().data(), &header, sizeof(header));
+	return Send(std::move(packet));
 }
 
 PacketHandle IOCPClient::CreatePacket(std::size_t size) const
@@ -639,7 +673,8 @@ bool IOCPClient::HandleReceivedPacket(ClientSession& session, uint16_t packetId,
 {
 	if (IsServicePacketId(packetId))
 	{
-		if (InvokeServiceCallback("OnReceive", [&] { OnReceive(&session, packetId, std::move(packet)); }))
+		// 서비스 패킷은 등록된 핸들러의 Job으로 한 번만 전달합니다.
+		if (EnqueueJob(&session, packetId, std::move(packet)))
 			return true;
 		session.RequestDisconnect(DisconnectReason::ServiceError);
 		return false;

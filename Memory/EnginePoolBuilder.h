@@ -40,6 +40,8 @@ namespace ENGINE_POOL
 		EnginePools(EnginePools&&) = delete;
 		EnginePools& operator=(EnginePools&&) = delete;
 
+		bool IsInitialized() const noexcept { return context.m_packetPool != nullptr; }
+
 		// 워커·세션과 서비스가 보관한 핸들을 모두 정리한 뒤 호출한다.
 		// 컨텍스트와 저장 공간을 정리하되, 풀 객체는 재시작·엔진 파괴까지 유지한다.
 		void Finalize()

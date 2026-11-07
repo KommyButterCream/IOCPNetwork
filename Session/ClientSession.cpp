@@ -595,47 +595,66 @@ uint32_t ClientSession::GetRecvPauseCount() const
 
 // 송신 큐와 부분 송신
 
+SendResult ClientSession::Send(PacketHandle packet)
+{
+	// 유효하게 빌린 연결을 호출이 끝날 때까지 보호하고, 실패한 패킷을 참조보다 먼저 반환합니다.
+	auto reference = AcquireReference();
+	auto ownedPacket = std::move(packet);
+	const auto status = ValidateSend(ownedPacket.View(), true);
+	return status == SendResult::Queued ? StartQueuedSend(m_sendQueue.Enqueue(std::move(ownedPacket))) : status;
+}
+
+SendResult ClientSession::Send(SharedPacketHandle packet)
+{
+	// 유효하게 빌린 연결을 호출이 끝날 때까지 보호하고, 실패한 패킷을 참조보다 먼저 반환합니다.
+	auto reference = AcquireReference();
+	auto ownedPacket = std::move(packet);
+	const auto status = ValidateSend(ownedPacket.View(), true);
+	return status == SendResult::Queued ? StartQueuedSend(m_sendQueue.EnqueueShared(std::move(ownedPacket))) : status;
+}
+
 bool ClientSession::EnqueueSendPacket(PacketHandle&& packet)
 {
-	if (!packet || !CanEnqueueSend(packet.View()))
-		return false;
-	return StartQueuedSend(m_sendQueue.Enqueue(std::move(packet)));
+	return ValidateSend(packet.View(), false) == SendResult::Queued &&
+		StartQueuedSend(m_sendQueue.Enqueue(std::move(packet))) == SendResult::Queued;
 }
 
 bool ClientSession::EnqueueSharedSendPacket(SharedPacketHandle packet)
 {
-	if (!packet || !CanEnqueueSend(packet.View()))
-		return false;
-	return StartQueuedSend(m_sendQueue.EnqueueShared(std::move(packet)));
+	return ValidateSend(packet.View(), false) == SendResult::Queued &&
+		StartQueuedSend(m_sendQueue.EnqueueShared(std::move(packet))) == SendResult::Queued;
 }
 
-bool ClientSession::CanEnqueueSend(std::span<const std::byte> bytes) const
+SendResult ClientSession::ValidateSend(std::span<const std::byte> bytes, bool serviceOnly) const
 {
-	if (bytes.size() < sizeof(PACKET_HEADER) || bytes.size() > PACKET_SIZE_LIMIT || bytes.size() > m_bufferConfig.maxSendPacketSize)
+	if (bytes.size() < sizeof(PACKET_HEADER))
+		return SendResult::InvalidPacket;
+	if (bytes.size() > PACKET_SIZE_LIMIT || bytes.size() > m_bufferConfig.maxSendPacketSize)
+		return SendResult::PacketTooLarge;
+	PACKET_HEADER header;
+	std::memcpy(&header, bytes.data(), sizeof(header));
+	if (header.packetSize != bytes.size() || !IsValidPacketId(header.packetId) ||
+		(serviceOnly && !IsServicePacketId(header.packetId)))
+		return SendResult::InvalidPacket;
 	{
-		LOGE("session %u invalid send size %zu (limit %u)", GetSessionID(), bytes.size(), m_bufferConfig.maxSendPacketSize);
-		return false;
+		SRWReadLockGuard lock(m_lifetimeLock);
+		if (m_cancelled)
+			return SendResult::Closed;
 	}
-	const auto* header = reinterpret_cast<const PACKET_HEADER*>(bytes.data());
-	if (header->packetSize != bytes.size())
-	{
-		LOGE("session %u send size mismatch (header %u, buffer %zu)", GetSessionID(), header->packetSize, bytes.size());
-		return false;
-	}
-
-	return (IsSystemPacketId(header->packetId) && IsTransportConnected()) ||
-		(IsServicePacketId(header->packetId) && IsEstablished());
+	const auto state = m_state.load();
+	if (state == State::Disconnected || state == State::TimedOut)
+		return SendResult::Closed;
+	if (IsServicePacketId(header.packetId))
+		return state == State::Established ? SendResult::Queued : SendResult::NotReady;
+	return IsTransportConnected() ? SendResult::Queued : SendResult::NotReady;
 }
 
-bool ClientSession::StartQueuedSend(bool enqueued)
+SendResult ClientSession::StartQueuedSend(bool enqueued)
 {
 	if (!enqueued)
-	{
-		LOGW("session %u send queue admission failed", GetSessionID());
-		return false;
-	}
+		return SendResult::QueueFull;
 	TrySendNext();
-	return true;
+	return SendResult::Queued;
 }
 
 void ClientSession::TrySendNext()

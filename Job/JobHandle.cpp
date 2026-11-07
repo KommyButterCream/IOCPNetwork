@@ -41,7 +41,7 @@ JobHandle CreatePacketJob(TlsMemoryPool& pool, const PacketHandlerTable& handler
     auto job = MEMORY_POOL::CreateJobHandle(pool);
     if (!job)
         return job;
-    if (!job->InitializePacketJob(handler, &session, packetId, std::move(packet), context))
+    if (!job->InitializePacketJob(*handler, &session, packetId, std::move(packet), context))
     {
         LOGE("failed to initialize packet job for id %u", packetId);
         job.reset();

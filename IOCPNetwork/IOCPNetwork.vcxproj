@@ -47,6 +47,8 @@
     <ClCompile Include="..\Session\SessionManager.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\HandlerTable\PacketHandler.h" />
+    <ClInclude Include="..\Protocol\PacketTraits.h" />
     <ClInclude Include="..\EngineApi.h" />
     <ClInclude Include="..\IOCPNetwork.h" />
     <ClInclude Include="..\Job\HandlerContext.h" />
