@@ -20,6 +20,7 @@ class SessionJobQueue;
 class UniqueSocket;
 class RecvPacketBuffer;
 class TlsMemoryPool;
+enum class ServiceEvent;
 
 #include <ws2tcpip.h> // for INET_ADDRSTRLEN
 
@@ -46,7 +47,7 @@ public:
 	// 엔진이 세션을 초기화하고 연결 상태를 전환한다.
 	bool Initialize(SESSION_ROLE sessionType, uint32_t sessionId);
 	bool InitializeMemoryPool(TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig);
-	// 연결 상태를 준비한다. 접속 콜백 이후 ContinueReceive로 첫 수신을 발행한다.
+	// 연결 상태를 준비한다. 접속 이벤트 등록 이후 ContinueReceive로 첫 수신을 발행한다.
 	void OnConnect();
 	// 소켓을 닫고 접속을 알렸던 서비스에 종료 사유를 전달한 뒤 연결 상태를 정리한다.
 	void FinishDisconnect(CloseSocketFunc closeSocket, SessionDisconnectNotifyFunc notify, void* context);
@@ -67,13 +68,21 @@ public:
 	void RejectAuthentication(DisconnectReason reason, PacketHandle response);
 	bool IsTransportConnected() const;
 	bool IsEstablished() const override;
+	ConnectionId GetConnectionId() const noexcept override { return { m_generation.load(), m_sessionId }; }
+	bool IsServiceReady() const noexcept { return m_serviceReady.load(); }
+	bool IsClosing() const;
+	void ExecuteServiceEvent(ServiceEvent event, const SessionTask& task);
+	bool WaitForDisconnect(uint32_t timeoutMs);
+	SendResult SendCopy(uint16_t packetId, std::span<const std::byte> bytes);
 
 	// 최초 종료 사유를 보존하고 접속을 알린 세션에만 종료를 한 번 통지한다.
-	void RequestDisconnect(DisconnectReason reason);
+	void RequestDisconnect(DisconnectReason reason = DisconnectReason::LocalRequest) override;
 
 	// 참조를 보유한 동안만 세션을 사용할 수 있다. 마지막 참조는 예약된 반환을 실행할 수 있다.
 	void SetOwnerCallbacks(OwnerCallbacks callbacks) { m_ownerCallbacks = callbacks; }
 	[[nodiscard]] Reference AcquireReference();
+	// 외부 API는 종료 여부 확인과 참조 증가를 한 번의 잠금 안에서 수행합니다.
+	[[nodiscard]] Reference TryAcquireReference();
 	// 종료를 선점한 소유자가 호출한다. 새 I/O를 차단하고 마지막 사용자에게 반환을 맡긴다.
 	void CloseWhenIdle();
 
@@ -113,8 +122,6 @@ public:
 	[[nodiscard]] bool EnqueueJob(JobHandle&& jobHandle);
 	SessionJobQueue& GetJobQueue() const;
 	uint32_t GetJobQueuePeakDepth() const;
-	void SetCurrentJob(Job* job);
-	[[nodiscard]] PacketHandle TakeCurrentPacket() override;
 
 	// 서비스 컨텍스트를 소유하고 연결의 원격 주소를 관리한다.
 	void SetSessionContext(std::unique_ptr<SessionContext> sessionContext) override;
@@ -130,6 +137,7 @@ public:
 	bool SendSystemHeartbeatResponse(uint64_t requestTick);
 
 private:
+	friend class JobDeleter;
 	friend class ServerReadySessionQueue;
 	friend class ServerJobScheduler;
 
@@ -171,6 +179,9 @@ private:
 	SESSION_ROLE m_sessionRole = SESSION_ROLE::NONE;
 	uint32_t m_sessionId = INVALID_SESSION_ID;
 	std::atomic<State> m_state{State::Ready};
+	std::atomic<uint64_t> m_generation{0};
+	std::atomic<bool> m_serviceReady{false};
+	bool m_disconnectComplete = false;
 	std::atomic<SOCKET> m_clientSocket{INVALID_SOCKET};
 	std::atomic<DisconnectReason> m_disconnectReason{DisconnectReason::Unknown};
 	std::atomic<bool> m_serviceConnectNotified{false};
@@ -207,7 +218,6 @@ private:
 	// Job 실행권과 핸들러가 빌려 쓰는 현재 Job
 	std::unique_ptr<SessionJobQueue> m_jobQueue;
 	std::atomic<bool> m_processing{false};
-	Job* m_currentJob = nullptr;
 
 	// 하트비트 송수신과 타임아웃 판정
 	TlsMemoryPool* m_packetMemoryPool = nullptr;

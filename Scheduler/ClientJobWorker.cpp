@@ -10,31 +10,6 @@
 
 using namespace Core::Util;
 
-namespace
-{
-	// JobHandle보다 나중에 생성하여, Job 반환 전에 현재 Job 연결을 해제합니다.
-	class ClientJobScope final
-	{
-	public:
-		ClientJobScope(ClientSession& session, Job& job)
-			: m_session(session)
-		{
-			m_session.SetCurrentJob(&job);
-		}
-
-		~ClientJobScope()
-		{
-			m_session.SetCurrentJob(nullptr);
-		}
-
-		ClientJobScope(const ClientJobScope&) = delete;
-		ClientJobScope& operator=(const ClientJobScope&) = delete;
-
-	private:
-		ClientSession& m_session;
-	};
-}
-
 ClientJobWorker::ClientJobWorker()
 	: ThreadBase(L"ClientJobWorker")
 {
@@ -60,7 +35,6 @@ bool ClientJobWorker::Initialize(ClientSession* clientSession)
 	}
 
 	m_clientSession = clientSession;
-
 
 	if (!Start())
 	{
@@ -110,8 +84,6 @@ void ClientJobWorker::Run()
 			{
 				break;
 			}
-
-			ClientJobScope jobScope(*m_clientSession, *jobHandle);
 
 			if (!InvokeServiceCallback("Job", [&] { jobHandle->Execute(); }))
 				m_clientSession->RequestDisconnect(DisconnectReason::ServiceError);

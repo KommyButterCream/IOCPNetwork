@@ -249,6 +249,7 @@ bool IOCPServer::StartResources(const char* ipAddress, const uint16_t port, cons
 		this))
 		return false;
 
+	{ std::unique_lock lock(m_apiMutex); m_apiOpen = true; }
 	if (!PrepareAccept())
 	{
 		return false;
@@ -283,6 +284,7 @@ void IOCPServer::StopServer()
 void IOCPServer::StopResources()
 {
 	LOGI("server shutdown requested");
+	{ std::unique_lock lock(m_apiMutex); m_apiOpen = false; }
 
 	// 서버가 닫히기 전에 AcceptIO 가 취소되기 전에 그 찰나에 받아진
 	// Accept IO 에 대한 예외 처리를 위해 플래그 추가.
@@ -300,6 +302,7 @@ void IOCPServer::StopResources()
 		if (!CancelAllAcceptIO())
 			ENGINE_VIOLATION("failed to cancel outstanding AcceptEx on the listen socket");
 
+		m_sessionManager->DisconnectAllSessions();
 		m_sessionManager->RequestAllRecvSendIOCancel();
 
 		// 10초는 진단 주기다. 완료가 늦어져도 워커와 세션 풀은 유지한다.
@@ -337,6 +340,7 @@ void IOCPServer::StopResources()
 		waitForCompletion("AcceptEx", &SessionManager::WaitForAllAcceptIOComplete);
 
 		// 첫 취소 순회와 겹친 Accept 완료가 연결을 인계했을 수 있다.
+		m_sessionManager->DisconnectAllSessions();
 		m_sessionManager->RequestAllRecvSendIOCancel();
 		waitForCompletion("recv/send", &SessionManager::WaitForAllRecvSendIOCancelComplete);
 	}
@@ -348,6 +352,22 @@ void IOCPServer::StopResources()
 	DestroyListenSocket();
 	m_acceptEx = nullptr;
 	m_getAcceptExSockAddrs = nullptr;
+
+	// I/O 생산자가 멈춘 뒤에도 Job 워커를 유지하여 참조와 종료 콜백을 모두 반환합니다.
+	if (m_sessionManager)
+	{
+		m_sessionManager->DisconnectAllSessions();
+		auto nextDiagnostic = ::GetTickCount64() + 10'000;
+		while (m_sessionManager->GetClientSessionInUseCount() != 0)
+		{
+			if (::GetTickCount64() >= nextDiagnostic)
+			{
+				LOGW("shutdown waiting for service jobs and connection references");
+				nextDiagnostic += 10'000;
+			}
+			::Sleep(1);
+		}
+	}
 
 	// 실행 중인 Job이 끝난 뒤에만 준비 큐와 세션을 정리합니다.
 	m_serverJobScheduler.reset();
@@ -411,31 +431,53 @@ bool IOCPServer::RegisterHandlerBinding(uint16_t id, PacketHandler handler)
 	}
 }
 
-SendResult IOCPServer::Send(ISession& session, PacketHandle packet)
+ClientSession* IOCPServer::AcquireConnection(ConnectionId id) const
 {
-	return session.Send(std::move(packet));
+	std::shared_lock lock(m_apiMutex);
+	if (!m_apiOpen || !id || !m_sessionManager)
+		return nullptr;
+	return m_sessionManager->AcquireConnection(id).release();
 }
 
-SendResult IOCPServer::Send(ISession& session, SharedPacketHandle packet)
+SendResult IOCPServer::Send(ConnectionId id, PacketHandle packet)
 {
-	return session.Send(std::move(packet));
+	ClientSession::Reference session(AcquireConnection(id));
+	return session ? session->Send(std::move(packet)) : SendResult::Closed;
 }
 
-SendResult IOCPServer::SendPacketCopy(ISession& session, uint16_t packetId, std::span<const std::byte> bytes)
+SendResult IOCPServer::Send(ConnectionId id, SharedPacketHandle packet)
 {
-	if (!m_memoryPools || !m_memoryPools->IsInitialized())
-		return SendResult::NotReady;
-	if (bytes.size() < sizeof(PACKET_HEADER) || !IsServicePacketId(packetId))
-		return SendResult::InvalidPacket;
-	if (bytes.size() > PACKET_SIZE_LIMIT)
-		return SendResult::PacketTooLarge;
-	auto packet = CreatePacket(bytes.size());
-	if (!packet)
-		return SendResult::NoMemory;
-	std::memcpy(packet.MutableView().data(), bytes.data(), bytes.size());
-	const PACKET_HEADER header(packetId, static_cast<uint16_t>(bytes.size()));
-	std::memcpy(packet.MutableView().data(), &header, sizeof(header));
-	return Send(session, std::move(packet));
+	ClientSession::Reference session(AcquireConnection(id));
+	return session ? session->Send(std::move(packet)) : SendResult::Closed;
+}
+
+SendResult IOCPServer::SendPacketCopy(ConnectionId id, uint16_t packetId, std::span<const std::byte> bytes)
+{
+	ClientSession::Reference session(AcquireConnection(id));
+	return session ? session->SendCopy(packetId, bytes) : SendResult::Closed;
+}
+
+bool IOCPServer::RequestDisconnect(ConnectionId id, DisconnectReason reason)
+{
+	ClientSession::Reference session(AcquireConnection(id));
+	if (!session)
+		return false;
+	session->RequestDisconnect(reason);
+	return true;
+}
+
+bool IOCPServer::Post(ConnectionId id, SessionTask task)
+{
+	ClientSession::Reference session(AcquireConnection(id));
+	return session && session->IsServiceReady() && EnqueueServiceEvent(*session, ServiceEvent::Task, std::move(task));
+}
+
+bool IOCPServer::EnqueueServiceEvent(ClientSession& session, ServiceEvent event, SessionTask task)
+{
+	auto job = MEMORY_POOL::CreateJobHandle(*m_memoryPools->job);
+	if (!job || !job->InitializeServiceEvent(session, event, std::move(task)))
+		return false;
+	return m_serverJobScheduler->EnqueueJob(session, std::move(job));
 }
 
 PacketHandle IOCPServer::CreatePacket(std::size_t size) const
@@ -986,13 +1028,14 @@ bool IOCPServer::RunAcceptedConnectSequence(ClientSession* clientSession, SOCKET
 
 	clientSession->OnConnect();
 
-	if (!InvokeServiceCallback("OnClientConnect", [&] { OnClientConnect(clientSession); }))
+	if (!EnqueueServiceEvent(*clientSession, ServiceEvent::Connected,
+		[this](ISession& connected) { OnClientConnect(&connected); }))
 	{
 		clientSession->RequestDisconnect(DisconnectReason::ServiceError);
 		return false;
 	}
 
-	// 서비스가 세션 컨텍스트를 준비한 뒤 첫 수신을 발행한다.
+	// 접속 이벤트를 먼저 등록했으므로 이후의 서비스 Job은 컨텍스트 준비 뒤 실행됩니다.
 	clientSession->ContinueReceive();
 	return true;
 }
@@ -1063,8 +1106,9 @@ void IOCPServer::HandleSend(ClientSession* session, DWORD bytesTransferred)
 {
 	ENGINE_CHECK_RETVOID(session->GetSessionRole() == SESSION_ROLE::SERVER,
 		"unexpected session role for send completion on session %u", session->GetSessionID());
-	// 콜백 실패 시 새 송신을 막되, 이번 완료의 송신 상태와 패킷은 반드시 정리한다.
-	if (!InvokeServiceCallback("OnSend", [&] { OnSend(session, bytesTransferred); }))
+	// 통지를 Job 큐에 등록한 뒤, 이번 I/O의 송신 상태와 패킷을 정리합니다.
+	if (session->IsServiceReady() && !EnqueueServiceEvent(*session, ServiceEvent::Sent,
+		[this, bytesTransferred](ISession& sent) { OnSend(&sent, bytesTransferred); }))
 		session->RequestDisconnect(DisconnectReason::ServiceError);
 	session->OnSendCompleted(bytesTransferred);
 }
@@ -1128,7 +1172,9 @@ IOCPServer::SystemPacketResult IOCPServer::HandleAuthRequest(ClientSession& sess
 	if (!session.Establish())
 		return SystemPacketResult::Failed;
 	LOGI("session %u session established", session.GetSessionID());
-	return SystemPacketResult::Ok;
+	return EnqueueServiceEvent(session, ServiceEvent::Ready,
+		[this](ISession& ready) { OnSessionEstablished(&ready); })
+		? SystemPacketResult::Ok : SystemPacketResult::Failed;
 }
 
 PacketHandle IOCPServer::CreateAuthResponse(SYSTEM_AUTH_RESULT authResult)

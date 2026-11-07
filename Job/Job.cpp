@@ -1,5 +1,6 @@
 #include "../Core/EngineExecutionScope.h"
 #include "Job.h"
+#include "../Session/ClientSession.h"
 #include "../HandlerTable/PacketHandler.h"
 #include "../../Core/Util/Logger.h"
 #include <utility> // for std::move
@@ -18,6 +19,7 @@ bool Job::InitializePacketJob(const PacketHandler& handler, ISession* session,
     m_packetId = packetId;
     m_context = &context;
     m_type = JobType::PACKET;
+    m_sessionReference = static_cast<ClientSession*>(session)->AcquireReference().release();
 
     return true;
 }
@@ -52,16 +54,27 @@ bool Job::SetSystemJob(SystemHandlerFunc handler, IOCPCore* core,
     return true;
 }
 
-PacketHandle Job::TakePacket() noexcept
+bool Job::InitializeServiceEvent(ClientSession& session, ServiceEvent event, SessionTask task)
 {
-    if (m_type != JobType::PACKET)
-        return {};
-    return std::move(m_payload);
+    if (m_type != JobType::NONE || !task)
+        return false;
+    m_serviceTask = std::move(task);
+    m_event = event;
+    m_type = JobType::SERVICE_EVENT;
+    m_sessionReference = session.AcquireReference().release();
+    return true;
 }
 
 void Job::Execute()
 {
 	EngineExecutionScope execution;
+    if (m_type == JobType::SERVICE_EVENT)
+    {
+        m_sessionReference->ExecuteServiceEvent(m_event, m_serviceTask);
+        return;
+    }
+    if (m_sessionReference && m_sessionReference->IsClosing())
+        return;
     if (!m_context)
     {
         LOGE("job (type %d, packet id %u) has no handler context, skipping",
@@ -83,7 +96,6 @@ void Job::Execute()
             const bool result = (*m_packetHandler)(static_cast<ISession*>(m_target),
                 reinterpret_cast<const char*>(bytes.data()),
                 size, *m_context);
-            // 콜백이 패킷 소유권을 옮겼을 수 있으므로 이후에는 버퍼를 읽지 않습니다.
             if (!result)
                 LOGW("packet handler for id %u returned failure", m_packetId);
         }

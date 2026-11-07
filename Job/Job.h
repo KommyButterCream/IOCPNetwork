@@ -1,12 +1,14 @@
 #pragma once
 #include "../Buffer/PacketHandle.h"
 #include "JobDefs.h"
+#include "../Session/ISession.h"
 
 class SessionJobQueue;
 class PacketHandler;
+class ClientSession;
 
 // Job은 풀의 고정 주소에 두고 소유 핸들만 이동합니다.
-// 핸들러·대상·컨텍스트는 빌린 참조이므로 작업 실행이 끝날 때까지 유지합니다.
+// 세션 Job은 연결 참조를 보유합니다. DB/System 대상과 핸들러·컨텍스트는 실행 종료까지 유지합니다.
 class alignas(64) Job final
 {
 public:
@@ -27,13 +29,19 @@ public:
     [[nodiscard]] bool SetSystemJob(SystemHandlerFunc handler, IOCPCore* core,
         PacketHandle&& payload, const HandlerContext& context);
 
+    // 연결 이벤트 또는 외부 작업을 보관하며, 반환할 때까지 세션을 보호합니다.
+    [[nodiscard]] bool InitializeServiceEvent(ClientSession& session, ServiceEvent event, SessionTask task);
+
     [[nodiscard]] JobType GetType() const noexcept { return m_type; }
 
-    [[nodiscard]] PacketHandle TakePacket() noexcept;
     void Execute();
 
 private:
     friend class SessionJobQueue;
+    friend class JobDeleter;
+    ClientSession* m_sessionReference = nullptr;
+    ServiceEvent m_event = ServiceEvent::Task;
+    SessionTask m_serviceTask;
     Job* m_next = nullptr;
     void* m_target = nullptr;
     union

@@ -184,3 +184,8 @@ uint32_t SessionManager::DisconnectZombieSessions(uint64_t heartbeatTimeout_ms,
 	return m_clientSessionPool->DisconnectZombieSessions(::GetTickCount64(), heartbeatTimeout_ms,
 		stalledPeerTimeout_ms, releaseBudget_ms);
 }
+
+ClientSession::Reference SessionManager::AcquireConnection(ConnectionId id) const
+{
+	return m_clientSessionPool ? m_clientSessionPool->AcquireConnection(id) : ClientSession::Reference{};
+}

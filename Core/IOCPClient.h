@@ -3,6 +3,8 @@
 #include <atomic> // for std::atomic
 #include <memory> // for std::unique_ptr
 #include <mutex> // for std::mutex
+#include <shared_mutex> // for std::shared_mutex
+#include <utility> // for std::move
 #include <cstddef> // for std::byte
 #include <span> // for std::span
 
@@ -25,6 +27,7 @@ enum class IO_OPERATION;
 struct OverlappedEx;
 
 class ClientSession;
+enum class ServiceEvent;
 namespace ENGINE_POOL { struct EnginePools; }
 class ClientJobWorker;
 class ClientWatchdogTask;
@@ -45,18 +48,8 @@ public:
 	// 시작과 종료
 	// iocpThreadCount 는 GQCS 워커 수다. 0 이면 기본값 2 를 쓴다.
 	//
-	// 왜 서버처럼 논리 프로세서 수가 아닌가.
-	//   클라의 세션은 하나이고, 그 세션에 걸린 WSARecv 도 하나뿐이다
-	//   (m_recvOverlapped 가 세션당 하나). 그래서 수신 완료는 스레드를
-	//   아무리 늘려도 직렬로 처리된다. 늘려서 얻는 것은 병렬 파싱이 아니라
-	//   "하나가 붙들려도 다른 하나가 큐를 계속 비운다" 뿐이다.
-	//
-	// 그 하나가 필요한 이유는 접속·송신 완료 콜백이 워커 스레드에서
-	// 실행되기 때문이다. 그래서 최소 2 다.
-	//
-	// 조절할 수 있게 연 이유는 그 콜백이 무거운 서비스가 있기 때문이다.
-	// 다만 늘린다고 처리량이 비례해 늘지는 않는다 — 클라의 진짜 상한은
-	// 잡을 실행하는 ClientJobWorker 스레드 하나다.
+	// 완료 처리는 최소 2개 워커를 유지하고, 서비스 이벤트와 핸들러는 ClientJobWorker가 직렬 실행합니다.
+	// 워커 수를 늘려도 같은 연결의 서비스 작업이 병렬 실행되지는 않습니다.
 	//
 	// poolConfig 의 사정은 IOCPServer::StartServer 의 같은 인자 주석과 같다.
 	//
@@ -95,19 +88,32 @@ public:
 		catch (const std::bad_alloc&) { return false; }
 	}
 
+	// 외부에서 만든 핸들은 Stop 전에 모두 반환하고, 생성 작업도 Stop과 겹치지 않게 합니다.
 	[[nodiscard]] IOCP_ENGINE_API PacketHandle CreatePacket(std::size_t size) const;
 	[[nodiscard]] IOCP_ENGINE_API SharedPacketHandle CreateSharedPacket(PacketHandle packet) const;
-	IOCP_ENGINE_API ISession* GetSession() const;
+	IOCP_ENGINE_API ConnectionId GetConnectionId() const;
+	IOCP_ENGINE_API bool IsConnected() const;
 
-	// 서비스 송신입니다. Queued는 큐 등록 성공이며 전달한 핸들은 실패해도 소비합니다.
-	// 외부 송신과 Stop은 호출자가 동기화하며, 송신 대상 세션은 엔진이 선택합니다.
+	// 식별자로 연결을 조회하고 작업이 끝날 때까지 보호합니다. 만료된 ID는 Closed를 반환합니다.
+	[[nodiscard]] IOCP_ENGINE_API SendResult Send(ConnectionId id, PacketHandle packet);
+	[[nodiscard]] IOCP_ENGINE_API SendResult Send(ConnectionId id, SharedPacketHandle packet);
+	template<FixedServicePacket Packet>
+	[[nodiscard]] SendResult Send(ConnectionId id, const Packet& packet)
+	{
+		return SendPacketCopy(id, PacketTraits<Packet>::id, std::as_bytes(std::span(&packet, 1)));
+	}
+	// 종료 요청은 기다리지 않습니다. Post의 true는 등록 성공이며 실행 완료를 뜻하지 않습니다.
+	// Post는 준비된 연결에서만 받으며, 이후 종료되면 대기 중인 작업을 실행하지 않습니다.
+	[[nodiscard]] IOCP_ENGINE_API bool RequestDisconnect(ConnectionId id, DisconnectReason reason = DisconnectReason::LocalRequest);
+	[[nodiscard]] IOCP_ENGINE_API bool Post(ConnectionId id, SessionTask task);
+	// 현재 연결을 대상으로 하며, 아직 연결이 없으면 NotReady를 반환합니다.
 	[[nodiscard]] IOCP_ENGINE_API SendResult Send(PacketHandle packet);
 	[[nodiscard]] IOCP_ENGINE_API SendResult Send(SharedPacketHandle packet);
-	// 고정 패킷은 반환 전에 엔진 버퍼로 복사하며, ID와 길이는 타입 정의로 설정합니다.
 	template<FixedServicePacket Packet>
 	[[nodiscard]] SendResult Send(const Packet& packet)
 	{
-		return SendPacketCopy(PacketTraits<Packet>::id, std::as_bytes(std::span(&packet, 1)));
+		const auto id = GetConnectionId();
+		return id ? Send(id, packet) : SendResult::NotReady;
 	}
 
 protected:
@@ -115,8 +121,13 @@ protected:
 	// 핸들러에 전달할 서비스 객체를 파생 클래스에서 지정한다.
 	IOCP_ENGINE_API virtual void* GetServiceContext();
 
+	// 같은 연결의 접속 → 준비 → 패킷·Post·송신 통지는 직렬 실행합니다(스레드 고정 아님).
+	// 종료 요청 후 대기 중 일반 작업은 실행하지 않으며, 실행 중 작업·I/O 반환 후 종료를 한 번 통지합니다.
+	// 종료 콜백은 마지막 참조를 반환하는 스레드에서 실행될 수 있습니다.
 	// 서비스 이벤트
+	// TCP 연결 통지입니다. 서비스 송신은 OnSessionEstablished부터 가능합니다.
 	virtual void OnClientConnect(ISession*) {};
+	// 인증 성공 후 서비스 통신을 시작할 수 있을 때 한 번 호출합니다.
 	virtual void OnSessionEstablished(ISession*) {};
 	// reason 은 이 연결이 왜 끝났는지다.
 	//
@@ -139,13 +150,17 @@ protected:
 	// 못했다. StartClient 는 ConnectEx 를 건 시점에 true 를 돌려주므로,
 	// 실패를 알 방법도 재시도를 걸 근거도 없었다.
 	virtual void OnConnectFailed(int) {};
+	// 준비 완료 후 성공한 송신 I/O의 바이트 통지입니다. 상대의 처리 완료를 의미하지 않습니다.
 	virtual void OnSend(ISession*, uint32_t) {};
 
 private:
 	// 템플릿을 사용하는 소비 DLL에서도 호출하므로 내부 연결 함수는 export합니다.
 	IOCP_ENGINE_API bool RegisterHandlerBinding(uint16_t packetId, PacketHandler handler);
-	IOCP_ENGINE_API SendResult SendPacketCopy(uint16_t packetId, std::span<const std::byte> bytes);
+	IOCP_ENGINE_API SendResult SendPacketCopy(ConnectionId id, uint16_t packetId, std::span<const std::byte> bytes);
 	bool EnqueueJob(ISession* session, uint16_t packetId, PacketHandle packet);
+	bool EnqueueServiceEvent(ClientSession& session, ServiceEvent event, SessionTask task);
+	// 반환된 포인터의 참조 하나를 즉시 ClientSession::Reference로 인수합니다.
+	ClientSession* AcquireConnection(ConnectionId id) const;
 
 	// 내부 타입
 	// for ConnectEx
@@ -206,6 +221,8 @@ private:
 private:
 	// 시작·종료만 직렬화한다. 송수신 워커는 이 락을 사용하지 않는다.
 	std::mutex m_controlMutex;
+	mutable std::shared_mutex m_apiMutex;
+	bool m_apiOpen = false;
 	bool m_running = false;
 
 	// 연결 종료 선점

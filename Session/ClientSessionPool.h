@@ -35,6 +35,7 @@ public:
 	ClientSession* Acquire(uint32_t remoteAddress = 0, uint32_t addressLimit = 0);
 	// 인증 성공에 필요한 수량을 예약한다. 실패·종료 후 최종 반환 시 자동 해제한다.
 	bool TryAdmit(ClientSession& session, uint32_t capacity);
+	[[nodiscard]] ClientSession::Reference AcquireConnection(ConnectionId id) const;
 
 	// 풀 용량과 사용 중인 슬롯을 조회한다.
 	uint32_t GetSessionCount() const;

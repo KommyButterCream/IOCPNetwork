@@ -18,5 +18,9 @@ enum class JobType : uint8_t
 	NONE,
 	PACKET,
 	DB,
-	SYSTEM
+	SYSTEM,
+	SERVICE_EVENT
 };
+
+// 연결 이벤트와 외부 서비스 작업의 실행 순서를 같은 세션 큐에서 관리합니다.
+enum class ServiceEvent { Connected, Ready, Sent, ConnectFailed, Task };

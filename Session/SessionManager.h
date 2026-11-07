@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include "SessionDefs.h"
+#include "ClientSession.h"
 
 #include "../Buffer/SessionBufferConfig.h"
 #include <memory> // for std::unique_ptr
@@ -74,6 +75,7 @@ public:
 
 	ClientSession* AcquireClientSession(uint32_t remoteAddress = 0, uint32_t addressLimit = 0);
 	bool TryAdmitClientSession(ClientSession& session, uint32_t capacity);
+	[[nodiscard]] ClientSession::Reference AcquireConnection(ConnectionId id) const;
 
 	void RequestAllRecvSendIOCancel();
 	IOWaitResult WaitForAllRecvSendIOCancelComplete(const uint32_t timeout_ms);

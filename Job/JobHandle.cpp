@@ -1,5 +1,6 @@
 #include "JobHandle.h"
 #include "Job.h"
+#include "../Session/ClientSession.h"
 #include "../HandlerTable/PacketHandlerTable.h"
 #include <utility> // for std::move
 #include "../Memory/TlsMemoryPool.h"
@@ -13,8 +14,12 @@ void JobDeleter::operator()(Job* job) const noexcept
     if (!job)
         return;
     LOGT("job release %p", job);
+    auto* session = job->m_sessionReference;
     std::destroy_at(job);
     m_pool->Release(job);
+    // Job과 패킷을 풀에 반환한 뒤 마지막 세션 참조를 놓습니다.
+    if (session)
+        session->ReleaseReference();
 }
 
 JobHandle MEMORY_POOL::CreateJobHandle(TlsMemoryPool& pool)

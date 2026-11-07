@@ -133,22 +133,7 @@ bool IOCPClient::StartResources(const char* serverIp, const uint16_t port, const
 		return false;
 	}
 
-	// 워커 2개.
-	//
-	// 예전에는 이 숫자가 데드락 회피책이었다. disconnect 경로가 완료 핸들러
-	// 안에서 WaitForIOCancelComplete 로 최대 10초를 기다렸고, 그 대기를 풀어
-	// 줄 취소 완료 통지를 처리할 스레드가 바로 그 막힌 워커 자신이었다.
-	// 워커가 1개면 확정 데드락, 2개면 "둘 다 대기에 들어가지만 않으면" 이라는
-	// 조건부 회피였다. 실제로는 둘 다 들어가는 일이 잦아서 실행당 200회 넘게
-	// 10초 타임아웃을 태웠다.
-	//
-	// 이제 그 대기가 없다. disconnect 는 예약만 하고, 마지막 완료가 마무리한다.
-	// 2개를 유지하는 이유는 다른 것이다 — 접속·송신 완료 콜백이 워커
-	// 스레드에서 실행되므로, 하나가 서비스 코드에 붙들려 있어도 나머지 하나가
-	// 완료 통지를 계속 꺼낼 수 있어야 한다.
-	//
-	// 그래서 1 은 받지 않는다. 그 이유가 사라지기 때문이다.
-	// (기본값과 상한의 사정은 IOCPClient.h 의 선언 주석 참고)
+	// 완료 처리 워커는 기본 2개를 유지합니다. 서비스 이벤트는 별도 Job 워커에서 실행합니다.
 	constexpr uint32_t DEFAULT_CLIENT_IOCP_THREADS = 2;
 	constexpr uint32_t MIN_CLIENT_IOCP_THREADS = 2;
 
@@ -156,8 +141,7 @@ bool IOCPClient::StartResources(const char* serverIp, const uint16_t port, const
 
 	if (workerCount < MIN_CLIENT_IOCP_THREADS)
 	{
-		LOGW("client iocp thread count %u raised to %u : one worker must stay free to drain completions "
-			"while another is inside a service callback",
+		LOGW("client iocp thread count %u raised to %u (configured minimum)",
 			workerCount, MIN_CLIENT_IOCP_THREADS);
 		workerCount = MIN_CLIENT_IOCP_THREADS;
 	}
@@ -190,12 +174,11 @@ void IOCPClient::StopClient()
 void IOCPClient::StopResources()
 {
 	LOGI("client shutting down");
+	{ std::unique_lock lock(m_apiMutex); m_apiOpen = false; }
 
 	// 예약과 실행은 먼저 정지한다. 늦은 인증 응답이 참조할 작업 객체는 워커 조인까지 유지한다.
 	if (m_backgroundTasks)
 		m_backgroundTasks->StopAll();
-
-	m_clientJobWorker.reset();
 
 	if (m_session)
 	{
@@ -212,6 +195,14 @@ void IOCPClient::StopResources()
 				::Sleep(50);
 		}
 	}
+
+	StopCompletionWorkers();
+	if (m_session)
+	{
+		while (!m_session->WaitForDisconnect(10'000))
+			LOGW("client shutdown waiting for service jobs and connection references");
+	}
+	m_clientJobWorker.reset();
 
 	// [2] IOCP 정지. GQCS 워커 스레드를 조인한다.
 	//     이 시점 이후로는 완료 통지가 발생하지 않으므로
@@ -264,31 +255,65 @@ bool IOCPClient::RegisterHandlerBinding(uint16_t id, PacketHandler handler)
 	}
 }
 
+ClientSession* IOCPClient::AcquireConnection(ConnectionId id) const
+{
+	std::shared_lock lock(m_apiMutex);
+	if (!m_apiOpen || !id || !m_session || m_session->GetConnectionId() != id)
+		return nullptr;
+	return m_session->TryAcquireReference().release();
+}
+
+SendResult IOCPClient::Send(ConnectionId id, PacketHandle packet)
+{
+	ClientSession::Reference session(AcquireConnection(id));
+	return session ? session->Send(std::move(packet)) : SendResult::Closed;
+}
+
+SendResult IOCPClient::Send(ConnectionId id, SharedPacketHandle packet)
+{
+	ClientSession::Reference session(AcquireConnection(id));
+	return session ? session->Send(std::move(packet)) : SendResult::Closed;
+}
+
+SendResult IOCPClient::SendPacketCopy(ConnectionId id, uint16_t packetId, std::span<const std::byte> bytes)
+{
+	ClientSession::Reference session(AcquireConnection(id));
+	return session ? session->SendCopy(packetId, bytes) : SendResult::Closed;
+}
+
+bool IOCPClient::RequestDisconnect(ConnectionId id, DisconnectReason reason)
+{
+	ClientSession::Reference session(AcquireConnection(id));
+	if (!session)
+		return false;
+	session->RequestDisconnect(reason);
+	return true;
+}
+
+bool IOCPClient::Post(ConnectionId id, SessionTask task)
+{
+	ClientSession::Reference session(AcquireConnection(id));
+	return session && session->IsServiceReady() && EnqueueServiceEvent(*session, ServiceEvent::Task, std::move(task));
+}
+
+bool IOCPClient::EnqueueServiceEvent(ClientSession& session, ServiceEvent event, SessionTask task)
+{
+	auto job = MEMORY_POOL::CreateJobHandle(*m_memoryPools->job);
+	if (!job || !job->InitializeServiceEvent(session, event, std::move(task)))
+		return false;
+	return session.EnqueueJob(std::move(job));
+}
+
 SendResult IOCPClient::Send(PacketHandle packet)
 {
-	return m_session ? m_session->Send(std::move(packet)) : SendResult::NotReady;
+	const auto id = GetConnectionId();
+	return id ? Send(id, std::move(packet)) : SendResult::NotReady;
 }
 
 SendResult IOCPClient::Send(SharedPacketHandle packet)
 {
-	return m_session ? m_session->Send(std::move(packet)) : SendResult::NotReady;
-}
-
-SendResult IOCPClient::SendPacketCopy(uint16_t packetId, std::span<const std::byte> bytes)
-{
-	if (!m_memoryPools || !m_memoryPools->IsInitialized())
-		return SendResult::NotReady;
-	if (bytes.size() < sizeof(PACKET_HEADER) || !IsServicePacketId(packetId))
-		return SendResult::InvalidPacket;
-	if (bytes.size() > PACKET_SIZE_LIMIT)
-		return SendResult::PacketTooLarge;
-	auto packet = CreatePacket(bytes.size());
-	if (!packet)
-		return SendResult::NoMemory;
-	std::memcpy(packet.MutableView().data(), bytes.data(), bytes.size());
-	const PACKET_HEADER header(packetId, static_cast<uint16_t>(bytes.size()));
-	std::memcpy(packet.MutableView().data(), &header, sizeof(header));
-	return Send(std::move(packet));
+	const auto id = GetConnectionId();
+	return id ? Send(id, std::move(packet)) : SendResult::NotReady;
 }
 
 PacketHandle IOCPClient::CreatePacket(std::size_t size) const
@@ -301,10 +326,18 @@ SharedPacketHandle IOCPClient::CreateSharedPacket(PacketHandle packet) const
 	return m_memoryPools ? m_memoryPools->context.CreateSharedPacket(std::move(packet)) : SharedPacketHandle{};
 }
 
-ISession* IOCPClient::GetSession() const
+ConnectionId IOCPClient::GetConnectionId() const
 {
-	return m_session.get();
+	std::shared_lock lock(m_apiMutex);
+	return m_apiOpen && m_session ? m_session->GetConnectionId() : ConnectionId{};
 }
+
+bool IOCPClient::IsConnected() const
+{
+	ClientSession::Reference session(AcquireConnection(GetConnectionId()));
+	return session && session->IsServiceReady();
+}
+
 
 // 서비스 작업 등록과 컨텍스트
 
@@ -373,6 +406,7 @@ bool IOCPClient::StartConnection(const SessionBufferConfig& bufferConfig, const 
 
 	// 서버와의 통신을 위한 세션 생성
 	m_session = std::make_unique<ClientSession>();
+	m_session->SetOwnerCallbacks({this, &IOCPClient::OnDisconnectRequest, &IOCPClient::OnReleaseReady});
 	if (!m_session->Initialize(SESSION_ROLE::CLIENT, 0))
 	{
 		LOGE("failed to initialize the client session");
@@ -380,7 +414,6 @@ bool IOCPClient::StartConnection(const SessionBufferConfig& bufferConfig, const 
 	}
 	if (!m_session->InitializeMemoryPool(m_memoryPools->job.get(), m_memoryPools->packet.get(), bufferConfig))
 		return false;
-	m_session->SetOwnerCallbacks({this, &IOCPClient::OnDisconnectRequest, &IOCPClient::OnReleaseReady});
 
 	// 세션에 소켓 설정
 	if (!m_session->AttachSocket(std::move(socket)))
@@ -406,6 +439,7 @@ bool IOCPClient::StartConnection(const SessionBufferConfig& bufferConfig, const 
 
 	// 비동기 Connect To Server
 	// 연결에 대한 통지를 GQCS 에서 처리 한다.
+	{ std::unique_lock lock(m_apiMutex); m_apiOpen = true; }
 	if (!PostConnect(m_session.get()))
 	{
 		return false;
@@ -612,13 +646,14 @@ bool IOCPClient::RunClientConnectSequence()
 	m_session->OnConnect();
 
 	// 인증 응답보다 서비스의 접속 통지가 먼저 도착해야 한다.
-	if (!InvokeServiceCallback("OnClientConnect", [&] { OnClientConnect(m_session.get()); }))
+	if (!EnqueueServiceEvent(*m_session, ServiceEvent::Connected,
+		[this](ISession& connected) { OnClientConnect(&connected); }))
 	{
 		m_session->RequestDisconnect(DisconnectReason::ServiceError);
 		return false;
 	}
 
-	// 접속 콜백이 만든 컨텍스트를 수신 워커에 공개한 뒤 첫 수신을 건다.
+	// 접속 이벤트 뒤에 준비 이벤트와 서비스 패킷이 등록됩니다.
 	m_session->ContinueReceive();
 	if (!SendSystemAuthRequest(m_session.get()))
 	{
@@ -643,7 +678,12 @@ void IOCPClient::HandleConnectFailure(ClientSession* clientSession, int errorCod
 	{
 		// 서비스 콜백이 다른 종료를 요청해도 접속 실패 사유가 먼저 보존된다.
 		clientSession->RequestDisconnect(DisconnectReason::ConnectFailed);
-		(void)InvokeServiceCallback("OnConnectFailed", [&] { OnConnectFailed(errorCode); });
+		if (!EnqueueServiceEvent(*clientSession, ServiceEvent::ConnectFailed,
+			[this, errorCode](ISession&) { OnConnectFailed(errorCode); }))
+		{
+			// 접속 실패 시에는 다른 서비스 Job이 없으므로 풀 고갈 때도 한 번 통지합니다.
+			(void)InvokeServiceCallback("OnConnectFailed", [&] { OnConnectFailed(errorCode); });
+		}
 	}
 	else
 		clientSession->RequestDisconnect(DisconnectReason::LocalShutdown);
@@ -691,8 +731,9 @@ void IOCPClient::HandleSend(ClientSession* session, DWORD bytesTransferred)
 {
 	ENGINE_CHECK_RETVOID(session->GetSessionRole() == SESSION_ROLE::CLIENT,
 		"unexpected session role for send completion on session %u", session->GetSessionID());
-	// 콜백 실패 시 새 송신을 막되, 이번 완료의 송신 상태와 패킷은 반드시 정리한다.
-	if (!InvokeServiceCallback("OnSend", [&] { OnSend(session, bytesTransferred); }))
+	// 통지를 Job 큐에 등록한 뒤, 이번 I/O의 송신 상태와 패킷을 정리합니다.
+	if (session->IsServiceReady() && !EnqueueServiceEvent(*session, ServiceEvent::Sent,
+		[this, bytesTransferred](ISession& sent) { OnSend(&sent, bytesTransferred); }))
 		session->RequestDisconnect(DisconnectReason::ServiceError);
 	session->OnSendCompleted(bytesTransferred);
 }
@@ -795,7 +836,8 @@ DisconnectReason IOCPClient::HandleAuthResponse(ClientSession& session, std::spa
 		m_clientWatchdog->Arm(response->heartbeatIntervalMs);
 	}
 
-	if (!InvokeServiceCallback("OnSessionEstablished", [&] { OnSessionEstablished(&session); }))
+	if (!EnqueueServiceEvent(session, ServiceEvent::Ready,
+		[this](ISession& ready) { OnSessionEstablished(&ready); }))
 		return DisconnectReason::ServiceError;
 	return DisconnectReason::Unknown;
 }

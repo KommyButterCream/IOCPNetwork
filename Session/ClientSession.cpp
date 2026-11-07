@@ -20,6 +20,8 @@
 using namespace Core::Sync;
 using namespace Core::Util;
 
+namespace { std::atomic<uint64_t> nextConnectionGeneration{1}; }
+
 
 // 발행과 취소 사이에 틈이 없도록 소켓 호출까지 같은 락에서 실행한다.
 // 동기 성공과 pending은 완료 통지를 기다리고 즉시 실패는 집계하지 않는다.
@@ -105,6 +107,7 @@ bool ClientSession::AttachSocket(UniqueSocket socket, const char* remoteIP, uint
 		ENGINE_VIOLATION("session %u could not take ownership of a connection socket", GetSessionID());
 		return false;
 	}
+	m_generation.store(nextConnectionGeneration.fetch_add(1));
 	(void)socket.Release();
 	if (remoteIP)
 	{
@@ -158,8 +161,7 @@ void ClientSession::OnConnect()
 	UpdateLastRecvTick();
 	UpdateLastHeartbeatTick();
 
-	// 접속 통지의 짝을 기록한다. 첫 수신은 서비스의 접속 콜백이 끝난 뒤 엔진이 발행한다.
-	m_serviceConnectNotified.store(true);
+	// 서비스의 접속 통지는 세션 Job 큐에서 실행합니다.
 }
 
 void ClientSession::RequestDisconnect(DisconnectReason reason)
@@ -195,6 +197,12 @@ void ClientSession::FinishDisconnect(CloseSocketFunc closeSocket, SessionDisconn
 	ClearRemoteAddress();
 	m_state.store(State::Disconnected);
 	LOGI("session %u disconnected (role %d)", GetSessionID(), static_cast<int>(m_sessionRole));
+	// 완료를 공개한 뒤에는 종료 대기자가 객체를 정리할 수 있으므로 더 이상 멤버에 접근하지 않습니다.
+	{
+		SRWWriteLockGuard lock(m_lifetimeLock);
+		m_disconnectComplete = true;
+		::WakeAllConditionVariable(&m_ioCompleted);
+	}
 }
 
 void ClientSession::ResetSession()
@@ -203,8 +211,11 @@ void ClientSession::ResetSession()
 	{
 		SRWWriteLockGuard lock(m_lifetimeLock);
 		m_cancelled = false;
+		m_disconnectComplete = false;
 	}
+	m_generation.store(0);
 	m_state.store(State::Ready);
+	m_serviceReady.store(false);
 	m_disconnectReason.store(DisconnectReason::Unknown);
 	m_processing.store(false);
 	m_recvPauseCount.store(0, std::memory_order_relaxed);
@@ -293,6 +304,15 @@ ClientSession::Reference ClientSession::AcquireReference()
 	return Reference(this);
 }
 
+ClientSession::Reference ClientSession::TryAcquireReference()
+{
+	SRWWriteLockGuard lock(m_lifetimeLock);
+	if (m_cancelled)
+		return {};
+	++m_referenceCount;
+	return Reference(this);
+}
+
 void ClientSession::ReturnReference::operator()(ClientSession* session) const noexcept
 {
 	session->ReleaseReference();
@@ -366,6 +386,7 @@ bool ClientSession::CancelPendingIO()
 	{
 		SRWWriteLockGuard lock(m_lifetimeLock);
 		m_cancelled = true;
+		m_serviceReady.store(false);
 		pause = TakeReceivePauseLocked();
 		error = CancelSocketIOLocked();
 	}
@@ -593,7 +614,59 @@ uint32_t ClientSession::GetRecvPauseCount() const
 	return m_recvPauseCount.load(std::memory_order_relaxed);
 }
 
+// 서비스 이벤트와 종료 대기
+
+bool ClientSession::IsClosing() const
+{
+	SRWReadLockGuard lock(m_lifetimeLock);
+	return m_cancelled;
+}
+
+void ClientSession::ExecuteServiceEvent(ServiceEvent event, const SessionTask& task)
+{
+	{
+		SRWWriteLockGuard lock(m_lifetimeLock);
+		if (event == ServiceEvent::Connected)
+			m_serviceConnectNotified.store(true);
+		else if (event != ServiceEvent::ConnectFailed && m_cancelled)
+			return;
+		if (event == ServiceEvent::Ready)
+			m_serviceReady.store(true);
+		if (event == ServiceEvent::Sent && !m_serviceReady.load())
+			return;
+	}
+	// 종료 요청과 시작 판정을 직렬화하되 사용자 코드는 락 밖에서 실행합니다.
+	task(*this);
+}
+
+bool ClientSession::WaitForDisconnect(uint32_t timeoutMs)
+{
+	SRWWriteLockGuard lock(m_lifetimeLock);
+	if (!m_disconnectComplete)
+		::SleepConditionVariableSRW(&m_ioCompleted, &m_lifetimeLock, timeoutMs, 0);
+	return m_disconnectComplete;
+}
+
 // 송신 큐와 부분 송신
+
+SendResult ClientSession::SendCopy(uint16_t packetId, std::span<const std::byte> bytes)
+{
+	if (IsClosing())
+		return SendResult::Closed;
+	if (!IsServiceReady())
+		return SendResult::NotReady;
+	if (bytes.size() < sizeof(PACKET_HEADER) || !IsServicePacketId(packetId))
+		return SendResult::InvalidPacket;
+	if (bytes.size() > m_bufferConfig.maxSendPacketSize || bytes.size() > PACKET_SIZE_LIMIT)
+		return SendResult::PacketTooLarge;
+	auto packet = MEMORY_POOL::CreatePacketHandle(*m_packetMemoryPool, bytes.size());
+	if (!packet)
+		return SendResult::NoMemory;
+	std::memcpy(packet.MutableView().data(), bytes.data(), bytes.size());
+	const PACKET_HEADER header(packetId, static_cast<uint16_t>(bytes.size()));
+	std::memcpy(packet.MutableView().data(), &header, sizeof(header));
+	return Send(std::move(packet));
+}
 
 SendResult ClientSession::Send(PacketHandle packet)
 {
@@ -645,7 +718,7 @@ SendResult ClientSession::ValidateSend(std::span<const std::byte> bytes, bool se
 	if (state == State::Disconnected || state == State::TimedOut)
 		return SendResult::Closed;
 	if (IsServicePacketId(header.packetId))
-		return state == State::Established ? SendResult::Queued : SendResult::NotReady;
+		return (state == State::Established && m_serviceReady.load()) ? SendResult::Queued : SendResult::NotReady;
 	return IsTransportConnected() ? SendResult::Queued : SendResult::NotReady;
 }
 
@@ -756,31 +829,6 @@ bool ClientSession::TryClaimProcessing()
 void ClientSession::ReleaseProcessing()
 {
 	m_processing.store(false);
-}
-
-void ClientSession::SetCurrentJob(Job* job)
-{
-	// 클라이언트 핸들러가 실행되는 동안만 현재 Job을 빌린다.
-	m_currentJob = job;
-}
-
-PacketHandle ClientSession::TakeCurrentPacket()
-{
-	// 현재 Job을 연결하는 스케줄러는 클라이언트 쪽뿐이다.
-	if (GetSessionRole() != SESSION_ROLE::CLIENT)
-	{
-		ENGINE_VIOLATION(
-			"session %u TakeCurrentPacket is client-only",
-			GetSessionID());
-
-		return {};
-	}
-
-	// 잡 사이에는 널이다. 스케줄러가 반납 직전에 끊어 둔다.
-	if (!m_currentJob)
-		return {};
-
-	return m_currentJob->TakePacket();
 }
 
 // 서비스 컨텍스트와 원격 주소

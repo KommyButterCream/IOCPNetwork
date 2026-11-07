@@ -157,7 +157,6 @@ void ClientSessionPool::RequestAllRecvSendIOCancel()
 
 		if (!session)
 			continue;
-		session->GetJobQueue().RequestStop();
 
 		if (!session->CancelPendingIO())
 			ENGINE_VIOLATION("session %u could not cancel IO during shutdown", session->GetSessionID());
@@ -182,7 +181,7 @@ IOWaitResult ClientSessionPool::WaitForAllRecvSendIOCancelComplete(const uint32_
 
 void ClientSessionPool::DisconnectAllSessions()
 {
-	// 워커 종료 후에는 연결 상태와 관계없이 아직 대여 중인 세션을 회수한다.
+	// 워커가 살아 있는 동안 반환을 예약하고, 마지막 Job·I/O 참조가 실제 정리를 맡습니다.
 	for (uint32_t i = 0; i < m_capacity; ++i)
 	{
 		if (auto session = TryAcquireSessionReference(i))
@@ -404,6 +403,17 @@ ClientSession::Reference ClientSessionPool::TryAcquireSessionReference(uint32_t 
 	}
 
 	// 읽기 락을 보유한 동안에는 Release가 이 슬롯을 RELEASING으로 바꿀 수 없습니다.
+	return node.session->AcquireReference();
+}
+
+ClientSession::Reference ClientSessionPool::AcquireConnection(ConnectionId id) const
+{
+	Core::Sync::SRWReadLockGuard lock(m_lock);
+	if (!id || id.sessionId >= m_capacity)
+		return {};
+	const auto& node = m_nodes[id.sessionId];
+	if (node.state != SessionNode::State::InUse || node.session->GetConnectionId() != id)
+		return {};
 	return node.session->AcquireReference();
 }
 
