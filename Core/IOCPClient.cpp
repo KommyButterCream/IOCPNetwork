@@ -645,9 +645,7 @@ bool IOCPClient::HandleReceivedPacket(ClientSession& session, uint16_t packetId,
 		return false;
 	}
 
-	const auto* data = reinterpret_cast<const char*>(packet.View().data());
-	const auto size = static_cast<uint32_t>(packet.Size());
-	const auto reason = HandleSystemPacket(&session, packetId, data, size);
+	const auto reason = HandleSystemPacket(session, packetId, packet.View());
 	if (reason == DisconnectReason::Unknown)
 		return true;
 	session.RequestDisconnect(reason);
@@ -666,9 +664,9 @@ void IOCPClient::HandleSend(ClientSession* session, DWORD bytesTransferred)
 
 // 인증과 하트비트
 
-DisconnectReason IOCPClient::HandleSystemPacket(ClientSession* session, uint16_t packetId, const char* packetData, uint32_t packetSize)
+DisconnectReason IOCPClient::HandleSystemPacket(ClientSession& session, uint16_t packetId, std::span<const std::byte> packet)
 {
-	if (!session || !packetData)
+	if (packet.empty())
 	{
 		return DisconnectReason::ProtocolError;
 	}
@@ -676,13 +674,13 @@ DisconnectReason IOCPClient::HandleSystemPacket(ClientSession* session, uint16_t
 	switch (static_cast<PACKET_ID>(packetId))
 	{
 	case PACKET_ID::SC_SYSTEM_AUTH_RESPONSE:
-		return HandleAuthResponse(session, packetData, packetSize);
+		return HandleAuthResponse(session, packet);
 
 	case PACKET_ID::SC_SYSTEM_HEARTBEAT_REQUEST:
-		return HandleHeartbeatRequest(session, packetData, packetSize);
+		return HandleHeartbeatRequest(session, packet);
 
 	default:
-		LOGW("session %u unhandled system packet id: %u", session->GetSessionID(), packetId);
+		LOGW("session %u unhandled system packet id: %u", session.GetSessionID(), packetId);
 		return DisconnectReason::ProtocolError;
 	}
 }
@@ -701,14 +699,12 @@ bool IOCPClient::SendSystemAuthRequest(ClientSession* session)
 		return false;
 	}
 
-	auto packetHandle = MEMORY_POOL::CreatePacketHandle(*m_memoryPools->packet, sizeof(CS_SYSTEM_AUTH_REQUEST_PACKET));
+	auto packetHandle = MEMORY_POOL::CreatePacketHandle<CS_SYSTEM_AUTH_REQUEST_PACKET>(*m_memoryPools->packet);
 
 	if (!packetHandle)
 	{
 		return false;
 	}
-
-	std::construct_at(reinterpret_cast<CS_SYSTEM_AUTH_REQUEST_PACKET*>(packetHandle.MutableView().data()));
 
 	// 송신 직후 다른 IOCP 워커가 인증 응답을 처리할 수 있다.
 	// 응답 처리가 설정한 상태를 덮어쓰지 않도록 송신 전에 변경한다.
@@ -718,25 +714,25 @@ bool IOCPClient::SendSystemAuthRequest(ClientSession* session)
 	return session->EnqueueSendPacket(std::move(packetHandle));
 }
 
-DisconnectReason IOCPClient::HandleAuthResponse(ClientSession* session, const char* packetData, uint32_t packetSize)
+DisconnectReason IOCPClient::HandleAuthResponse(ClientSession& session, std::span<const std::byte> packet)
 {
-	if (packetSize != sizeof(SC_SYSTEM_AUTH_RESPONSE_PACKET))
+	if (packet.size() != sizeof(SC_SYSTEM_AUTH_RESPONSE_PACKET))
 	{
 		return DisconnectReason::ProtocolError;
 	}
 
-	const SC_SYSTEM_AUTH_RESPONSE_PACKET* response = reinterpret_cast<const SC_SYSTEM_AUTH_RESPONSE_PACKET*>(packetData);
+	const SC_SYSTEM_AUTH_RESPONSE_PACKET* response = reinterpret_cast<const SC_SYSTEM_AUTH_RESPONSE_PACKET*>(packet.data());
 	const SYSTEM_AUTH_RESULT authResult = static_cast<SYSTEM_AUTH_RESULT>(response->authResult);
 
 	if (response->protocolVersion != IOCP_ENGINE_PROTOCOL_VERSION)
 	{
-		LOGE("session %u protocol version mismatch (server=%u, client=%u)", session->GetSessionID(), response->protocolVersion, IOCP_ENGINE_PROTOCOL_VERSION);
+		LOGE("session %u protocol version mismatch (server=%u, client=%u)", session.GetSessionID(), response->protocolVersion, IOCP_ENGINE_PROTOCOL_VERSION);
 		return DisconnectReason::AuthRejectedProtocolMismatch;
 	}
 
 	if (authResult != SYSTEM_AUTH_RESULT::SUCCESS)
 	{
-		LOGW("session %u auth rejected by server (result=%u)", session->GetSessionID(), response->authResult);
+		LOGW("session %u auth rejected by server (result=%u)", session.GetSessionID(), response->authResult);
 
 		// 서버가 준 거절 사유를 그대로 서비스까지 올린다.
 		//
@@ -746,9 +742,9 @@ DisconnectReason IOCPClient::HandleAuthResponse(ClientSession* session, const ch
 		return ToDisconnectReason(authResult);
 	}
 
-	if (!session->Establish())
+	if (!session.Establish())
 		return DisconnectReason::ProtocolError;
-	LOGI("session %u session established", session->GetSessionID());
+	LOGI("session %u session established", session.GetSessionID());
 
 	// 여기가 유휴 감시를 켜는 자리다.
 	//
@@ -764,30 +760,30 @@ DisconnectReason IOCPClient::HandleAuthResponse(ClientSession* session, const ch
 		m_clientWatchdog->Arm(response->heartbeatIntervalMs);
 	}
 
-	if (!InvokeServiceCallback("OnSessionEstablished", [&] { OnSessionEstablished(session); }))
+	if (!InvokeServiceCallback("OnSessionEstablished", [&] { OnSessionEstablished(&session); }))
 		return DisconnectReason::ServiceError;
 	return DisconnectReason::Unknown;
 }
 
-DisconnectReason IOCPClient::HandleHeartbeatRequest(ClientSession* session, const char* packetData, uint32_t packetSize)
+DisconnectReason IOCPClient::HandleHeartbeatRequest(ClientSession& session, std::span<const std::byte> packet)
 {
-	if (packetSize != sizeof(SC_SYSTEM_HEARTBEAT_REQUEST_PACKET))
+	if (packet.size() != sizeof(SC_SYSTEM_HEARTBEAT_REQUEST_PACKET))
 	{
 		return DisconnectReason::ProtocolError;
 	}
 
-	if (!session->IsEstablished())
+	if (!session.IsEstablished())
 	{
 		return DisconnectReason::ProtocolError;
 	}
 
-	const SC_SYSTEM_HEARTBEAT_REQUEST_PACKET* request = reinterpret_cast<const SC_SYSTEM_HEARTBEAT_REQUEST_PACKET*>(packetData);
+	const SC_SYSTEM_HEARTBEAT_REQUEST_PACKET* request = reinterpret_cast<const SC_SYSTEM_HEARTBEAT_REQUEST_PACKET*>(packet.data());
 
-	if (!session->SendSystemHeartbeatResponse(request->tick))
+	if (!session.SendSystemHeartbeatResponse(request->tick))
 	{
 		LOGW("session %u could not queue the heartbeat response (the send queue is likely full). "
 			"keeping the connection : liveness is decided by the server's heartbeat timeout",
-			session->GetSessionID());
+			session.GetSessionID());
 	}
 
 	return DisconnectReason::Unknown;

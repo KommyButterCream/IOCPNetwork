@@ -13,7 +13,7 @@
 #include "../../Core/Util/Logger.h"
 
 #include <cstring> // for std::strncmp, std::memcpy
-#include <memory> // for std::construct_at, std::make_unique
+#include <memory> // for std::make_unique
 #include <utility> // for std::exchange, std::move
 
 #pragma comment(lib, "ws2_32.lib")
@@ -53,7 +53,7 @@ ClientSession::~ClientSession()
 	if (!IsSocketInvalid())
 		ENGINE_VIOLATION("session %u destroyed with a live socket", GetSessionID());
 
-	SetSessionContext(nullptr);
+	m_sessionContext.reset();
 }
 
 bool ClientSession::Initialize(SESSION_ROLE sessionType, uint32_t sessionId)
@@ -212,7 +212,7 @@ void ClientSession::ResetSession()
 	// 풀 재대여는 새 연결이므로 통지 기록도 초기화한다.
 	m_serviceConnectNotified.store(false);
 
-	SetSessionContext(nullptr);
+	m_sessionContext.reset();
 
 	m_sendQueue.Reset();
 	m_currentSendPacket.Reset();
@@ -766,19 +766,14 @@ PacketHandle ClientSession::TakeCurrentPacket()
 
 // 서비스 컨텍스트와 원격 주소
 
-void ClientSession::SetSessionContext(SessionContext* sessionContext)
+void ClientSession::SetSessionContext(std::unique_ptr<SessionContext> sessionContext)
 {
-	if (m_sessionContext != nullptr && m_sessionContext != sessionContext)
-	{
-		delete m_sessionContext;
-	}
-
-	m_sessionContext = sessionContext;
+	m_sessionContext = std::move(sessionContext);
 }
 
 SessionContext* ClientSession::GetSessionContext() const
 {
-	return m_sessionContext;
+	return m_sessionContext.get();
 }
 
 bool ClientSession::HasRemoteAddress(const char* ipAddress) const
@@ -854,14 +849,14 @@ bool ClientSession::SendSystemHeartbeatRequest()
 		return false;
 	}
 
-	auto packetHandle = MEMORY_POOL::CreatePacketHandle(*m_packetMemoryPool, sizeof(SC_SYSTEM_HEARTBEAT_REQUEST_PACKET));
+	auto packetHandle = MEMORY_POOL::CreatePacketHandle<SC_SYSTEM_HEARTBEAT_REQUEST_PACKET>(*m_packetMemoryPool);
 
 	if (!packetHandle)
 	{
 		return false;
 	}
 
-	auto* request = std::construct_at(reinterpret_cast<SC_SYSTEM_HEARTBEAT_REQUEST_PACKET*>(packetHandle.MutableView().data()));
+	auto* request = reinterpret_cast<SC_SYSTEM_HEARTBEAT_REQUEST_PACKET*>(packetHandle.MutableView().data());
 
 	request->tick = ::GetTickCount64();
 
@@ -875,14 +870,14 @@ bool ClientSession::SendSystemHeartbeatResponse(uint64_t requestTick)
 		return false;
 	}
 
-	auto packetHandle = MEMORY_POOL::CreatePacketHandle(*m_packetMemoryPool, sizeof(CS_SYSTEM_HEARTBEAT_RESPONSE_PACKET));
+	auto packetHandle = MEMORY_POOL::CreatePacketHandle<CS_SYSTEM_HEARTBEAT_RESPONSE_PACKET>(*m_packetMemoryPool);
 
 	if (!packetHandle)
 	{
 		return false;
 	}
 
-	auto* response = std::construct_at(reinterpret_cast<CS_SYSTEM_HEARTBEAT_RESPONSE_PACKET*>(packetHandle.MutableView().data()));
+	auto* response = reinterpret_cast<CS_SYSTEM_HEARTBEAT_RESPONSE_PACKET*>(packetHandle.MutableView().data());
 
 	response->tick = requestTick;
 

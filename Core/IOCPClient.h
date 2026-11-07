@@ -3,6 +3,8 @@
 #include <atomic> // for std::atomic
 #include <memory> // for std::unique_ptr
 #include <mutex> // for std::mutex
+#include <cstddef> // for std::byte
+#include <span> // for std::span
 
 #include "IOCPCore.h"
 #include "ClientLivenessConfig.h"
@@ -158,11 +160,11 @@ private:
 	void HandleSend(ClientSession* session, DWORD bytesTransferred);
 
 	// 인증과 하트비트
-	DisconnectReason HandleSystemPacket(ClientSession* session, uint16_t packetId, const char* packetData, uint32_t packetSize);
+	DisconnectReason HandleSystemPacket(ClientSession& session, uint16_t packetId, std::span<const std::byte> packet);
 	bool SendSystemAuthRequest(ClientSession* session);
 	// 패킷별 크기·상태 검사와 인증 또는 하트비트 처리를 수행한다.
-	DisconnectReason HandleAuthResponse(ClientSession* session, const char* packetData, uint32_t packetSize);
-	DisconnectReason HandleHeartbeatRequest(ClientSession* session, const char* packetData, uint32_t packetSize);
+	DisconnectReason HandleAuthResponse(ClientSession& session, std::span<const std::byte> packet);
+	DisconnectReason HandleHeartbeatRequest(ClientSession& session, std::span<const std::byte> packet);
 
 	// 세션 종료 요청과 반환 통지
 	static void OnDisconnectRequest(void* context, ClientSession* session);

@@ -115,7 +115,7 @@ public:
 	[[nodiscard]] PacketHandle TakeCurrentPacket() override;
 
 	// 서비스 컨텍스트를 소유하고 연결의 원격 주소를 관리한다.
-	void SetSessionContext(SessionContext* sessionContext) override;
+	void SetSessionContext(std::unique_ptr<SessionContext> sessionContext) override;
 	SessionContext* GetSessionContext() const override;
 	[[nodiscard]] bool HasRemoteAddress(const char* ipAddress) const;
 
@@ -184,7 +184,7 @@ private:
 	bool m_recvPaused = false;
 
 	// 서비스 데이터와 원격 주소
-	SessionContext* m_sessionContext = nullptr;
+	std::unique_ptr<SessionContext> m_sessionContext;
 	mutable SRWLOCK m_remoteAddressLock = SRWLOCK_INIT;
 	char m_clientIPAddress[INET_ADDRSTRLEN] = { 0, };
 	uint16_t m_clientPort = 0;

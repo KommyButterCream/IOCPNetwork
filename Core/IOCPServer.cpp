@@ -1018,9 +1018,7 @@ bool IOCPServer::HandleReceivedPacket(ClientSession& session, uint16_t packetId,
 		return false;
 	}
 
-	const auto* data = reinterpret_cast<const char*>(packet.View().data());
-	const auto size = static_cast<uint32_t>(packet.Size());
-	const auto result = HandleSystemPacket(&session, packetId, data, size);
+	const auto result = HandleSystemPacket(session, packetId, packet.View());
 	if (result == SystemPacketResult::Failed)
 		session.RequestDisconnect(DisconnectReason::ProtocolError);
 	return result == SystemPacketResult::Ok;
@@ -1038,9 +1036,9 @@ void IOCPServer::HandleSend(ClientSession* session, DWORD bytesTransferred)
 
 // 인증과 하트비트
 
-IOCPServer::SystemPacketResult IOCPServer::HandleSystemPacket(ClientSession* session, uint16_t packetId, const char* packetData, uint32_t packetSize)
+IOCPServer::SystemPacketResult IOCPServer::HandleSystemPacket(ClientSession& session, uint16_t packetId, std::span<const std::byte> packet)
 {
-	if (!session || !packetData)
+	if (packet.empty())
 	{
 		return SystemPacketResult::Failed;
 	}
@@ -1048,53 +1046,53 @@ IOCPServer::SystemPacketResult IOCPServer::HandleSystemPacket(ClientSession* ses
 	switch (static_cast<PACKET_ID>(packetId))
 	{
 	case PACKET_ID::CS_SYSTEM_AUTH_REQUEST:
-		return HandleAuthRequest(session, packetData, packetSize);
+		return HandleAuthRequest(session, packet);
 
 	case PACKET_ID::CS_SYSTEM_HEARTBEAT_RESPONSE:
-		return HandleHeartbeatResponse(session, packetData, packetSize);
+		return HandleHeartbeatResponse(session, packet);
 
 	default:
-		LOGW("session %u unhandled system packet id: %u", session->GetSessionID(), packetId);
+		LOGW("session %u unhandled system packet id: %u", session.GetSessionID(), packetId);
 		return SystemPacketResult::Failed;
 	}
 }
 
-IOCPServer::SystemPacketResult IOCPServer::HandleAuthRequest(ClientSession* session, const char* packetData, uint32_t packetSize)
+IOCPServer::SystemPacketResult IOCPServer::HandleAuthRequest(ClientSession& session, std::span<const std::byte> packet)
 {
-	if (packetSize != sizeof(CS_SYSTEM_AUTH_REQUEST_PACKET))
+	if (packet.size() != sizeof(CS_SYSTEM_AUTH_REQUEST_PACKET))
 	{
 		return SystemPacketResult::Failed;
 	}
 
-	const CS_SYSTEM_AUTH_REQUEST_PACKET* request = reinterpret_cast<const CS_SYSTEM_AUTH_REQUEST_PACKET*>(packetData);
+	const CS_SYSTEM_AUTH_REQUEST_PACKET* request = reinterpret_cast<const CS_SYSTEM_AUTH_REQUEST_PACKET*>(packet.data());
 
-	if (!session->BeginAuthentication())
+	if (!session.BeginAuthentication())
 	{
-		session->RejectAuthentication(DisconnectReason::AuthRejectedInvalidState, CreateAuthResponse(SYSTEM_AUTH_RESULT::INVALID_STATE));
+		session.RejectAuthentication(DisconnectReason::AuthRejectedInvalidState, CreateAuthResponse(SYSTEM_AUTH_RESULT::INVALID_STATE));
 		return SystemPacketResult::Rejected;
 	}
 
 	if (request->protocolVersion != IOCP_ENGINE_PROTOCOL_VERSION)
 	{
-		session->RejectAuthentication(DisconnectReason::AuthRejectedProtocolMismatch, CreateAuthResponse(SYSTEM_AUTH_RESULT::PROTOCOL_MISMATCH));
+		session.RejectAuthentication(DisconnectReason::AuthRejectedProtocolMismatch, CreateAuthResponse(SYSTEM_AUTH_RESULT::PROTOCOL_MISMATCH));
 		return SystemPacketResult::Rejected;
 	}
 
 	// 인증을 허용할 연결 수를 원자적으로 예약한다. 세션 반환 시 예약도 해제한다.
-	if (!m_sessionManager->TryAdmitClientSession(*session, m_connectionPolicy.serviceCapacity))
+	if (!m_sessionManager->TryAdmitClientSession(session, m_connectionPolicy.serviceCapacity))
 	{
-		session->RejectAuthentication(DisconnectReason::AuthRejectedServerFull, CreateAuthResponse(SYSTEM_AUTH_RESULT::SERVER_FULL));
+		session.RejectAuthentication(DisconnectReason::AuthRejectedServerFull, CreateAuthResponse(SYSTEM_AUTH_RESULT::SERVER_FULL));
 		return SystemPacketResult::Rejected;
 	}
 
-	if (!session->EnqueueSendPacket(CreateAuthResponse(SYSTEM_AUTH_RESULT::SUCCESS)))
+	if (!session.EnqueueSendPacket(CreateAuthResponse(SYSTEM_AUTH_RESULT::SUCCESS)))
 	{
 		return SystemPacketResult::Failed;
 	}
 
-	if (!session->Establish())
+	if (!session.Establish())
 		return SystemPacketResult::Failed;
-	LOGI("session %u session established", session->GetSessionID());
+	LOGI("session %u session established", session.GetSessionID());
 	return SystemPacketResult::Ok;
 }
 
@@ -1106,14 +1104,14 @@ PacketHandle IOCPServer::CreateAuthResponse(SYSTEM_AUTH_RESULT authResult)
 		return {};
 	}
 
-	auto packetHandle = MEMORY_POOL::CreatePacketHandle(*packetPool, sizeof(SC_SYSTEM_AUTH_RESPONSE_PACKET));
+	auto packetHandle = MEMORY_POOL::CreatePacketHandle<SC_SYSTEM_AUTH_RESPONSE_PACKET>(*packetPool);
 
 	if (!packetHandle)
 	{
 		return {};
 	}
 
-	auto* response = std::construct_at(reinterpret_cast<SC_SYSTEM_AUTH_RESPONSE_PACKET*>(packetHandle.MutableView().data()));
+	auto* response = reinterpret_cast<SC_SYSTEM_AUTH_RESPONSE_PACKET*>(packetHandle.MutableView().data());
 
 	response->authResult = static_cast<uint16_t>(authResult);
 
@@ -1127,19 +1125,19 @@ PacketHandle IOCPServer::CreateAuthResponse(SYSTEM_AUTH_RESULT authResult)
 	return packetHandle;
 }
 
-IOCPServer::SystemPacketResult IOCPServer::HandleHeartbeatResponse(ClientSession* session, const char* packetData, uint32_t packetSize)
+IOCPServer::SystemPacketResult IOCPServer::HandleHeartbeatResponse(ClientSession& session, std::span<const std::byte> packet)
 {
-	if (packetSize != sizeof(CS_SYSTEM_HEARTBEAT_RESPONSE_PACKET))
+	if (packet.size() != sizeof(CS_SYSTEM_HEARTBEAT_RESPONSE_PACKET))
 	{
 		return SystemPacketResult::Failed;
 	}
 
-	if (!session->IsEstablished())
+	if (!session.IsEstablished())
 	{
 		return SystemPacketResult::Failed;
 	}
 
-	session->UpdateLastHeartbeatTick();
+	session.UpdateLastHeartbeatTick();
 	return SystemPacketResult::Ok;
 }
 

@@ -69,9 +69,6 @@
     <ClCompile Include="..\Core\IOCPServer.cpp">
       <Filter>Core</Filter>
     </ClCompile>
-    <ClCompile Include="..\HandlerTable\PacketHandlerTable.cpp">
-      <Filter>HandlerTable</Filter>
-    </ClCompile>
     <ClCompile Include="..\Memory\GlobalBlockPool.cpp">
       <Filter>Memory</Filter>
     </ClCompile>

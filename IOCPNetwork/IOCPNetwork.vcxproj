@@ -31,7 +31,6 @@
     <ClCompile Include="..\Core\IOCPClient.cpp" />
     <ClCompile Include="..\Core\IOCPCore.cpp" />
     <ClCompile Include="..\Core\IOCPServer.cpp" />
-    <ClCompile Include="..\HandlerTable\PacketHandlerTable.cpp" />
     <ClCompile Include="..\Memory\GlobalBlockPool.cpp" />
     <ClCompile Include="..\Memory\ThreadBlockCache.cpp" />
     <ClCompile Include="..\Memory\TlsMemoryPool.cpp" />

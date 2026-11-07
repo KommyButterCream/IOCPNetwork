@@ -3,6 +3,8 @@
 #include <atomic> // for std::atomic
 #include <memory> // for std::unique_ptr
 #include <mutex> // for std::mutex
+#include <cstddef> // for std::byte
+#include <span> // for std::span
 
 #include "IOCPCore.h"
 #include "../Network/UniqueSocket.h"
@@ -203,11 +205,11 @@ private:
 	void HandleSend(ClientSession* session, DWORD bytesTransferred);
 
 	// 인증과 하트비트
-	SystemPacketResult HandleSystemPacket(ClientSession* session, uint16_t packetId, const char* packetData, uint32_t packetSize);
+	SystemPacketResult HandleSystemPacket(ClientSession& session, uint16_t packetId, std::span<const std::byte> packet);
 	// 패킷별 크기·상태 검사와 인증 또는 하트비트 처리를 수행한다.
-	SystemPacketResult HandleAuthRequest(ClientSession* session, const char* packetData, uint32_t packetSize);
+	SystemPacketResult HandleAuthRequest(ClientSession& session, std::span<const std::byte> packet);
 	PacketHandle CreateAuthResponse(SYSTEM_AUTH_RESULT authResult);
-	SystemPacketResult HandleHeartbeatResponse(ClientSession* session, const char* packetData, uint32_t packetSize);
+	SystemPacketResult HandleHeartbeatResponse(ClientSession& session, std::span<const std::byte> packet);
 
 	// 세션 종료 통지
 	// ClientSessionPool 이 세션을 실제로 반납할 때 부르는 진입점.

@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint> // for uint32_t
+#include <memory> // for std::unique_ptr
 #include "../Buffer/PacketHandle.h"
 #include "../Buffer/SharedPacketHandle.h"
 
@@ -23,7 +24,7 @@ public:
     virtual bool EnqueueSharedSendPacket(SharedPacketHandle packet) = 0;
     virtual SessionContext* GetSessionContext() const = 0;
     // 컨텍스트 소유권을 세션으로 이전하며, 기존 컨텍스트는 삭제하고 교체합니다.
-    virtual void SetSessionContext(SessionContext* context) = 0;
+    virtual void SetSessionContext(std::unique_ptr<SessionContext> context) = 0;
     // 현재 실행 중인 클라이언트 패킷 핸들러 안에서만 유효합니다.
     virtual PacketHandle TakeCurrentPacket() = 0;
 };

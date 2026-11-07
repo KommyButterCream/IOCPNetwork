@@ -12,7 +12,7 @@
 
 #include "../../Core/Util/Logger.h"
 
-#include <new> // for std::nothrow
+#include <span> // for std::span
 #include <memory> // for std::unique_ptr, std::make_unique
 #include <utility> // for std::move
 
@@ -58,57 +58,37 @@ namespace ENGINE_POOL
 
 	namespace Detail
 	{
-		// 빈 목록형 풀 하나를 만든다.
-		inline std::unique_ptr<TlsMemoryPool> CreateBinSetPool(const PoolBinSetConfig& config,
-			const char* poolName, uint32_t payloadAlignment = 16)
+		// 단일·복수 빈의 생성과 실패 정리를 같은 경로에서 처리한다.
+		[[nodiscard]] inline std::unique_ptr<TlsMemoryPool> CreatePool(
+			std::span<const TlsMemoryPool::BinConfig> bins, uint64_t commitLimitBytes,
+			const char* poolName, uint32_t payloadAlignment)
 		{
-			// 설정 배열을 풀이 받는 모양으로 옮긴다. 둘을 같은 타입으로
-			// 두지 않는 이유는 서비스가 풀 헤더를 포함하지 않게 하려는 것이다.
-			TlsMemoryPool::BinConfig binConfigs[PoolBinSetConfig::MAX_ENTRIES] = {};
-			for (uint32_t i = 0; i < config.entryCount; ++i)
-			{
-				binConfigs[i].blockSize = config.entries[i].blockSize;
-				binConfigs[i].blockCount = config.entries[i].blockCount;
-			}
-
-			auto pool = std::unique_ptr<TlsMemoryPool>(new (std::nothrow) TlsMemoryPool);
-			if (!pool)
-			{
-				LOGE("failed to allocate the %s memory pool", poolName);
-				return nullptr;
-			}
-
-			if (!pool->Initialize(binConfigs, config.entryCount, payloadAlignment))
+			auto pool = std::make_unique<TlsMemoryPool>();
+			if (!pool->Initialize(bins.data(), static_cast<uint32_t>(bins.size()), payloadAlignment))
 			{
 				LOGE("failed to initialize the %s memory pool", poolName);
 				return nullptr;
 			}
-
-			pool->SetCommitLimit(config.commitLimitBytes);
+			pool->SetCommitLimit(commitLimitBytes);
 			return pool;
 		}
 
-		// 블록 크기가 고정된 풀 하나를 만든다.
-		inline std::unique_ptr<TlsMemoryPool> CreateReservePool(const PoolReserveConfig& config,
+		// 공개 설정을 풀 내부의 빈 설정으로 변환한다.
+		[[nodiscard]] inline std::unique_ptr<TlsMemoryPool> CreateBinSetPool(const PoolBinSetConfig& config,
+			const char* poolName, uint32_t payloadAlignment = 16)
+		{
+			TlsMemoryPool::BinConfig bins[PoolBinSetConfig::MAX_ENTRIES]{};
+			for (uint32_t i = 0; i < config.entryCount; ++i)
+				bins[i] = { config.entries[i].blockSize, config.entries[i].blockCount };
+			return CreatePool({ bins, config.entryCount }, config.commitLimitBytes, poolName, payloadAlignment);
+		}
+
+		// 고정 크기 객체는 빈 하나로 구성한다.
+		[[nodiscard]] inline std::unique_ptr<TlsMemoryPool> CreateReservePool(const PoolReserveConfig& config,
 			uint32_t blockSize, const char* poolName, uint32_t payloadAlignment = 16)
 		{
-			const TlsMemoryPool::BinConfig binConfig{ blockSize, config.blockCount };
-
-			auto pool = std::unique_ptr<TlsMemoryPool>(new (std::nothrow) TlsMemoryPool);
-			if (!pool)
-			{
-				LOGE("failed to allocate the %s memory pool", poolName);
-				return nullptr;
-			}
-
-			if (!pool->Initialize(&binConfig, 1, payloadAlignment))
-			{
-				LOGE("failed to initialize the %s memory pool", poolName);
-				return nullptr;
-			}
-
-			pool->SetCommitLimit(config.commitLimitBytes);
-			return pool;
+			const TlsMemoryPool::BinConfig bin{ blockSize, config.blockCount };
+			return CreatePool({ &bin, 1 }, config.commitLimitBytes, poolName, payloadAlignment);
 		}
 	}
 
