@@ -1,3 +1,4 @@
+#include "../Core/EngineExecutionScope.h"
 #include "Job.h"
 #include "../../Core/Util/Logger.h"
 #include <utility> // for std::move
@@ -59,6 +60,7 @@ PacketHandle Job::TakePacket() noexcept
 
 void Job::Execute()
 {
+	EngineExecutionScope execution;
     if (!m_context)
     {
         LOGE("job (type %d, packet id %u) has no handler context, skipping",

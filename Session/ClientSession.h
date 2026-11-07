@@ -169,8 +169,8 @@ private:
 	uint32_t m_sessionId = INVALID_SESSION_ID;
 	std::atomic<State> m_state{State::Ready};
 	std::atomic<SOCKET> m_clientSocket{INVALID_SOCKET};
-	volatile LONG m_disconnectReason = static_cast<LONG>(DisconnectReason::Unknown);
-	volatile LONG m_serviceConnectNotified = 0;
+	std::atomic<DisconnectReason> m_disconnectReason{DisconnectReason::Unknown};
+	std::atomic<bool> m_serviceConnectNotified{false};
 
 	// 수명·취소 상태는 풀의 슬롯마다 한 번 만들고 재대여할 때 재사용한다.
 	OwnerCallbacks m_ownerCallbacks{};
@@ -203,13 +203,13 @@ private:
 
 	// Job 실행권과 핸들러가 빌려 쓰는 현재 Job
 	std::unique_ptr<SessionJobQueue> m_jobQueue;
-	volatile LONG m_processing = 0;
+	std::atomic<bool> m_processing{false};
 	Job* m_currentJob = nullptr;
 
 	// 하트비트 송수신과 타임아웃 판정
 	TlsMemoryPool* m_packetMemoryPool = nullptr;
-	volatile LONGLONG m_lastRecvTick = 0;
-	volatile LONGLONG m_lastHeartbeatTick = 0;
+	std::atomic<uint64_t> m_lastRecvTick{0};
+	std::atomic<uint64_t> m_lastHeartbeatTick{0};
 
 	// 진단용 누계. 수신 재개 판단에는 사용하지 않는다.
 	std::atomic<uint32_t> m_recvPauseCount{0};

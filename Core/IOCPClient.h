@@ -1,5 +1,9 @@
 ﻿#pragma once
 
+#include <atomic> // for std::atomic
+#include <memory> // for std::unique_ptr
+#include <mutex> // for std::mutex
+
 #include "IOCPCore.h"
 #include "ClientLivenessConfig.h"
 #include "../Session/DisconnectReason.h"
@@ -60,11 +64,14 @@ public:
 	// 예전에는 그 수단이 아예 없어서, 랜선이 빠지거나 서버 프로세스가
 	// 행되면 클라가 영원히 기다렸다. 기본값으로 켜져 있다.
 	// (자세한 사정은 Core/ClientLivenessConfig.h)
+	// 외부 제어 스레드에서 호출한다. 실행 중이거나 다른 제어 호출이 진행 중이면 실패한다.
 	IOCP_ENGINE_API bool StartClient(const char* serverIp, const uint16_t port,
 		const SessionBufferConfig& bufferConfig = SessionBufferPreset::Client(),
 		uint32_t iocpThreadCount = 0,
 		const EnginePoolConfig& poolConfig = EnginePoolPreset::Client(),
 		const ClientLivenessConfig& livenessConfig = ClientLivenessConfig());
+	// 외부 호출은 정리가 끝날 때까지 대기한다. 엔진 콜백·Job 안의 호출은 거절한다.
+	// 객체 파괴 및 서비스의 패킷 핸들 반환은 호출자가 별도로 동기화한다.
 	IOCP_ENGINE_API void StopClient();
 
 	// 핸들러 등록과 패킷 생성
@@ -120,6 +127,10 @@ private:
 		_Inout_ LPOVERLAPPED lpOverlapped
 		);
 
+	// 제어 락을 보유한 상태에서 자원을 준비하거나 역순으로 정리한다.
+	bool StartResources(const char* serverIp, const uint16_t port, const SessionBufferConfig& bufferConfig, uint32_t iocpThreadCount, const EnginePoolConfig& poolConfig, const ClientLivenessConfig& livenessConfig);
+	void StopResources();
+
 	// 메모리 풀 정리
 	// 서비스의 패킷 핸들이 모두 반환된 후에만 풀을 파괴합니다.
 	// 종료 시 풀을 정리하며, 엔진 파괴·재시작 시에는 풀 객체도 삭제합니다.
@@ -165,12 +176,13 @@ private:
 	static void OnReleaseReady(void* context, ClientSession* session);
 
 private:
+	// 시작·종료만 직렬화한다. 송수신 워커는 이 락을 사용하지 않는다.
+	std::mutex m_controlMutex;
+	bool m_running = false;
 
-	// 종료 상태
-	// Destory Flag
-	LONG m_destroyFlag = 0;
+	// 연결 종료 선점
 	// 같은 연결에서 종료 절차를 한 번만 시작한다.
-	volatile LONG m_disconnecting = 0;
+	std::atomic<bool> m_disconnecting{false};
 
 	// 연결 대상과 접속 함수
 	// IP Address & Port
@@ -179,19 +191,19 @@ private:
 	// ConnectEx 함수 포인터
 	LPFN_CONNECTEX m_connectEx = nullptr;
 
+	// 패킷과 Job 메모리 풀
+	std::unique_ptr<TlsMemoryPool> m_jobMemoryPool;
+	std::unique_ptr<TlsMemoryPool> m_packetMemoryPool;
+	// 공유 패킷 참조 제어 객체용 풀입니다.
+	std::unique_ptr<TlsMemoryPool> m_sharedPacketMemoryPool;
+
 	// 세션과 작업 실행
-	ClientSession* m_session = nullptr;
-	ClientJobWorker* m_clientJobWorker = nullptr;
+	std::unique_ptr<ClientSession> m_session;
+	std::unique_ptr<ClientJobWorker> m_clientJobWorker;
 
 	// 핸들러와 서비스 컨텍스트
-	PacketHandlerTable* m_packetHandlerTable = nullptr;
+	std::unique_ptr<PacketHandlerTable> m_packetHandlerTable;
 	HandlerContext m_handlerContext = {};
-
-	// 패킷과 Job 메모리 풀
-	TlsMemoryPool* m_jobMemoryPool = nullptr;
-	TlsMemoryPool* m_packetMemoryPool = nullptr;
-	// 공유 패킷 참조 제어 객체용 풀입니다.
-	TlsMemoryPool* m_sharedPacketMemoryPool = nullptr;
 
 	// 연결 생존 감시
 	// StartClient 에서 받아 보관한다. 인증 응답이 도착했을 때 서버가 알려준
@@ -199,5 +211,5 @@ private:
 	ClientLivenessConfig m_livenessConfig;
 	// 서버가 조용해진 것을 알아차리는 감시 스레드.
 	// 왜 잡 스케줄러가 아니라 별도 스레드인지는 ClientWatchdogThread 주석.
-	ClientWatchdogThread* m_clientWatchdog = nullptr;
+	std::unique_ptr<ClientWatchdogThread> m_clientWatchdog;
 };

@@ -17,7 +17,7 @@ std::unique_ptr<AcceptSessionPool> AcceptSessionPool::Create(uint32_t capacity, 
 	{
 		if (!sessions[i].Initialize(i))
 		{
-			ENGINE_VIOLATION("failed to initialize accept session %u of %u", i, capacity);
+			LOGE("failed to initialize accept session %u of %u", i, capacity);
 			return nullptr;
 		}
 	}

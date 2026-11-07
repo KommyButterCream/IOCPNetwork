@@ -1,5 +1,7 @@
 #include "SharedPacketHandle.h"
 
+#include <atomic> // for std::atomic, std::memory_order_acquire
+
 #include "../Memory/TlsMemoryPool.h"
 
 #include <memory>  // for std::construct_at, std::destroy_at
@@ -7,7 +9,7 @@
 
 struct SharedPacketHandle::Control
 {
-    volatile LONG refCount = 1;
+    std::atomic<LONG> refCount{1};
     TlsMemoryPool* pool = nullptr;
     PacketHandle packet;
 };
@@ -80,13 +82,13 @@ void SharedPacketHandle::AddRef(Control* control) noexcept
 {
     if (control)
     {
-        ::InterlockedIncrement(&control->refCount);
+        control->refCount.fetch_add(1);
     }
 }
 
 void SharedPacketHandle::Release(Control* control) noexcept
 {
-    if (!control || ::InterlockedDecrement(&control->refCount) != 0)
+    if (!control || control->refCount.fetch_sub(1) != 1)
         return;
 
     auto* pool = control->pool;

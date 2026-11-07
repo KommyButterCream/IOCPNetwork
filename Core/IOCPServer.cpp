@@ -1,4 +1,5 @@
 ﻿#include "IOCPServer.h"
+#include "EngineExecutionScope.h"
 #include "HeartbeatThread.h"
 
 #include "../Diagnostics/EngineAssert.h"
@@ -23,6 +24,7 @@
 
 #include "../Network/SocketOption.h"
 #include "../Network/UniqueSocket.h"
+#include "../Network/SocketError.h"
 
 #include "../Protocol/PacketID.h"
 #include "../Protocol/SystemPacket.h"
@@ -35,44 +37,15 @@
 #include "../../Core/Util/Logger.h"
 
 #include <utility> // for std::move
-#include <memory>  // for std::construct_at, std::unique_ptr
+#include <mutex> // for std::unique_lock, std::lock_guard, std::try_to_lock
+#include <new> // for std::bad_alloc
+#include <stdexcept> // for std::length_error
+#include <memory> // for std::make_unique
 
 #pragma comment(lib, "ws2_32.lib") // for WinSock2
 #pragma comment(lib, "mswsock.lib") // for AcceptEX / ConnectEx
 
 using namespace Core::Util;
-
-namespace
-{
-	// 연결이 죽어서 난 I/O 실패인가.
-	//
-	// ERROR_OPERATION_ABORTED 는 여기 없다. 그건 우리가 CancelIoEx 로 건
-	// 취소이고, 취소를 건 쪽이 이미 세션을 정리하는 중이다. 둘을 같이
-	// 묶어 두었던 것이 이 파일의 오래된 결함이었다 — 연결이 죽은 경우까지
-	// "취소" 로 처리해서 IO 카운트만 내리고 세션은 살려 두었다.
-	//
-	// !! IOCPClient.cpp 에 같은 이름의 사본이 있다. 목록을 고치면 양쪽을
-	//    같이 고쳐야 한다. 실제로 한 번 갈라졌다 — 클라에만
-	//    ERROR_CONNECTION_ABORTED 가 추가되어 있어서, 서버는 같은 오류를
-	//    "분류되지 않은 에러" 로 보고 ENGINE_VIOLATION 을 올렸다.
-	//    동작은 같았지만(어차피 죽은 연결로 처리한다) 하네스가 판정에 쓰는
-	//    위반 계수기가 그만큼 더럽혀졌다.
-	bool IsConnectionDeadError(int errorCode)
-	{
-		switch (errorCode)
-		{
-		case WSAECONNRESET:           // 상대가 강제 종료 (RST)
-		case WSAECONNABORTED:         // 연결 중단
-		case WSAENOTCONN:             // 이미 끊김
-		case WSAESHUTDOWN:            // 송수신 불가
-		case ERROR_NETNAME_DELETED:   // 네트워크 이름 삭제 = 연결 끊김
-		case ERROR_CONNECTION_ABORTED: // Win32 쪽 코드로 올라오는 연결 중단
-			return true;
-		default:
-			return false;
-		}
-	}
-}
 
 // 생성·시작·종료
 
@@ -84,16 +57,54 @@ IOCPServer::~IOCPServer()
 {
 	StopServer();
 
-	// 풀 객체를 실제로 지우는 유일한 자리다.
+	// 정상 종료 후 남겨 둔 풀 객체를 파괴한다.
 	// StopServer 는 Finalize 만 한다. (이유는 ENGINE_POOL::FinalizePools 주석)
 	DestroyMemoryPools();
 }
 
 bool IOCPServer::StartServer(const char* ipAddress, const uint16_t port, const uint32_t maxConnectionCount, const SessionBufferConfig& bufferConfig, const ConnectionPolicyConfig& policyConfig, const EnginePoolConfig& poolConfig, const HeartbeatConfig& heartbeatConfig)
 {
+	if (EngineExecutionScope::IsActive())
+	{
+		LOGE("StartServer must be called outside engine callbacks and jobs");
+		return false;
+	}
+	std::unique_lock lock(m_controlMutex, std::try_to_lock);
+	if (!lock.owns_lock() || m_running)
+		return false;
+	EngineExecutionScope execution;
+	try
+	{
+		if (StartResources(ipAddress, port, maxConnectionCount, bufferConfig, policyConfig, poolConfig, heartbeatConfig))
+		{
+			m_running = true;
+			return true;
+		}
+	}
+	catch (const std::bad_alloc&)
+	{
+		LOGE("StartServer failed to allocate resources");
+	}
+	catch (const std::length_error&)
+	{
+		LOGE("StartServer resource count exceeds container capacity");
+	}
+	catch (...)
+	{
+		StopResources();
+		DestroyMemoryPools();
+		throw;
+	}
+	StopResources();
+	DestroyMemoryPools();
+	return false;
+}
+
+bool IOCPServer::StartResources(const char* ipAddress, const uint16_t port, const uint32_t maxConnectionCount, const SessionBufferConfig& bufferConfig, const ConnectionPolicyConfig& policyConfig, const EnginePoolConfig& poolConfig, const HeartbeatConfig& heartbeatConfig)
+{
 	// 설정 오류는 아무것도 잡기 전에 걸러낸다. 세션 생성 단계까지 끌고 가면
 	// 세션을 하나도 못 잡는 서버가 정상 기동한 것처럼 보인다.
-	if (!bufferConfig.IsValid())
+	if (maxConnectionCount == 0 || !bufferConfig.IsValid())
 	{
 		LOGE("invalid session buffer config : recv %u / ring %u, send %u, queue %u",
 			bufferConfig.maxRecvPacketSize, bufferConfig.recvRingSize,
@@ -128,14 +139,15 @@ bool IOCPServer::StartServer(const char* ipAddress, const uint16_t port, const u
 	// StopServer 가 올리기만 하고 내리지 않는 값들이다. 그대로 두면 다시
 	// 기동한 서버가 첫 AcceptEx 부터 "종료 중" 으로 판단해 접속을 하나도
 	// 받지 못한다. 기동이 한 번 실패해 다시 시도하는 서비스가 이 경로를 밟는다.
-	::InterlockedExchange(&m_serverShutdownRequested, FALSE);
-	::InterlockedExchange(&m_acceptStarvationReported, FALSE);
-	::InterlockedExchange(&m_postedAcceptCount, 0);
+	m_serverShutdownRequested.store(false);
+	m_acceptStarvationReported.store(false);
+	m_postedAcceptCount.store(0);
 
 	LOGI("connection policy : service capacity %u (0 = pool capacity %u), max per address %u (0 = unlimited)",
 		m_connectionPolicy.serviceCapacity, maxConnectionCount, m_connectionPolicy.maxConnectionsPerAddress);
 
-	SetIOCPThreadCount(::GetMaximumProcessorCount(ALL_PROCESSOR_GROUPS));
+	const DWORD processorCount = ::GetMaximumProcessorCount(ALL_PROCESSOR_GROUPS);
+	SetIOCPThreadCount(processorCount ? processorCount : 1);
 
 	if (!IOCPCore::Start())
 	{
@@ -147,17 +159,17 @@ bool IOCPServer::StartServer(const char* ipAddress, const uint16_t port, const u
 		return false;
 	}
 
-	if (!BindServerSocket(m_serverSocket, ipAddress, port))
+	if (!BindServerSocket(m_serverSocket.Get(), ipAddress, port))
 	{
 		return false;
 	}
 
-	if (!ListenServerSocket(m_serverSocket))
+	if (!ListenServerSocket(m_serverSocket.Get()))
 	{
 		return false;
 	}
 
-	if (!InitializeGUIDAcceptEx(m_serverSocket))
+	if (!InitializeGUIDAcceptEx(m_serverSocket.Get()))
 	{
 		return false;
 	}
@@ -181,47 +193,39 @@ bool IOCPServer::StartServer(const char* ipAddress, const uint16_t port, const u
 		return false;
 	}
 
-	m_jobMemoryPool = pools.job;
-	m_packetMemoryPool = pools.packet;
-	m_sharedPacketMemoryPool = pools.sharedPacket;
+	m_jobMemoryPool = std::move(pools.job);
+	m_packetMemoryPool = std::move(pools.packet);
+	m_sharedPacketMemoryPool = std::move(pools.sharedPacket);
 
-	m_serverReadySessionQueue = new ServerReadySessionQueue;
-	if (!m_serverReadySessionQueue)
-		return false;
+	m_serverReadySessionQueue = std::make_unique<ServerReadySessionQueue>();
 
-	const uint32_t sessionQueueBufferCount = maxConnectionCount/* * 2*/;
+	const uint32_t sessionQueueBufferCount = maxConnectionCount;
 	if (!m_serverReadySessionQueue->Initialize(sessionQueueBufferCount))
 	{
 		LOGE("failed to initialize the ready session queue");
 		return false;
 	}
 
-	m_handlerContext.m_sharedPool = m_sharedPacketMemoryPool;
-	m_handlerContext.m_packetPool = m_packetMemoryPool;
+	m_handlerContext.m_sharedPool = m_sharedPacketMemoryPool.get();
+	m_handlerContext.m_packetPool = m_packetMemoryPool.get();
 	m_handlerContext.serviceContext = GetServiceContext();
 
-	m_packetHandlerTable = new PacketHandlerTable();
-	if (!m_packetHandlerTable)
-		return false;
+	m_packetHandlerTable = std::make_unique<PacketHandlerTable>();
 
-	m_serverJobScheduler = new ServerJobScheduler;
-	if (!m_serverJobScheduler)
-		return false;
+	m_serverJobScheduler = std::make_unique<ServerJobScheduler>();
 
 	uint32_t sessionProcessorThreadCount = ::GetMaximumProcessorCount(ALL_PROCESSOR_GROUPS);
 	if (sessionProcessorThreadCount == 0)
 		sessionProcessorThreadCount = ::GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
 	if (sessionProcessorThreadCount == 0)
 		sessionProcessorThreadCount = 1;
-	if (!m_serverJobScheduler->Initialize(sessionProcessorThreadCount, m_serverReadySessionQueue))
+	if (!m_serverJobScheduler->Initialize(sessionProcessorThreadCount, m_serverReadySessionQueue.get()))
 	{
 		LOGE("failed to initialize the ready session scheduler");
 		return false;
 	}
 
-	m_sessionManager = new SessionManager;
-	if (!m_sessionManager)
-		return false;
+	m_sessionManager = std::make_unique<SessionManager>();
 
 	constexpr uint32_t PreferredAcceptSessionCount = 16;
 
@@ -237,11 +241,11 @@ bool IOCPServer::StartServer(const char* ipAddress, const uint16_t port, const u
 	LOGI("accept sessions %u (max connections %u)", acceptSessionCount, maxConnectionCount);
 
 	if (!m_sessionManager->Initialize(
-		acceptSessionCount, 
-		maxConnectionCount, 
-		m_jobMemoryPool, 
-		m_packetMemoryPool, 
-		IOCPCore::CloseSocketHandle, 
+		acceptSessionCount,
+		maxConnectionCount,
+		m_jobMemoryPool.get(),
+		m_packetMemoryPool.get(),
+		IOCPCore::CloseSocketHandle,
 		bufferConfig,
 		&IOCPServer::OnSessionDisconnectNotify,
 		this))
@@ -256,7 +260,7 @@ bool IOCPServer::StartServer(const char* ipAddress, const uint16_t port, const u
 	// 주기에 얹는다. 실패한 세션은 스스로 복구되지 않으므로 (다음 PostAccept 를
 	// 부를 완료 통지가 애초에 그 실패한 걸기의 것이다) 누군가 다시 걸어 주어야
 	// 한다. 자세한 이유는 AcceptRepostFunc 선언부 주석에 있다.
-	m_heartbeatThread = new HeartbeatThread(m_sessionManager, heartbeatConfig,
+	m_heartbeatThread = std::make_unique<HeartbeatThread>(m_sessionManager.get(), heartbeatConfig,
 		[](void* context) { static_cast<IOCPServer*>(context)->RefillAcceptSessions(); }, this);
 	if (!m_heartbeatThread)
 	{
@@ -265,8 +269,7 @@ bool IOCPServer::StartServer(const char* ipAddress, const uint16_t port, const u
 
 	if (!m_heartbeatThread->Start())
 	{
-		delete m_heartbeatThread;
-		m_heartbeatThread = nullptr;
+		m_heartbeatThread.reset();
 		return false;
 	}
 
@@ -275,17 +278,31 @@ bool IOCPServer::StartServer(const char* ipAddress, const uint16_t port, const u
 
 void IOCPServer::StopServer()
 {
+	if (EngineExecutionScope::IsActive())
+	{
+		LOGE("StopServer must be requested through an external control thread");
+		return;
+	}
+	std::lock_guard lock(m_controlMutex);
+	if (!m_running)
+		return;
+	EngineExecutionScope execution;
+	StopResources();
+	m_running = false;
+}
+
+void IOCPServer::StopResources()
+{
 	LOGI("server shutdown requested");
 
 	// 서버가 닫히기 전에 AcceptIO 가 취소되기 전에 그 찰나에 받아진
 	// Accept IO 에 대한 예외 처리를 위해 플래그 추가.
-	::InterlockedExchange(&m_serverShutdownRequested, TRUE);
+	m_serverShutdownRequested.store(true);
 
 	if (m_heartbeatThread)
 	{
 		m_heartbeatThread->Stop();
-		delete m_heartbeatThread;
-		m_heartbeatThread = nullptr;
+		m_heartbeatThread.reset();
 	}
 
 	if (m_sessionManager)
@@ -307,7 +324,7 @@ void IOCPServer::StopServer()
 			{
 				const ULONGLONG now = ::GetTickCount64();
 				const DWORD remaining = now < nextDiagnostic ? static_cast<DWORD>(nextDiagnostic - now) : 0;
-				const auto result = (m_sessionManager->*wait)(remaining);
+				const auto result = (m_sessionManager.get()->*wait)(remaining);
 				if (result.status == IOWaitStatus::Completed)
 					return;
 
@@ -344,11 +361,7 @@ void IOCPServer::StopServer()
 	m_getAcceptExSockAddrs = nullptr;
 
 	// 실행 중인 Job이 끝난 뒤에만 준비 큐와 세션을 정리합니다.
-	if (m_serverJobScheduler)
-	{
-		delete m_serverJobScheduler;
-		m_serverJobScheduler = nullptr;
-	}
+	m_serverJobScheduler.reset();
 
 	// 준비 큐에 남은 참조도 세션 풀이 살아 있을 때 반환합니다.
 	if (m_serverReadySessionQueue)
@@ -364,26 +377,14 @@ void IOCPServer::StopServer()
 	LOGI("shutting down the IOCP core");
 	IOCPCore::Stop();
 
-	if (m_sessionManager)
-	{
-		delete m_sessionManager;
-		m_sessionManager = nullptr;
-	}
+	m_sessionManager.reset();
 
 	// 준비 큐는 스케줄러보다 뒤에 지운다.
 	// ServerJobScheduler::Finalize 가 워커를 깨우려고 이 큐의 WakeAll 을
 	// 부르므로, 조인이 끝날 때까지 살아 있어야 한다.
-	if (m_serverReadySessionQueue)
-	{
-		delete m_serverReadySessionQueue;
-		m_serverReadySessionQueue = nullptr;
-	}
+	m_serverReadySessionQueue.reset();
 
-	if (m_packetHandlerTable)
-	{
-		delete m_packetHandlerTable;
-		m_packetHandlerTable = nullptr;
-	}
+	m_packetHandlerTable.reset();
 
 	// 풀 지표를 남긴다.
 	// peak 은 초기 blockCount 산정 근거이고, grow 가 0 이 아니면 초기값이 부족했다는 뜻이며
@@ -402,14 +403,8 @@ void IOCPServer::StopServer()
 	//
 	// 반드시 세션 매니저를 지운 뒤여야 한다. 세션 정리가 담고 있던 패킷과
 	// 공유 제어 객체를 이 풀들로 되돌리기 때문이다.
-	{
-		ENGINE_POOL::EnginePools pools;
-		pools.packet = m_packetMemoryPool;
-		pools.job = m_jobMemoryPool;
-		pools.sharedPacket = m_sharedPacketMemoryPool;
-
-		ENGINE_POOL::FinalizePools(pools);
-	}
+	ENGINE_POOL::FinalizePools(m_packetMemoryPool.get(), m_jobMemoryPool.get(), m_sharedPacketMemoryPool.get());
+	m_handlerContext = {};
 
 	Logger::Flush();
 }
@@ -453,29 +448,12 @@ bool IOCPServer::EnqueueJob(ISession* session, uint16_t packetId, PacketHandle p
 		return false;
 	}
 
-	PacketHandlerFunc handler = m_packetHandlerTable->GetHandler(packetId);
-	if (!handler)
-	{
-		LOGW("session %u received packet id %u with no registered handler, dropping it",
-			clientSession->GetSessionID(), packetId);
-		return false;
-	}
-
-	auto jobHandle = MEMORY_POOL::CreateJobHandle(*m_jobMemoryPool);
-
+	auto jobHandle = CreatePacketJob(*m_jobMemoryPool, *m_packetHandlerTable,
+		*clientSession, packetId, std::move(packetHandle), m_handlerContext);
 	if (!jobHandle)
-	{
-		LOGE("session %u could not allocate a job, dropping packet id %u",
-			clientSession->GetSessionID(), packetId);
 		return false;
-	}
 
-	if (!jobHandle->InitializePacketJob(handler, session, packetId, std::move(packetHandle), m_handlerContext))
-	{
-		LOGE("failed to configure a packet job for id %u", packetId);
-		return false;
-	}
-
+	// 성공하면 큐가 소유하고, 실패하면 지역 핸들이 Job과 패킷을 반환한다.
 	return m_serverJobScheduler->EnqueueJob(*clientSession, std::move(jobHandle));
 }
 
@@ -486,38 +464,31 @@ void* IOCPServer::GetServiceContext()
 
 // 메모리 풀 정리
 
-// 풀 객체를 실제로 지운다. 소멸자와, 재기동 직전에만 부른다.
+// 소멸·재시작·시작 실패 복구 시 풀 객체를 파괴한다.
 void IOCPServer::DestroyMemoryPools()
 {
-	ENGINE_POOL::EnginePools pools;
-	pools.packet = m_packetMemoryPool;
-	pools.job = m_jobMemoryPool;
-	pools.sharedPacket = m_sharedPacketMemoryPool;
-
-	ENGINE_POOL::DestroyPools(pools);
-
-	m_packetMemoryPool = nullptr;
-	m_jobMemoryPool = nullptr;
-	m_sharedPacketMemoryPool = nullptr;
+	m_handlerContext = {};
+	m_sharedPacketMemoryPool.reset();
+	m_packetMemoryPool.reset();
+	m_jobMemoryPool.reset();
 }
 
 // 리슨 소켓 준비와 해제
 
 bool IOCPServer::CreateListenSocket(const char* ipAddress, uint16_t port)
 {
-	m_serverSocket = ::WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_OVERLAPPED);
+	m_serverSocket.Reset(::WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_OVERLAPPED));
 
-	if (m_serverSocket == INVALID_SOCKET)
+	if (m_serverSocket.Get() == INVALID_SOCKET)
 	{
 		//Log::log(LogLevel::LOG_ERROR, "[%s] WSASocket Listen socket failed");
 		return false;
 	}
 
-
 	//Log::log(LogLevel::LOG_INFO, "[%s] WSASocket Listen socket success");
 
 	// Listen 소켓도 IOCP에 연결
-	if (CreateIoCompletionPort((HANDLE)m_serverSocket, GetIOCPHandle(), (ULONG_PTR)m_serverSocket, 0) == NULL)
+	if (CreateIoCompletionPort((HANDLE)m_serverSocket.Get(), GetIOCPHandle(), (ULONG_PTR)m_serverSocket.Get(), 0) == NULL)
 	{
 		//Log::log(LogLevel::LOG_ERROR, "[%s] CreateIoCompletionPort failed for listen socket - ErroCode : %d", WSAGetLastError());
 
@@ -531,9 +502,7 @@ bool IOCPServer::CreateListenSocket(const char* ipAddress, uint16_t port)
 
 void IOCPServer::DestroyListenSocket()
 {
-	IOCPCore::CloseSocketHandle(m_serverSocket);
-
-	m_serverSocket = INVALID_SOCKET;
+	IOCPCore::CloseSocketHandle(m_serverSocket.Release());
 }
 
 bool IOCPServer::BindServerSocket(SOCKET serverSocket, const char* ipAddress, uint16_t port)
@@ -618,7 +587,6 @@ bool IOCPServer::InitializeGUIDAcceptEx(SOCKET serverSocket)
 		return false;
 	}
 
-
 	return true;
 }
 
@@ -671,7 +639,7 @@ bool IOCPServer::PostAccept(AcceptSession* acceptSession)
 
 	LOGT("accept session %u posting AcceptEx", acceptSession->GetSessionID());
 
-	if (::ReadAcquire(&m_serverShutdownRequested) == TRUE)
+	if (m_serverShutdownRequested.load(std::memory_order_acquire))
 	{
 		return false;
 	}
@@ -684,11 +652,11 @@ bool IOCPServer::PostAccept(AcceptSession* acceptSession)
 	}
 
 	// 즉시 완료가 먼저 처리돼도 발행 카운트가 음수가 되지 않도록 미리 올린다.
-	::InterlockedIncrement(&m_postedAcceptCount);
-	const int error = acceptSession->PostAcceptSocket(m_serverSocket, socket, m_acceptEx);
+	m_postedAcceptCount.fetch_add(1);
+	const int error = acceptSession->PostAcceptSocket(m_serverSocket.Get(), socket, m_acceptEx);
 	if (error != 0)
 	{
-		::InterlockedDecrement(&m_postedAcceptCount);
+		m_postedAcceptCount.fetch_sub(1);
 		IOCPCore::CloseSocketHandle(socket);
 		if (error != WSA_OPERATION_ABORTED)
 			LOGW("accept session %u could not post AcceptEx (error %d)", acceptSession->GetSessionID(), error);
@@ -702,7 +670,7 @@ void IOCPServer::RepostAfterAccept(AcceptSession& session)
 	if (!PostAccept(&session))
 	{
 		session.ReleaseSession();
-		if (!::ReadAcquire(&m_serverShutdownRequested))
+		if (!m_serverShutdownRequested.load(std::memory_order_acquire))
 			LOGW("could not repost accept session %u", session.GetSessionID());
 	}
 	ReportAcceptStarvationIfNeeded();
@@ -713,7 +681,7 @@ void IOCPServer::RefillAcceptSessions()
 	if (!m_sessionManager)
 		return;
 
-	if (::ReadAcquire(&m_serverShutdownRequested) == TRUE)
+	if (m_serverShutdownRequested.load(std::memory_order_acquire))
 		return;
 
 	const uint32_t acceptSessionCount = m_sessionManager->GetAcceptSessionCount();
@@ -745,20 +713,20 @@ void IOCPServer::RefillAcceptSessions()
 			refilled, GetPostedAcceptCount(), m_desiredAcceptCount);
 
 		// 다시 채워졌으므로 다음 고갈 때 또 울릴 수 있도록 래치를 푼다.
-		::InterlockedExchange(&m_acceptStarvationReported, FALSE);
+		m_acceptStarvationReported.store(false);
 	}
 }
 
 bool IOCPServer::CancelAllAcceptIO()
 {
-	if (m_serverSocket == INVALID_SOCKET)
+	if (m_serverSocket.Get() == INVALID_SOCKET)
 	{
 		return true;
 	}
 
 	// lpOverlapped 가 null 이면
 	// 모든 IO 작업을 취소시킨다.
-	if (!::CancelIoEx(reinterpret_cast<HANDLE>(m_serverSocket), nullptr))
+	if (!::CancelIoEx(reinterpret_cast<HANDLE>(m_serverSocket.Get()), nullptr))
 	{
 		DWORD error = ::GetLastError();
 
@@ -792,14 +760,14 @@ bool IOCPServer::CancelAllAcceptIO()
 
 void IOCPServer::ReportAcceptStarvationIfNeeded()
 {
-	if (::ReadAcquire(&m_serverShutdownRequested) == TRUE)
+	if (m_serverShutdownRequested.load(std::memory_order_acquire))
 		return;
 
-	if (::ReadAcquire(&m_postedAcceptCount) != 0)
+	if (m_postedAcceptCount.load(std::memory_order_acquire) != 0)
 		return;
 
 	// 같은 고갈에 대해 한 번만 울린다. RefillAcceptSessions 가 성공하면 풀린다.
-	if (::InterlockedCompareExchange(&m_acceptStarvationReported, TRUE, FALSE) != FALSE)
+	if (m_acceptStarvationReported.exchange(true))
 		return;
 
 	ENGINE_VIOLATION("no AcceptEx is posted. the server is running but will not take any new connection until an accept session is refilled");
@@ -807,7 +775,7 @@ void IOCPServer::ReportAcceptStarvationIfNeeded()
 
 uint32_t IOCPServer::GetPostedAcceptCount() const
 {
-	const LONG count = ::ReadAcquire(&m_postedAcceptCount);
+	const LONG count = m_postedAcceptCount.load(std::memory_order_acquire);
 
 	return count < 0 ? 0 : static_cast<uint32_t>(count);
 }
@@ -907,7 +875,7 @@ void IOCPServer::HandleSocketError(OverlappedEx* overlappedEx, ClientSession* se
 	{
 		if (errorCode == ERROR_OPERATION_ABORTED)
 			return;
-		if (!IsConnectionDeadError(errorCode))
+		if (!IsConnectionClosedError(errorCode))
 			ENGINE_VIOLATION("session %u unexpected io error %d", session->GetSessionID(), errorCode);
 		session->RequestDisconnect(DisconnectReason::SocketError);
 		return;
@@ -934,13 +902,13 @@ void IOCPServer::HandleAccept(uint32_t sessionId)
 	// 종료 스레드는 연결 인계와 첫 수신 등록까지 끝난 뒤 연결 세션을 정리한다.
 	const auto finishAccept = [](AcceptSession* session) { session->CompleteAcceptIO(); };
 	const std::unique_ptr<AcceptSession, decltype(finishAccept)> completion(acceptSession, finishAccept);
-	::InterlockedDecrement(&m_postedAcceptCount);
+	m_postedAcceptCount.fetch_sub(1);
 
 	SOCKADDR_IN peer{};
 	auto socket = acceptSession->DetachAcceptedConnection(m_getAcceptExSockAddrs, peer);
-	if (::ReadAcquire(&m_serverShutdownRequested) || socket.Get() == INVALID_SOCKET)
+	if (m_serverShutdownRequested.load(std::memory_order_acquire) || socket.Get() == INVALID_SOCKET)
 	{
-		if (socket.Get() == INVALID_SOCKET && !::ReadAcquire(&m_serverShutdownRequested))
+		if (socket.Get() == INVALID_SOCKET && !m_serverShutdownRequested.load(std::memory_order_acquire))
 			ENGINE_VIOLATION("accept session %u completed without a socket", sessionId);
 		acceptSession->ReleaseSession();
 		return;
@@ -972,7 +940,7 @@ void IOCPServer::HandleAccept(uint32_t sessionId)
 	const bool attached = clientSession->AttachSocket(std::move(socket), ipAddress, port);
 	RepostAfterAccept(*acceptSession);
 
-	if (::ReadAcquire(&m_serverShutdownRequested))
+	if (m_serverShutdownRequested.load(std::memory_order_acquire))
 		clientSession->RequestDisconnect(DisconnectReason::LocalShutdown);
 	else if (!attached || !RunAcceptedConnectSequence(clientSession, connectedSocket))
 		clientSession->RequestDisconnect(DisconnectReason::SocketError);
@@ -982,13 +950,13 @@ bool IOCPServer::RunAcceptedConnectSequence(ClientSession* clientSession, SOCKET
 {
 	LOGT("session %u running the server-side connect sequence", clientSession->GetSessionID());
 
-	if (::ReadAcquire(&m_serverShutdownRequested) == TRUE)
+	if (m_serverShutdownRequested.load(std::memory_order_acquire))
 	{
 		// 이미 서버가 Shutdown 모드면 이 Accept 결과는 버린다.
 		return false;
 	}
 
-	if (!SocketOption::SetAcceptContext(socket, m_serverSocket))
+	if (!SocketOption::SetAcceptContext(socket, m_serverSocket.Get()))
 	{
 		LOGE("session %u SO_UPDATE_ACCEPT_CONTEXT failed, dropping the connection", clientSession->GetSessionID());
 		return false;
@@ -1019,7 +987,6 @@ bool IOCPServer::RunAcceptedConnectSequence(ClientSession* clientSession, SOCKET
 
 	OnClientConnect(clientSession);
 
-
 	return true;
 }
 
@@ -1039,7 +1006,7 @@ void IOCPServer::HandleAcceptIOCancelled(uint32_t sessionId)
 	IOCPCore::CloseSocketHandle(acceptSession->DetachAcceptSocket());
 
 	// 취소된 AcceptEx 는 더 이상 걸려 있지 않다.
-	::InterlockedDecrement(&m_postedAcceptCount);
+	m_postedAcceptCount.fetch_sub(1);
 
 	// 이 경로는 다시 걸지 않는다. 세션이 비었으므로 소유권을 놓는다.
 	// 종료 중이면 주기 점검이 어차피 걸지 않고, 종료가 아닌 accept 실패라면
@@ -1169,7 +1136,7 @@ IOCPServer::SystemPacketResult IOCPServer::HandleAuthRequest(ClientSession* sess
 
 PacketHandle IOCPServer::CreateAuthResponse(SYSTEM_AUTH_RESULT authResult)
 {
-	auto* packetPool = m_packetMemoryPool;
+	auto* packetPool = m_packetMemoryPool.get();
 	if (!packetPool)
 	{
 		return {};
@@ -1188,7 +1155,7 @@ PacketHandle IOCPServer::CreateAuthResponse(SYSTEM_AUTH_RESULT authResult)
 
 	// 클라이언트의 유휴 타임아웃이 이 값에서 파생된다. 타임아웃이 0 이면
 	// 이 서버는 좀비 정리를 하지 않는다는 뜻이므로 주기도 알릴 필요가 없다.
-	response->heartbeatIntervalMs = 
+	response->heartbeatIntervalMs =
 		(m_heartbeatConfig.timeout_ms != 0)
 		? static_cast<uint32_t>(m_heartbeatConfig.checkInterval_ms)
 		: 0;
@@ -1216,5 +1183,6 @@ IOCPServer::SystemPacketResult IOCPServer::HandleHeartbeatResponse(ClientSession
 
 void IOCPServer::OnSessionDisconnectNotify(void* context, ClientSession* session, DisconnectReason reason)
 {
+	EngineExecutionScope execution;
 	static_cast<IOCPServer*>(context)->OnClientDisconnect(session, reason);
 }

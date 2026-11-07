@@ -51,12 +51,12 @@ uint32_t AcceptSession::GetSessionID() const noexcept
 
 bool AcceptSession::TryAcquireSession()
 {
-	return ::InterlockedCompareExchange(&m_sessionOwned, 1, 0) == 0;
+	return !m_sessionOwned.exchange(true);
 }
 
 void AcceptSession::ReleaseSession()
 {
-	if (::InterlockedExchange(&m_sessionOwned, 0) == 0)
+	if (!m_sessionOwned.exchange(false))
 	{
 		// 발행 권한이 없는 수락 세션을 반환했다. 소유권 인계가 어긋났다는 뜻이라
 		// 조용히 넘기면 다음에 둘이 함께 거는 상태로 이어진다.

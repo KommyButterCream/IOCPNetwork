@@ -1,6 +1,11 @@
 ﻿#pragma once
 
+#include <atomic> // for std::atomic
+#include <memory> // for std::unique_ptr
+#include <mutex> // for std::mutex
+
 #include "IOCPCore.h"
+#include "../Network/UniqueSocket.h"
 #include "HeartbeatConfig.h"
 #include "../Job/HandlerContext.h"
 #include "../Session/DisconnectReason.h"
@@ -79,11 +84,14 @@ public:
 	// 예전에는 StartServer 안에 상수 두 개로 박혀 있었고, 그래서 실시간
 	// 서비스가 15초짜리 침묵을 줄일 방법이 없었다. 기본값은 예전 값 그대로다.
 	// (값과 세 번째 항목의 사정은 Core/HeartbeatConfig.h 참고)
+	// 외부 제어 스레드에서 호출한다. 실행 중이거나 다른 제어 호출이 진행 중이면 실패한다.
 	IOCP_ENGINE_API bool StartServer(const char* ipAddress, const uint16_t port, const uint32_t maxConnectionCount,
 		const SessionBufferConfig& bufferConfig = SessionBufferPreset::Server(),
 		const ConnectionPolicyConfig& policyConfig = ConnectionPolicyConfig(),
 		const EnginePoolConfig& poolConfig = EnginePoolPreset::Server(),
 		const HeartbeatConfig& heartbeatConfig = HeartbeatConfig());
+	// 외부 호출은 정리가 끝날 때까지 대기한다. 엔진 콜백·Job 안의 호출은 거절한다.
+	// 객체 파괴 및 서비스의 패킷 핸들 반환은 호출자가 별도로 동기화한다.
 	IOCP_ENGINE_API void StopServer();
 
 	// 핸들러 등록과 패킷 생성
@@ -146,6 +154,10 @@ private:
 		Failed,    // 처리 실패. 세션을 정리한다 (오류)
 	};
 
+	// 제어 락을 보유한 상태에서 자원을 준비하거나 역순으로 정리한다.
+	bool StartResources(const char* ipAddress, const uint16_t port, const uint32_t maxConnectionCount, const SessionBufferConfig& bufferConfig, const ConnectionPolicyConfig& policyConfig, const EnginePoolConfig& poolConfig, const HeartbeatConfig& heartbeatConfig);
+	void StopResources();
+
 	// 메모리 풀 정리
 	// 서비스의 패킷 핸들이 모두 반환된 후에만 풀을 파괴합니다.
 	// 종료 시 풀을 정리하며, 엔진 파괴·재시작 시에는 풀 객체도 삭제합니다.
@@ -202,12 +214,15 @@ private:
 	static void OnSessionDisconnectNotify(void* context, ClientSession* session, DisconnectReason reason);
 
 private:
+	// 시작·종료만 직렬화한다. 송수신 워커는 이 락을 사용하지 않는다.
+	std::mutex m_controlMutex;
+	bool m_running = false;
 
 	// 서버 종료 상태
-	volatile LONG m_serverShutdownRequested = FALSE;
+	std::atomic<bool> m_serverShutdownRequested{false};
 
 	// 리슨 소켓과 수락 함수
-	SOCKET m_serverSocket = INVALID_SOCKET;
+	UniqueSocket m_serverSocket;
 	// AcceptEx 함수 포인터
 	LPFN_ACCEPTEX m_acceptEx = nullptr;
 	// GetAcceptEXSockAddrs 함수 포인터
@@ -218,27 +233,27 @@ private:
 	//
 	// 이게 0 이 되면 서버는 살아 있는 채로 새 접속을 하나도 받지 못한다.
 	// 예전에는 그 상태와 정상 동작이 로그로 구분되지 않았다.
-	volatile LONG m_postedAcceptCount = 0;
+	std::atomic<LONG> m_postedAcceptCount{0};
 	// 유지하려는 개수. 자원 부족 등으로 걸기가 실패해 이보다 줄어들면
 	// 주기 점검이 유휴 수락 세션을 다시 채운다.
 	uint32_t m_desiredAcceptCount = 0;
 	// 한 번만 크게 울리기 위한 래치. 매 실패마다 같은 경보를 쏟지 않는다.
-	volatile LONG m_acceptStarvationReported = FALSE;
-
-	// 세션 관리와 작업 실행
-	SessionManager* m_sessionManager = nullptr;
-	ServerReadySessionQueue* m_serverReadySessionQueue = nullptr;
-	ServerJobScheduler* m_serverJobScheduler = nullptr;
-
-	// 핸들러와 서비스 컨텍스트
-	PacketHandlerTable* m_packetHandlerTable = nullptr;
-	HandlerContext m_handlerContext = {};
+	std::atomic<bool> m_acceptStarvationReported{false};
 
 	// 패킷과 Job 메모리 풀
-	TlsMemoryPool* m_jobMemoryPool = nullptr;
-	TlsMemoryPool* m_packetMemoryPool = nullptr;
+	std::unique_ptr<TlsMemoryPool> m_jobMemoryPool;
+	std::unique_ptr<TlsMemoryPool> m_packetMemoryPool;
 	// 공유 패킷 참조 제어 객체용 풀입니다. 큐 배열은 세션이 직접 소유합니다.
-	TlsMemoryPool* m_sharedPacketMemoryPool = nullptr;
+	std::unique_ptr<TlsMemoryPool> m_sharedPacketMemoryPool;
+
+	// 세션 관리와 작업 실행
+	std::unique_ptr<SessionManager> m_sessionManager;
+	std::unique_ptr<ServerReadySessionQueue> m_serverReadySessionQueue;
+	std::unique_ptr<ServerJobScheduler> m_serverJobScheduler;
+
+	// 핸들러와 서비스 컨텍스트
+	std::unique_ptr<PacketHandlerTable> m_packetHandlerTable;
+	HandlerContext m_handlerContext = {};
 
 	// 접속 정책과 하트비트
 	// 접속 수용 정책. StartServer 에서 받아 보관한다.
@@ -247,5 +262,5 @@ private:
 	// 인증 응답에 주기를 실어 보내야 하기 때문이다.
 	// (왜 클라가 그 값을 알아야 하는지는 SC_SYSTEM_AUTH_RESPONSE_PACKET 주석)
 	HeartbeatConfig m_heartbeatConfig;
-	HeartbeatThread* m_heartbeatThread = nullptr;
+	std::unique_ptr<HeartbeatThread> m_heartbeatThread;
 };

@@ -13,6 +13,8 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#include <atomic> // for std::atomic
+
 #include <Windows.h>
 
 //#ifndef NOMINMAX
@@ -58,11 +60,14 @@ public:
 	IOCP_ENGINE_API IOCPCore();
 	IOCP_ENGINE_API virtual ~IOCPCore();
 
-public:
+protected:
+	// 서버·클라이언트의 제어 락 아래에서만 호출한다.
 	bool Start();
 	void Stop();
 
 	HANDLE GetIOCPHandle() const noexcept;
+
+public:
 
 	// --- 로그 제어 ---
 	//
@@ -109,7 +114,7 @@ protected:
 
 private:
 	// Destory Flag
-	LONG m_destroyFlag = 0;
+	std::atomic<bool> m_destroyFlag{false};
 
 	// Winsock
 	bool m_winsockInitialized = false; // Winsock 을 초기화 했는지, 안했는지에 대한 플래그 저장

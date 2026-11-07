@@ -1,6 +1,7 @@
 ﻿#include "ClientSession.h"
 #include "SessionJobQueue.h"
 #include "../Network/UniqueSocket.h"
+#include "../Network/SocketError.h"
 #include "../Buffer/RecvPacketBuffer.h"
 #include "../Diagnostics/EngineAssert.h"
 #include "../Job/Job.h"
@@ -19,25 +20,6 @@
 using namespace Core::Sync;
 using namespace Core::Util;
 
-namespace
-{
-	// 상대가 연결을 끊어서 발생한 I/O 실패인지 판정한다.
-	// 이건 정상적인 종료 경로이므로 ERROR 로 올리면 진짜 문제가 묻힌다.
-	bool IsPeerClosedError(int errorCode)
-	{
-		switch (errorCode)
-		{
-		case WSAECONNRESET:         // 상대가 강제 종료 (RST)
-		case WSAECONNABORTED:       // 연결 중단
-		case WSAENOTCONN:           // 이미 끊김
-		case WSAESHUTDOWN:          // 송수신 불가
-		case ERROR_NETNAME_DELETED: // 네트워크 이름 삭제 = 연결 끊김
-			return true;
-		default:
-			return false;
-		}
-	}
-}
 
 // 발행과 취소 사이에 틈이 없도록 소켓 호출까지 같은 락에서 실행한다.
 // 동기 성공과 pending은 완료 통지를 기다리고 즉시 실패는 집계하지 않는다.
@@ -184,7 +166,7 @@ bool ClientSession::OnConnect()
 	}
 
 	// 첫 수신을 걸고 접속 통지를 호출할 수 있는 연결만 종료 통지의 짝을 갖는다.
-	::InterlockedExchange(&m_serviceConnectNotified, 1);
+	m_serviceConnectNotified.store(true);
 	return true;
 }
 
@@ -199,8 +181,8 @@ void ClientSession::RequestDisconnect(DisconnectReason reason)
 
 void ClientSession::RecordDisconnectReason(DisconnectReason reason)
 {
-	::InterlockedCompareExchange(&m_disconnectReason, static_cast<LONG>(reason),
-		static_cast<LONG>(DisconnectReason::Unknown));
+	auto expected = DisconnectReason::Unknown;
+	m_disconnectReason.compare_exchange_strong(expected, reason);
 }
 
 void ClientSession::FinishDisconnect(CloseSocketFunc closeSocket, SessionDisconnectNotifyFunc notify, void* context)
@@ -215,8 +197,8 @@ void ClientSession::FinishDisconnect(CloseSocketFunc closeSocket, SessionDisconn
 	}
 
 	// 서비스가 원격 주소와 컨텍스트를 마지막으로 조회할 수 있게 락 밖에서 먼저 알린다.
-	if (::InterlockedExchange(&m_serviceConnectNotified, 0) && notify)
-		notify(context, this, static_cast<DisconnectReason>(::ReadAcquire(&m_disconnectReason)));
+	if (m_serviceConnectNotified.exchange(false) && notify)
+		notify(context, this, m_disconnectReason.load(std::memory_order_acquire));
 
 	ClearRemoteAddress();
 	m_state.store(State::Disconnected);
@@ -231,12 +213,12 @@ void ClientSession::ResetSession()
 		m_cancelled = false;
 	}
 	m_state.store(State::Ready);
-	::InterlockedExchange(&m_disconnectReason, static_cast<LONG>(DisconnectReason::Unknown));
-	::InterlockedExchange(&m_processing, 0);
+	m_disconnectReason.store(DisconnectReason::Unknown);
+	m_processing.store(false);
 	m_recvPauseCount.store(0, std::memory_order_relaxed);
 
 	// 풀 재대여는 새 연결이므로 통지 기록도 초기화한다.
-	::InterlockedExchange(&m_serviceConnectNotified, 0);
+	m_serviceConnectNotified.store(false);
 
 	SetSessionContext(nullptr);
 
@@ -257,8 +239,8 @@ void ClientSession::ResetSession()
 		m_jobQueue->Reset();
 	}
 
-	::InterlockedExchange64(&m_lastRecvTick, 0);
-	::InterlockedExchange64(&m_lastHeartbeatTick, 0);
+	m_lastRecvTick.store(0);
+	m_lastHeartbeatTick.store(0);
 
 	if (GetSessionRole() == SESSION_ROLE::CLIENT)
 	{
@@ -454,7 +436,7 @@ void ClientSession::HandlePostError(int error, IO_OPERATION operation)
 	if (error == ERROR_OPERATION_ABORTED)
 		return;
 
-	if (IsPeerClosedError(error))
+	if (IsConnectionClosedError(error))
 		LOGI("session %u peer closed while posting io %d (error %d)", GetSessionID(), static_cast<int>(operation), error);
 	else
 		LOGE("session %u could not post io %d (error %d)", GetSessionID(), static_cast<int>(operation), error);
@@ -492,7 +474,7 @@ ClientSession::ReceiveResult ClientSession::ReadReceivedPacket()
 	// 서비스 콜백이 종료를 요청하거나 다른 스레드가 수신을 취소한 경우 인출을 멈춘다.
 	{
 		SRWReadLockGuard lock(m_lifetimeLock);
-		if (m_cancelled || ::ReadAcquire(&m_disconnectReason) != static_cast<LONG>(DisconnectReason::Unknown))
+		if (m_cancelled || m_disconnectReason.load(std::memory_order_acquire) != DisconnectReason::Unknown)
 			return { ReceiveStatus::Stopped };
 	}
 	auto [status, packet, id] = m_recvPacketBuffer->ReadPacket();
@@ -553,7 +535,7 @@ void ClientSession::ContinueReceive()
 {
 	{
 		SRWReadLockGuard lock(m_lifetimeLock);
-		if (m_cancelled || ::ReadAcquire(&m_disconnectReason) != static_cast<LONG>(DisconnectReason::Unknown))
+		if (m_cancelled || m_disconnectReason.load(std::memory_order_acquire) != DisconnectReason::Unknown)
 			return;
 	}
 	// 검사 이후의 취소 경합도 PostIO와 TryPauseReceive의 락에서 다시 확인한다.
@@ -756,13 +738,13 @@ uint32_t ClientSession::GetJobQueuePeakDepth() const
 
 bool ClientSession::TryClaimProcessing()
 {
-	// 0에서 1로 바꾼 호출자만 세션을 준비 큐에 등록한다.
-	return (::InterlockedCompareExchange(&m_processing, 1, 0) == 0);
+	// false에서 true로 바꾼 호출자만 세션을 준비 큐에 등록한다.
+	return !m_processing.exchange(true);
 }
 
 void ClientSession::ReleaseProcessing()
 {
-	::InterlockedExchange(&m_processing, 0);
+	m_processing.store(false);
 }
 
 void ClientSession::SetCurrentJob(Job* job)
@@ -829,23 +811,23 @@ void ClientSession::ClearRemoteAddress()
 
 void ClientSession::UpdateLastRecvTick()
 {
-	::InterlockedExchange64(&m_lastRecvTick, static_cast<LONGLONG>(::GetTickCount64()));
+	m_lastRecvTick.store(static_cast<uint64_t>(::GetTickCount64()));
 }
 
 uint64_t ClientSession::GetLastRecvTick() const
 {
-	return static_cast<uint64_t>(::ReadAcquire64(&m_lastRecvTick));
+	return m_lastRecvTick.load(std::memory_order_acquire);
 }
 
 void ClientSession::UpdateLastHeartbeatTick()
 {
-	::InterlockedExchange64(&m_lastHeartbeatTick, static_cast<LONGLONG>(::GetTickCount64()));
+	m_lastHeartbeatTick.store(static_cast<uint64_t>(::GetTickCount64()));
 }
 
 uint64_t ClientSession::GetLastActiveTick() const
 {
 	const uint64_t lastRecvTick = GetLastRecvTick();
-	const auto lastHeartbeatTick = static_cast<uint64_t>(::ReadAcquire64(&m_lastHeartbeatTick));
+	const auto lastHeartbeatTick = m_lastHeartbeatTick.load(std::memory_order_acquire);
 	return (lastRecvTick > lastHeartbeatTick) ? lastRecvTick : lastHeartbeatTick;
 }
 

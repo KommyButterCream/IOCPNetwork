@@ -1,4 +1,5 @@
 ﻿#include "IOCPClient.h"
+#include "EngineExecutionScope.h"
 #include "ClientWatchdogThread.h"
 
 #include <WinSock2.h>
@@ -9,13 +10,13 @@
 
 #include "IOCPCore.h"
 
-
 #include "../Job/Job.h"
 #include "../Scheduler/ClientJobWorker.h"
 #include "../HandlerTable/PacketHandlerTable.h"
 
 #include "../Network/SocketOption.h"
 #include "../Network/UniqueSocket.h"
+#include "../Network/SocketError.h"
 
 #include "../Memory/TlsMemoryPool.h"
 #include "../Memory/EngineMemoryPoolHelper.h"
@@ -30,38 +31,15 @@
 #include "../../Core/Util/Logger.h"
 
 #include <utility> // for std::move
-#include <memory>  // for std::construct_at
+#include <mutex> // for std::unique_lock, std::lock_guard, std::try_to_lock
+#include <new> // for std::bad_alloc
+#include <stdexcept> // for std::length_error
+#include <memory> // for std::make_unique
 
 #pragma comment(lib, "ws2_32.lib") // for WinSock2
 #pragma comment(lib, "mswsock.lib") // for AcceptEX / ConnectEx
 
 using namespace Core::Util;
-
-namespace
-{
-	// 연결이 죽어서 난 I/O 실패인가.
-	//
-	// ERROR_OPERATION_ABORTED 는 여기 없다. 그건 우리가 건 취소이고,
-	// 취소를 건 쪽이 이미 종료 절차를 밟고 있다.
-	//
-	// !! IOCPServer.cpp 에 같은 이름의 사본이 있다. 목록을 고치면 양쪽을
-	//    같이 고쳐야 한다. (갈라졌던 경위는 그쪽 주석 참고)
-	bool IsConnectionDeadError(int errorCode)
-	{
-		switch (errorCode)
-		{
-		case WSAECONNRESET:           // 상대가 강제 종료 (RST)
-		case WSAECONNABORTED:         // 연결 중단
-		case WSAENOTCONN:             // 이미 끊김
-		case WSAESHUTDOWN:            // 송수신 불가
-		case ERROR_NETNAME_DELETED:   // 네트워크 이름 삭제 = 연결 끊김
-		case ERROR_CONNECTION_ABORTED:
-			return true;
-		default:
-			return false;
-		}
-	}
-}
 
 // 생성·시작·종료
 
@@ -73,25 +51,52 @@ IOCPClient::~IOCPClient()
 {
 	StopClient();
 
-	// 풀 객체를 실제로 지우는 유일한 자리다.
+	// 정상 종료 후 남겨 둔 풀 객체를 파괴한다.
 	// StopClient 는 Finalize 만 한다. (이유는 ENGINE_POOL::FinalizePools 주석)
 	DestroyMemoryPools();
 }
 
 bool IOCPClient::StartClient(const char* serverIp, const uint16_t port, const SessionBufferConfig& bufferConfig, uint32_t iocpThreadCount, const EnginePoolConfig& poolConfig, const ClientLivenessConfig& livenessConfig)
 {
-	// 실행 중인 연결이 소유한 풀과 소켓은 StopClient가 먼저 정리해야 한다.
-	if (m_session)
+	if (EngineExecutionScope::IsActive())
+	{
+		LOGE("StartClient must be called outside engine callbacks and jobs");
 		return false;
+	}
+	std::unique_lock lock(m_controlMutex, std::try_to_lock);
+	if (!lock.owns_lock() || m_running)
+		return false;
+	EngineExecutionScope execution;
+	try
+	{
+		if (StartResources(serverIp, port, bufferConfig, iocpThreadCount, poolConfig, livenessConfig))
+		{
+			m_running = true;
+			return true;
+		}
+	}
+	catch (const std::bad_alloc&)
+	{
+		LOGE("StartClient failed to allocate resources");
+	}
+	catch (const std::length_error&)
+	{
+		LOGE("StartClient resource count exceeds container capacity");
+	}
+	catch (...)
+	{
+		StopResources();
+		DestroyMemoryPools();
+		throw;
+	}
+	StopResources();
+	DestroyMemoryPools();
+	return false;
+}
 
-	// 지난 주기의 한 번짜리 게이트를 되돌린다.
-	//
-	// m_destroyFlag 는 StopClient 가 올리기만 하고 내리지 않았다. 그래서
-	// Start -> Stop -> Start 를 한 객체에서 하면 두 번째 StopClient 이 통째로
-	// 무시됐다 — 스케줄러 스레드도, GQCS 워커도, 세션도, 풀도 정리되지 않는다.
-	// 기동이 실패해 다시 시도하는 서비스가 그대로 이 경로를 밟는다.
-	::InterlockedExchange(&m_destroyFlag, 0);
-	::InterlockedExchange(&m_disconnecting, 0);
+bool IOCPClient::StartResources(const char* serverIp, const uint16_t port, const SessionBufferConfig& bufferConfig, uint32_t iocpThreadCount, const EnginePoolConfig& poolConfig, const ClientLivenessConfig& livenessConfig)
+{
+	m_disconnecting.store(false);
 
 	// 앞선 주기의 풀 객체가 남아 있으면 여기서 지운다. StopClient 는 Finalize
 	// 까지만 하고 객체를 남기기 때문이다. (이유는 ENGINE_POOL::FinalizePools 주석)
@@ -182,15 +187,26 @@ bool IOCPClient::StartClient(const char* serverIp, const uint16_t port, const Se
 	if (IOCPCore::Start() && StartConnection(bufferConfig, poolConfig))
 		return true;
 
-	StopClient();
 	return false;
 }
 
 void IOCPClient::StopClient()
 {
-	if (::InterlockedCompareExchange(&m_destroyFlag, 1, 0) == 1)
+	if (EngineExecutionScope::IsActive())
+	{
+		LOGE("StopClient must be requested through an external control thread");
 		return;
+	}
+	std::lock_guard lock(m_controlMutex);
+	if (!m_running)
+		return;
+	EngineExecutionScope execution;
+	StopResources();
+	m_running = false;
+}
 
+void IOCPClient::StopResources()
+{
 	LOGI("client shutting down");
 
 	// 감시는 먼저 끝내되, 인증 완료 핸들러가 Arm을 호출할 수 있어 객체는 조인 뒤에 해제한다.
@@ -200,11 +216,7 @@ void IOCPClient::StopClient()
 		m_clientWatchdog->Stop();
 	}
 
-	if (m_clientJobWorker)
-	{
-		delete m_clientJobWorker;
-		m_clientJobWorker = nullptr;
-	}
+	m_clientJobWorker.reset();
 
 	if (m_session)
 	{
@@ -227,15 +239,10 @@ void IOCPClient::StopClient()
 	//     아래의 세션 및 메모리풀 해제가 안전해진다.
 	IOCPCore::Stop();
 
-	delete m_clientWatchdog;
-	m_clientWatchdog = nullptr;
+	m_clientWatchdog.reset();
 
 	// [3] 세션 해제
-	if (m_session)
-	{
-		delete m_session;
-		m_session = nullptr;
-	}
+	m_session.reset();
 
 	// 세션(m_session)을 이미 지웠으므로 세션이 소유한 패킷 참조는 모두 반납된 상태다.
 	if (m_sharedPacketMemoryPool)
@@ -249,20 +256,10 @@ void IOCPClient::StopClient()
 	//
 	// 반드시 세션을 지운 뒤여야 한다. 세션 정리가 담고 있던 패킷과 송신
 	// 공유 제어 객체를 이 풀들로 되돌리기 때문이다.
-	{
-		ENGINE_POOL::EnginePools pools;
-		pools.packet = m_packetMemoryPool;
-		pools.job = m_jobMemoryPool;
-		pools.sharedPacket = m_sharedPacketMemoryPool;
+	ENGINE_POOL::FinalizePools(m_packetMemoryPool.get(), m_jobMemoryPool.get(), m_sharedPacketMemoryPool.get());
+	m_handlerContext = {};
 
-		ENGINE_POOL::FinalizePools(pools);
-	}
-
-	if (m_packetHandlerTable)
-	{
-		delete m_packetHandlerTable;
-		m_packetHandlerTable = nullptr;
-	}
+	m_packetHandlerTable.reset();
 
 	memset(m_serverIPAddress, 0, sizeof(m_serverIPAddress));
 	m_serverPort = 0;
@@ -289,7 +286,7 @@ SharedPacketHandle IOCPClient::CreateSharedPacket(PacketHandle packet) const
 
 ISession* IOCPClient::GetSession() const
 {
-	return m_session;
+	return m_session.get();
 }
 
 // 서비스 작업 등록과 컨텍스트
@@ -297,13 +294,13 @@ ISession* IOCPClient::GetSession() const
 bool IOCPClient::EnqueueJob(ISession* session, uint16_t packetId, PacketHandle packetHandle)
 {
 	// 서비스가 전달한 세션이 이 클라이언트 소유인지 제출 지점에서 확인한다.
-	if (!session || session != m_session)
+	if (!session || session != m_session.get())
 	{
 		ENGINE_VIOLATION("EnqueueJob received session %p but this client owns %p",
-			static_cast<const void*>(session), static_cast<const void*>(m_session));
+			static_cast<const void*>(session), static_cast<const void*>(m_session.get()));
 		return false;
 	}
-	ClientSession* clientSession = m_session;
+	ClientSession* clientSession = m_session.get();
 
 	if (!packetHandle)
 	{
@@ -316,28 +313,12 @@ bool IOCPClient::EnqueueJob(ISession* session, uint16_t packetId, PacketHandle p
 		return false;
 	}
 
-	PacketHandlerFunc handler = m_packetHandlerTable->GetHandler(packetId);
-	if (!handler)
-	{
-		LOGW("received packet id %u with no registered handler, dropping it", packetId);
-		return false;
-	}
-
-	auto jobHandle = MEMORY_POOL::CreateJobHandle(*m_jobMemoryPool);
-
+	auto jobHandle = CreatePacketJob(*m_jobMemoryPool, *m_packetHandlerTable,
+		*clientSession, packetId, std::move(packetHandle), m_handlerContext);
 	if (!jobHandle)
-	{
-		LOGE("could not allocate a job, dropping packet id %u", packetId);
 		return false;
-	}
 
-	if (!jobHandle->InitializePacketJob(handler, session, packetId, std::move(packetHandle), m_handlerContext))
-	{
-		LOGE("failed to configure a packet job for id %u", packetId);
-		return false;
-	}
-
-	// Success transfers ownership to the queue; failure keeps it in this handle.
+	// 성공하면 큐가 소유하고, 실패하면 지역 핸들이 Job과 패킷을 반환한다.
 	if (!clientSession->EnqueueJob(std::move(jobHandle)))
 	{
 		LOGE("failed to enqueue a job for packet id %u", packetId);
@@ -357,16 +338,9 @@ void* IOCPClient::GetServiceContext()
 void IOCPClient::DestroyMemoryPools()
 {
 	m_handlerContext = {};
-	ENGINE_POOL::EnginePools pools;
-	pools.packet = m_packetMemoryPool;
-	pools.job = m_jobMemoryPool;
-	pools.sharedPacket = m_sharedPacketMemoryPool;
-
-	ENGINE_POOL::DestroyPools(pools);
-
-	m_packetMemoryPool = nullptr;
-	m_jobMemoryPool = nullptr;
-	m_sharedPacketMemoryPool = nullptr;
+	m_sharedPacketMemoryPool.reset();
+	m_packetMemoryPool.reset();
+	m_jobMemoryPool.reset();
 }
 
 // 접속 준비와 발행
@@ -389,29 +363,24 @@ bool IOCPClient::StartConnection(const SessionBufferConfig& bufferConfig, const 
 		return false;
 	}
 
-	m_jobMemoryPool = pools.job;
-	m_packetMemoryPool = pools.packet;
-	m_sharedPacketMemoryPool = pools.sharedPacket;
+	m_jobMemoryPool = std::move(pools.job);
+	m_packetMemoryPool = std::move(pools.packet);
+	m_sharedPacketMemoryPool = std::move(pools.sharedPacket);
 
-	m_handlerContext.m_sharedPool = m_sharedPacketMemoryPool;
-	m_handlerContext.m_packetPool = m_packetMemoryPool;
+	m_handlerContext.m_sharedPool = m_sharedPacketMemoryPool.get();
+	m_handlerContext.m_packetPool = m_packetMemoryPool.get();
 	m_handlerContext.serviceContext = GetServiceContext();
 
-	m_packetHandlerTable = new PacketHandlerTable();
-	if (!m_packetHandlerTable)
-		return false;
-
+	m_packetHandlerTable = std::make_unique<PacketHandlerTable>();
 
 	// 서버와의 통신을 위한 세션 생성
-	m_session = new ClientSession;
-	if (!m_session)
-		return false;
+	m_session = std::make_unique<ClientSession>();
 	if (!m_session->Initialize(SESSION_ROLE::CLIENT, 0))
 	{
 		LOGE("failed to initialize the client session");
 		return false;
 	}
-	if (!m_session->InitializeMemoryPool(m_jobMemoryPool, m_packetMemoryPool, bufferConfig))
+	if (!m_session->InitializeMemoryPool(m_jobMemoryPool.get(), m_packetMemoryPool.get(), bufferConfig))
 		return false;
 	m_session->SetOwnerCallbacks({this, &IOCPClient::OnDisconnectRequest, &IOCPClient::OnReleaseReady});
 
@@ -420,11 +389,9 @@ bool IOCPClient::StartConnection(const SessionBufferConfig& bufferConfig, const 
 		return false;
 
 	// 세션 잡큐의 Job 을 처리 하기 위한 스케쥴러/스레드 생성
-	m_clientJobWorker = new ClientJobWorker;
-	if (!m_clientJobWorker)
-		return false;
+	m_clientJobWorker = std::make_unique<ClientJobWorker>();
 
-	if (!m_clientJobWorker->Initialize(m_session))
+	if (!m_clientJobWorker->Initialize(m_session.get()))
 	{
 		LOGE("failed to initialize the client session scheduler");
 		return false;
@@ -435,21 +402,18 @@ bool IOCPClient::StartConnection(const SessionBufferConfig& bufferConfig, const 
 	// 여기서 만들되 무장은 하지 않는다. 기준이 되는 하트비트 주기를
 	// 서버가 인증 응답으로 알려주기 때문이다. 무장은 그 응답을 처리하는
 	// 자리에서 한다. (HandleSystemPacket 의 SC_SYSTEM_AUTH_RESPONSE)
-	m_clientWatchdog = new ClientWatchdogThread(m_session, m_livenessConfig);
-	if (!m_clientWatchdog)
-		return false;
+	m_clientWatchdog = std::make_unique<ClientWatchdogThread>(m_session.get(), m_livenessConfig);
 
 	if (!m_clientWatchdog->Start())
 	{
 		LOGE("failed to start the client liveness watchdog");
-		delete m_clientWatchdog;
-		m_clientWatchdog = nullptr;
+		m_clientWatchdog.reset();
 		return false;
 	}
 
 	// 비동기 Connect To Server
 	// 연결에 대한 통지를 GQCS 에서 처리 한다.
-	if (!PostConnect(m_session))
+	if (!PostConnect(m_session.get()))
 	{
 		return false;
 	}
@@ -627,7 +591,7 @@ void IOCPClient::HandleSocketError(ClientSession* session, int errorCode, IO_OPE
 	{
 		if (errorCode == ERROR_OPERATION_ABORTED)
 			return;
-		if (!IsConnectionDeadError(errorCode))
+		if (!IsConnectionClosedError(errorCode))
 			ENGINE_VIOLATION("session %u unexpected io error %d", session->GetSessionID(), errorCode);
 		session->RequestDisconnect(DisconnectReason::SocketError);
 		return;
@@ -684,9 +648,9 @@ bool IOCPClient::RunClientConnectSequence()
 	}
 
 	// 인증 응답보다 서비스의 접속 통지가 먼저 도착해야 한다.
-	OnClientConnect(m_session);
+	OnClientConnect(m_session.get());
 
-	if (!SendSystemAuthRequest(m_session))
+	if (!SendSystemAuthRequest(m_session.get()))
 	{
 		LOGE("session %u system auth request send failed", m_session->GetSessionID());
 		return false;
@@ -893,13 +857,14 @@ DisconnectReason IOCPClient::HandleHeartbeatRequest(ClientSession* session, cons
 void IOCPClient::OnDisconnectRequest(void* context, ClientSession* session)
 {
 	auto* client = static_cast<IOCPClient*>(context);
-	if (::InterlockedExchange(&client->m_disconnecting, 1) != 0)
+	if (client->m_disconnecting.exchange(true))
 		return;
 	session->CloseWhenIdle();
 }
 
 void IOCPClient::OnReleaseReady(void* context, ClientSession* session)
 {
+	EngineExecutionScope execution;
 	session->FinishDisconnect(&IOCPCore::CloseSocketHandle,
 		[](void* owner, ClientSession* ended, DisconnectReason reason)
 		{

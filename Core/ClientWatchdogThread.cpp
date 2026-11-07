@@ -32,7 +32,7 @@ void ClientWatchdogThread::Arm(uint32_t serverHeartbeatInterval_ms)
 {
 	const uint64_t timeout_ms = m_config.ResolveIdleTimeout(serverHeartbeatInterval_ms);
 
-	::InterlockedExchange64(&m_idleTimeout_ms, static_cast<LONGLONG>(timeout_ms));
+	m_idleTimeout_ms.store(timeout_ms);
 
 	if (timeout_ms == 0)
 	{
@@ -47,12 +47,12 @@ void ClientWatchdogThread::Arm(uint32_t serverHeartbeatInterval_ms)
 
 void ClientWatchdogThread::Disarm()
 {
-	::InterlockedExchange64(&m_idleTimeout_ms, 0);
+	m_idleTimeout_ms.store(0);
 }
 
 bool ClientWatchdogThread::HasFiredTimeout() const
 {
-	return ::ReadAcquire(&m_fired) != 0;
+	return m_fired.load(std::memory_order_acquire);
 }
 
 void ClientWatchdogThread::Run()
@@ -60,7 +60,7 @@ void ClientWatchdogThread::Run()
 	while (!IsStopRequested())
 	{
 		const uint64_t timeout_ms =
-			static_cast<uint64_t>(::ReadAcquire64(&m_idleTimeout_ms));
+			m_idleTimeout_ms.load(std::memory_order_acquire);
 
 		// 무장 전에는 짧게 돌면서 무장을 기다린다. 무장은 인증 응답이
 		// 도착한 뒤에 일어나므로 여기서는 기다리는 것 말고 할 일이 없다.
@@ -90,7 +90,7 @@ void ClientWatchdogThread::Run()
 
 		// 대기 중에 무장이 풀렸을 수 있다. 다시 읽는다.
 		const uint64_t armed_ms =
-			static_cast<uint64_t>(::ReadAcquire64(&m_idleTimeout_ms));
+			m_idleTimeout_ms.load(std::memory_order_acquire);
 
 		if (armed_ms == 0 || m_session == nullptr)
 		{
@@ -146,8 +146,8 @@ void ClientWatchdogThread::Run()
 		}
 
 		// 한 번만 쏜다. 여기서 무장을 푸는 것이 그 역할도 겸한다.
-		::InterlockedExchange64(&m_idleTimeout_ms, 0);
-		::InterlockedExchange(&m_fired, 1);
+		m_idleTimeout_ms.store(0);
+		m_fired.store(true);
 
 		LOGW("session %u heard nothing from the server for %llu ms (limit %llu ms). "
 			"the connection is dead, dropping it",

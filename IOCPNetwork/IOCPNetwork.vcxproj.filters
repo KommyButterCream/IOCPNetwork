@@ -140,6 +140,9 @@
     <ClInclude Include="..\Core\IOCPClient.h">
       <Filter>Core</Filter>
     </ClInclude>
+    <ClInclude Include="..\Core\EngineExecutionScope.h">
+      <Filter>Core</Filter>
+    </ClInclude>
     <ClInclude Include="..\Core\IOCPCore.h">
       <Filter>Core</Filter>
     </ClInclude>
@@ -183,6 +186,9 @@
       <Filter>Network</Filter>
     </ClInclude>
     <ClInclude Include="..\Network\SocketOption.h">
+      <Filter>Network</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Network\SocketError.h">
       <Filter>Network</Filter>
     </ClInclude>
     <ClInclude Include="..\Network\UniqueSocket.h">

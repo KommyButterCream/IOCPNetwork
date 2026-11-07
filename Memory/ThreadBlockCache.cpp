@@ -1,5 +1,9 @@
 ﻿#include "ThreadBlockCache.h"
 
+#include <atomic> // for std::atomic, std::memory_order_acquire
+
+#include <memory> // for std::construct_at, std::destroy_at
+
 #include "../Diagnostics/EngineAssert.h"
 
 #include "../../Core/Util/Logger.h"
@@ -12,11 +16,11 @@ namespace MemoryPoolDetail
 	{
 		// 빠른 슬롯 점유 비트맵. Finalize 가 슬롯을 반납하므로 레지스트리를
 		// 만들고 지우기를 반복해도 슬롯이 마르지 않는다.
-		volatile LONG64 g_slotMask = 0;
+		std::atomic<uint64_t> g_slotMask{0};
 
 		// 슬롯이 재사용될 때 예전 레지스트리의 캐시 포인터를 잘못 집는 일이
 		// 없도록 세대를 붙인다. 세대가 다르면 포인터를 아예 건드리지 않는다.
-		volatile LONG g_generationCounter = 0;
+		std::atomic<uint32_t> g_generationCounter{0};
 
 		// 스레드당 슬롯. 핫 경로는 여기서 포인터 하나를 읽는 게 전부다.
 		//
@@ -36,12 +40,12 @@ namespace MemoryPoolDetail
 		{
 			for (;;)
 			{
-				const LONG64 current = ::ReadAcquire64(&g_slotMask);
+				uint64_t current = g_slotMask.load(std::memory_order_acquire);
 
 				uint32_t slot = ThreadCacheRegistry::MAX_FAST_SLOTS;
 				for (uint32_t i = 0; i < ThreadCacheRegistry::MAX_FAST_SLOTS; ++i)
 				{
-					if ((current & (1LL << i)) == 0)
+					if ((current & (uint64_t{1} << i)) == 0)
 					{
 						slot = i;
 						break;
@@ -51,8 +55,8 @@ namespace MemoryPoolDetail
 				if (slot == ThreadCacheRegistry::MAX_FAST_SLOTS)
 					return UINT32_MAX;
 
-				const LONG64 desired = current | (1LL << slot);
-				if (::InterlockedCompareExchange64(&g_slotMask, desired, current) == current)
+				const uint64_t desired = current | (uint64_t{1} << slot);
+				if (g_slotMask.compare_exchange_strong(current, desired))
 					return slot;
 			}
 		}
@@ -64,9 +68,9 @@ namespace MemoryPoolDetail
 
 			for (;;)
 			{
-				const LONG64 current = ::ReadAcquire64(&g_slotMask);
-				const LONG64 desired = current & ~(1LL << slot);
-				if (::InterlockedCompareExchange64(&g_slotMask, desired, current) == current)
+				uint64_t current = g_slotMask.load(std::memory_order_acquire);
+				const uint64_t desired = current & ~(uint64_t{1} << slot);
+				if (g_slotMask.compare_exchange_strong(current, desired))
 					return;
 			}
 		}
@@ -173,7 +177,7 @@ namespace MemoryPoolDetail
 				MAX_FAST_SLOTS);
 		}
 
-		m_generation = static_cast<uint32_t>(::InterlockedIncrement(&g_generationCounter));
+		m_generation = g_generationCounter.fetch_add(1) + 1;
 
 		// 스레드가 죽을 때 캐시를 회수하기 위한 등록.
 		// 이게 없으면 스레드가 죽을 때마다 그 캐시에 남은 블록이 그대로 샌다.
@@ -267,6 +271,7 @@ namespace MemoryPoolDetail
 			return nullptr;
 		}
 
+		std::construct_at(cache);
 		cache->m_pool = m_pool;
 		cache->m_table = m_table;
 		cache->m_owner = this;
@@ -297,7 +302,7 @@ namespace MemoryPoolDetail
 
 		// 스레드 종료 콜백과 Finalize 가 같은 캐시를 두고 겹칠 수 있다.
 		// 진 쪽은 false 를 돌려준다. 목록에서 빠지지 않았다는 뜻이다.
-		if (::InterlockedCompareExchange(&cache->m_detached, 1, 0) != 0)
+		if (cache->m_detached.exchange(true))
 			return false;
 
 		// 목록에서 빼는 것은 FlushAll 뒤여야 한다. 먼저 빼면 Finalize 가
@@ -337,6 +342,7 @@ namespace MemoryPoolDetail
 		if (m_flsIndex != FLS_OUT_OF_INDEXES && cache->m_threadId == ::GetCurrentThreadId())
 			::FlsSetValue(m_flsIndex, nullptr);
 
+		std::destroy_at(cache);
 		::HeapFree(::GetProcessHeap(), 0, cache);
 		return true;
 	}

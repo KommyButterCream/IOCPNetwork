@@ -37,7 +37,7 @@ std::unique_ptr<ClientSessionPool> ClientSessionPool::Create(uint32_t capacity,
 
 		if (!sessions[i].InitializeMemoryPool(jobMemoryPool, packetMemoryPool, bufferConfig))
 		{
-			ENGINE_VIOLATION("failed to bind memory pools to client session %u of %u", i, capacity);
+			LOGE("failed to bind memory pools to client session %u of %u", i, capacity);
 			return nullptr;
 		}
 	}

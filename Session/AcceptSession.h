@@ -1,5 +1,7 @@
 ﻿#pragma once
 
+#include <atomic> // for std::atomic
+
 #include "../Network/OverlappedEx.h"
 #include <MSWSock.h> // for LPFN_ACCEPTEX, LPFN_GETACCEPTEXSOCKADDRS
 
@@ -39,7 +41,7 @@ private:
 
 	uint32_t m_sessionId = INVALID_SESSION_ID;
 	// 완료 워커와 주기 점검 중 한 쪽만 다음 요청을 발행할 수 있다.
-	volatile LONG m_sessionOwned = 0;
+	std::atomic<bool> m_sessionOwned{false};
 	
 	AcceptRequest m_request{};
 	mutable SRWLOCK m_acceptSocketLock = SRWLOCK_INIT;

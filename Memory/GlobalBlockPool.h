@@ -4,6 +4,8 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
+#include <atomic> // for std::atomic
+
 #include <Windows.h>
 
 #include "BlockLayout.h"
@@ -137,9 +139,9 @@ namespace MemoryPoolDetail
 
 		// 풀 전체의 커밋 회계. 빈별 committedBytes 의 합과 같아야 한다.
 		// 확장은 growLock 안에서만 일어나므로 갱신은 그 락이 지킨다.
-		// 읽기는 락 밖에서도 오므로 Interlocked 로 읽는다.
-		volatile LONG64 m_committedBytes = 0;
-		volatile LONG64 m_commitLimitHits = 0;
+		// 읽기는 락 밖에서도 오므로 원자적으로 읽는다.
+		std::atomic<LONG64> m_committedBytes{0};
+		std::atomic<LONG64> m_commitLimitHits{0};
 		uint64_t m_maxCommittedBytes = 0;   // 0 = 무제한
 	};
 }

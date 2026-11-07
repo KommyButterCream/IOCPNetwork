@@ -175,8 +175,8 @@ void TlsMemoryPool::Finalize()
 		totalRelease += release;
 	}
 
-	const LONG64 bypassAcquire = ::ReadAcquire64(&m_bypassAcquire);
-	const LONG64 bypassRelease = ::ReadAcquire64(&m_bypassRelease);
+	const LONG64 bypassAcquire = m_bypassAcquire.load(std::memory_order_acquire);
+	const LONG64 bypassRelease = m_bypassRelease.load(std::memory_order_acquire);
 
 	const bool blocksStillOut = (totalAcquire != totalRelease) || (bypassAcquire != bypassRelease);
 
@@ -200,8 +200,8 @@ void TlsMemoryPool::Finalize()
 
 	// 같은 객체를 다시 Initialize 할 수 있으므로 우회 카운터도 되돌린다.
 	// 남겨두면 다음 수명의 Finalize 가 이전 수명의 불균형을 보고한다.
-	::InterlockedExchange64(&m_bypassAcquire, 0);
-	::InterlockedExchange64(&m_bypassRelease, 0);
+	m_bypassAcquire.store(0);
+	m_bypassRelease.store(0);
 
 	m_table = BinTable{};
 	m_initialized = false;
@@ -356,7 +356,7 @@ void* TlsMemoryPool::AcquireBypass(size_t size)
 	header->reserved = 0;
 	header->next = static_cast<BlockHeader*>(raw);   // 해제용 원본 주소
 
-	::InterlockedIncrement64(&m_bypassAcquire);
+	m_bypassAcquire.fetch_add(1);
 
 	return payload;
 }
@@ -364,7 +364,7 @@ void* TlsMemoryPool::AcquireBypass(size_t size)
 void TlsMemoryPool::ReleaseBypass(BlockHeader* header)
 {
 	void* raw = header->next;
-	::InterlockedIncrement64(&m_bypassRelease);
+	m_bypassRelease.fetch_add(1);
 	::HeapFree(::GetProcessHeap(), 0, raw);
 }
 
@@ -458,10 +458,10 @@ void TlsMemoryPool::LogStats(const char* poolName) const
 			stats.segmentCount, committed, marker);
 	}
 
-	const LONG64 bypassAcquire = ::ReadAcquire64(&m_bypassAcquire);
+	const LONG64 bypassAcquire = m_bypassAcquire.load(std::memory_order_acquire);
 	if (bypassAcquire != 0)
 	{
-		const LONG64 bypassRelease = ::ReadAcquire64(&m_bypassRelease);
+		const LONG64 bypassRelease = m_bypassRelease.load(std::memory_order_acquire);
 		LOGI("[%s] pool %u bypass (over the largest bin) : acquire %lld  release %lld  live %lld",
 			name, ownerTag, bypassAcquire, bypassRelease, bypassAcquire - bypassRelease);
 	}

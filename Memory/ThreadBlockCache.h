@@ -4,6 +4,8 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
+#include <atomic> // for std::atomic
+
 #include <Windows.h>
 
 #include "BlockLayout.h"
@@ -87,7 +89,7 @@ namespace MemoryPoolDetail
 		ThreadBlockCache* m_nextRegistered = nullptr;
 
 		DWORD m_threadId = 0;
-		volatile LONG m_detached = 0;
+		std::atomic<bool> m_detached{false};
 
 		// 원자적 연산 없이 갱신한다. 스레드 캐시를 두는 이유의 절반이 이거다.
 		// 집계는 레지스트리가 순회해서 한다.

@@ -29,24 +29,25 @@
 
 #include "../../Core/Util/Logger.h"
 
-#include <new>
+#include <new> // for std::nothrow
+#include <memory> // for std::unique_ptr
 
 namespace ENGINE_POOL
 {
 	// 엔진이 들고 다니는 풀 묶음. 만들기와 지우기를 한 단위로 다루려고 둔다.
 	struct EnginePools
 	{
-		TlsMemoryPool* packet = nullptr;
-		TlsMemoryPool* job = nullptr;
-		TlsMemoryPool* sharedPacket = nullptr;
+		std::unique_ptr<TlsMemoryPool> packet;
+		std::unique_ptr<TlsMemoryPool> job;
+		std::unique_ptr<TlsMemoryPool> sharedPacket;
 	};
 
 	inline void DestroyPools(EnginePools& pools)
 	{
 		// 지우는 순서는 상관없다. 서로를 참조하지 않는다.
-		delete pools.packet;    pools.packet = nullptr;
-		delete pools.job;       pools.job = nullptr;
-		delete pools.sharedPacket; pools.sharedPacket = nullptr;
+		pools.packet.reset();
+		pools.job.reset();
+		pools.sharedPacket.reset();
 	}
 
 	// 재고만 OS 로 돌려주고 풀 객체는 남긴다.
@@ -73,17 +74,17 @@ namespace ENGINE_POOL
 	//
 	//   객체 자체는 수십 바이트다. 세그먼트는 Finalize 가 이미 전부 돌려주므로
 	//   붙들리는 메모리는 없다. 실제 delete 는 소유자의 소멸자가 한다.
-	inline void FinalizePools(EnginePools& pools)
+	inline void FinalizePools(TlsMemoryPool* packet, TlsMemoryPool* job, TlsMemoryPool* sharedPacket)
 	{
-		if (pools.packet)    pools.packet->Finalize();
-		if (pools.job)       pools.job->Finalize();
-		if (pools.sharedPacket) pools.sharedPacket->Finalize();
+		if (packet) packet->Finalize();
+		if (job) job->Finalize();
+		if (sharedPacket) sharedPacket->Finalize();
 	}
 
 	namespace Detail
 	{
 		// 빈 목록형 풀 하나를 만든다.
-		inline TlsMemoryPool* CreateBinSetPool(const PoolBinSetConfig& config,
+		inline std::unique_ptr<TlsMemoryPool> CreateBinSetPool(const PoolBinSetConfig& config,
 			const char* poolName, uint32_t payloadAlignment = 16)
 		{
 			// 설정 배열을 풀이 받는 모양으로 옮긴다. 둘을 같은 타입으로
@@ -95,7 +96,7 @@ namespace ENGINE_POOL
 				binConfigs[i].blockCount = config.entries[i].blockCount;
 			}
 
-			TlsMemoryPool* pool = new (std::nothrow) TlsMemoryPool;
+			auto pool = std::unique_ptr<TlsMemoryPool>(new (std::nothrow) TlsMemoryPool);
 			if (!pool)
 			{
 				LOGE("failed to allocate the %s memory pool", poolName);
@@ -105,7 +106,6 @@ namespace ENGINE_POOL
 			if (!pool->Initialize(binConfigs, config.entryCount, payloadAlignment))
 			{
 				LOGE("failed to initialize the %s memory pool", poolName);
-				delete pool;
 				return nullptr;
 			}
 
@@ -114,12 +114,12 @@ namespace ENGINE_POOL
 		}
 
 		// 블록 크기가 고정된 풀 하나를 만든다.
-		inline TlsMemoryPool* CreateReservePool(const PoolReserveConfig& config,
+		inline std::unique_ptr<TlsMemoryPool> CreateReservePool(const PoolReserveConfig& config,
 			uint32_t blockSize, const char* poolName, uint32_t payloadAlignment = 16)
 		{
 			const TlsMemoryPool::BinConfig binConfig{ blockSize, config.blockCount };
 
-			TlsMemoryPool* pool = new (std::nothrow) TlsMemoryPool;
+			auto pool = std::unique_ptr<TlsMemoryPool>(new (std::nothrow) TlsMemoryPool);
 			if (!pool)
 			{
 				LOGE("failed to allocate the %s memory pool", poolName);
@@ -129,7 +129,6 @@ namespace ENGINE_POOL
 			if (!pool->Initialize(&binConfig, 1, payloadAlignment))
 			{
 				LOGE("failed to initialize the %s memory pool", poolName);
-				delete pool;
 				return nullptr;
 			}
 

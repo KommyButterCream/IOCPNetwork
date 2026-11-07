@@ -1,5 +1,9 @@
 ﻿#include "GlobalBlockPool.h"
 
+#include <atomic> // for std::atomic, std::memory_order_acquire
+
+#include <memory> // for std::construct_at, std::destroy_at
+
 #include <string.h>
 
 #include "../Diagnostics/EngineAssert.h"
@@ -36,12 +40,12 @@ namespace MemoryPoolDetail
 	{
 		SLIST_HEADER chunkList;          // 16. 묶음들의 락프리 스택
 		SRWLOCK growLock;                // 8.  세그먼트 확장에서만 잡힌다
-		volatile LONG64 blocksInPool;    // 8
-		volatile LONG64 blocksCreated;   // 8
-		volatile LONG growthCount;       // 4
-		volatile LONG failCount;         // 4
+		std::atomic<LONG64> blocksInPool{0};    // 8
+		std::atomic<LONG64> blocksCreated{0};   // 8
+		std::atomic<LONG> growthCount{0};       // 4
+		std::atomic<LONG> failCount{0};         // 4
 		void** segments;                 // 8
-		volatile LONG64 committedBytes;  // 8. 이 빈이 OS 에서 잡은 총 바이트
+		std::atomic<LONG64> committedBytes{0};  // 8. 이 빈이 OS 에서 잡은 총 바이트
 		uint32_t segmentCount;           // 4
 		uint32_t segmentCapacity;        // 4
 
@@ -49,7 +53,7 @@ namespace MemoryPoolDetail
 		// 나가 있던 블록 수의 상한이 된다. 풀 크기를 정하는 근거다.
 		// 스레드별 카운터로는 구할 수 없다. 생산 스레드와 소비 스레드가
 		// 다르면 생산 쪽 카운터는 단조 증가만 하기 때문이다.
-		volatile LONG64 minBlocksInPool; // 8
+		std::atomic<LONG64> minBlocksInPool{0}; // 8
 
 		char pad[48];
 	};
@@ -89,6 +93,7 @@ namespace MemoryPoolDetail
 
 		for (uint32_t b = 0; b < table.binCount; ++b)
 		{
+			std::construct_at(&m_bins[b]);
 			::InitializeSListHead(&m_bins[b].chunkList);
 			::InitializeSRWLock(&m_bins[b].growLock);
 
@@ -127,7 +132,7 @@ namespace MemoryPoolDetail
 			}
 
 			if (!releaseSegments)
-				keptBytes += target.committedBytes;
+				keptBytes += target.committedBytes.load();
 
 			if (target.segments)
 				::HeapFree(heap, 0, target.segments);
@@ -135,7 +140,8 @@ namespace MemoryPoolDetail
 			target.segments = nullptr;
 			target.segmentCount = 0;
 			target.segmentCapacity = 0;
-			target.committedBytes = 0;
+			target.committedBytes.store(0);
+			std::destroy_at(&target);
 		}
 
 		if (m_binsRaw)
@@ -160,8 +166,8 @@ namespace MemoryPoolDetail
 		//
 		// 붙들어 둔 세그먼트가 있어도 마찬가지다. 그건 버린 메모리이지 다음
 		// 수명이 쓸 수 있는 재고가 아니므로, 그쪽 상한에 얹으면 안 된다.
-		::InterlockedExchange64(&m_committedBytes, 0);
-		::InterlockedExchange64(&m_commitLimitHits, 0);
+		m_committedBytes.store(0);
+		m_commitLimitHits.store(0);
 	}
 
 	bool GlobalBlockPool::Preallocate(uint32_t bin, uint32_t blocks)
@@ -204,7 +210,7 @@ namespace MemoryPoolDetail
 		ChunkRef ref;
 		if (!entry)
 		{
-			::InterlockedIncrement(&target.failCount);
+			target.failCount.fetch_add(1);
 			return ref;
 		}
 
@@ -229,23 +235,23 @@ namespace MemoryPoolDetail
 		node->blockCount = count;
 
 		::InterlockedPushEntrySList(&target.chunkList, &node->entry);
-		::InterlockedExchangeAdd64(&target.blocksInPool, static_cast<LONG64>(count));
+		target.blocksInPool.fetch_add(static_cast<LONG64>(count));
 	}
 
 	void GlobalBlockPool::NotePopped(Bin& target, uint32_t count)
 	{
 		const LONG64 remaining =
-			::InterlockedExchangeAdd64(&target.blocksInPool, -static_cast<LONG64>(count))
+			target.blocksInPool.fetch_sub(static_cast<LONG64>(count))
 			- static_cast<LONG64>(count);
 
 		// 재고 최저점을 갱신한다. 묶음마다 한 번만 도는 경로라 CAS 루프가
 		// 부담이 없고, 이 값이 풀 크기를 정하는 유일한 근거다.
 		for (;;)
 		{
-			const LONG64 current = ::ReadAcquire64(&target.minBlocksInPool);
+			LONG64 current = target.minBlocksInPool.load(std::memory_order_acquire);
 			if (remaining >= current)
 				break;
-			if (::InterlockedCompareExchange64(&target.minBlocksInPool, remaining, current) == current)
+			if (target.minBlocksInPool.compare_exchange_strong(current, remaining))
 				break;
 		}
 	}
@@ -283,12 +289,12 @@ namespace MemoryPoolDetail
 
 		// growLock 을 잡은 채로만 부르지만, 읽는 쪽(GetStats)은 락 밖이라
 		// 다른 카운터들과 같은 방식으로 맞춘다.
-		::InterlockedExchangeAdd64(&target.committedBytes, static_cast<LONG64>(bytes));
+		target.committedBytes.fetch_add(static_cast<LONG64>(bytes));
 
 		// 풀 전체 합계. 상한 검사가 이 값을 본다.
 		// 세그먼트를 실제로 확보한 뒤에 올린다 — 먼저 올리면 실패했을 때
 		// 되돌려야 하고, 그 사이 다른 빈의 검사가 잘못된 값을 본다.
-		::InterlockedExchangeAdd64(&m_committedBytes, static_cast<LONG64>(bytes));
+		m_committedBytes.fetch_add(static_cast<LONG64>(bytes));
 
 		return true;
 	}
@@ -329,7 +335,7 @@ namespace MemoryPoolDetail
 			node->blockCount = take;
 
 			::InterlockedPushEntrySList(&target.chunkList, &node->entry);
-			::InterlockedExchangeAdd64(&target.blocksInPool, static_cast<LONG64>(take));
+			target.blocksInPool.fetch_add(static_cast<LONG64>(take));
 		}
 	}
 
@@ -345,12 +351,12 @@ namespace MemoryPoolDetail
 
 	uint64_t GlobalBlockPool::GetCommittedBytes() const
 	{
-		return static_cast<uint64_t>(::ReadAcquire64(&m_committedBytes));
+		return static_cast<uint64_t>(m_committedBytes.load(std::memory_order_acquire));
 	}
 
 	uint64_t GlobalBlockPool::GetCommitLimitHitCount() const
 	{
-		return static_cast<uint64_t>(::ReadAcquire64(&m_commitLimitHits));
+		return static_cast<uint64_t>(m_commitLimitHits.load(std::memory_order_acquire));
 	}
 
 	bool GlobalBlockPool::GrowLocked(uint32_t bin, uint32_t minBlocks, bool isInitial)
@@ -373,12 +379,12 @@ namespace MemoryPoolDetail
 		if (!isInitial && m_maxCommittedBytes != 0)
 		{
 			const uint64_t committed = static_cast<uint64_t>(
-				::ReadAcquire64(&m_committedBytes));
+				m_committedBytes.load(std::memory_order_acquire));
 
 			if (committed + bytes > m_maxCommittedBytes)
 			{
-				::InterlockedIncrement64(&m_commitLimitHits);
-				::InterlockedIncrement(&target.failCount);
+				m_commitLimitHits.fetch_add(1);
+				target.failCount.fetch_add(1);
 
 				// 이 로그가 보이면 소비자가 생산자보다 느리다는 뜻이다.
 				// 상한을 올리는 것이 답일 수도 있지만, 대개는 핸들러가
@@ -401,27 +407,27 @@ namespace MemoryPoolDetail
 		{
 			LOGE("bin %u (block size %u) failed to reserve a %zu byte segment (error %lu)",
 				bin, spec.blockSize, bytes, ::GetLastError());
-			::InterlockedIncrement(&target.failCount);
+			target.failCount.fetch_add(1);
 			return false;
 		}
 
 		if (!RecordSegmentLocked(target, segment, bytes))
 		{
 			::VirtualFree(segment, 0, MEM_RELEASE);
-			::InterlockedIncrement(&target.failCount);
+			target.failCount.fetch_add(1);
 			return false;
 		}
 
 		CarveAndPush(target, bin, segment, blocks);
-		::InterlockedExchangeAdd64(&target.blocksCreated, static_cast<LONG64>(blocks));
+		target.blocksCreated.fetch_add(static_cast<LONG64>(blocks));
 
 		if (!isInitial)
 		{
 			// 초기 blockCount 가 부족했다는 신호다. 튜닝 근거로 남긴다.
-			::InterlockedIncrement(&target.growthCount);
+			target.growthCount.fetch_add(1);
 			LOGW("bin %u (block size %u) grew at runtime : +%u blocks, %lld total",
 				bin, spec.blockSize, blocks,
-				::ReadAcquire64(&target.blocksCreated));
+				target.blocksCreated.load(std::memory_order_acquire));
 		}
 
 		return true;
@@ -436,20 +442,20 @@ namespace MemoryPoolDetail
 
 		out = BinStats{};
 		out.blocksCreated = static_cast<uint32_t>(
-			::ReadAcquire64(&target.blocksCreated));
+			target.blocksCreated.load(std::memory_order_acquire));
 		out.blocksInPool = static_cast<uint32_t>(
-			::ReadAcquire64(&target.blocksInPool));
+			target.blocksInPool.load(std::memory_order_acquire));
 		out.growthCount = static_cast<uint32_t>(
-			::ReadAcquire(&target.growthCount));
+			target.growthCount.load(std::memory_order_acquire));
 		out.failCount = static_cast<uint32_t>(
-			::ReadAcquire(&target.failCount));
+			target.failCount.load(std::memory_order_acquire));
 		out.segmentCount = target.segmentCount;
 		out.committedBytes = static_cast<uint64_t>(
-			::ReadAcquire64(&target.committedBytes));
+			target.committedBytes.load(std::memory_order_acquire));
 
 		// 재고가 가장 적었던 순간에 밖에 나가 있던 블록 수.
 		// 그중 일부는 스레드 캐시에 놀고 있었을 수 있으므로 상한이다.
-		const LONG64 minInPool = ::ReadAcquire64(&target.minBlocksInPool);
+		const LONG64 minInPool = target.minBlocksInPool.load(std::memory_order_acquire);
 		out.peakOutOfPool = (minInPool >= 0 && minInPool <= static_cast<LONG64>(out.blocksCreated))
 			? static_cast<uint32_t>(static_cast<LONG64>(out.blocksCreated) - minInPool)
 			: 0;

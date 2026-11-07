@@ -60,6 +60,7 @@
     <ClInclude Include="..\Core\HeartbeatConfig.h" />
     <ClInclude Include="..\Core\HeartbeatThread.h" />
     <ClInclude Include="..\Core\IOCPClient.h" />
+    <ClInclude Include="..\Core\EngineExecutionScope.h" />
     <ClInclude Include="..\Core\IOCPCore.h" />
     <ClInclude Include="..\Core\IOCPServer.h" />
     <ClInclude Include="..\Diagnostics\EngineAssert.h" />
@@ -78,6 +79,7 @@
     <ClInclude Include="..\Memory\TlsMemoryPool.h" />
     <ClInclude Include="..\Network\OverlappedEx.h" />
     <ClInclude Include="..\Network\SocketOption.h" />
+    <ClInclude Include="..\Network\SocketError.h" />
     <ClInclude Include="..\Network\UniqueSocket.h" />
     <ClInclude Include="..\Protocol\PacketHeader.h" />
     <ClInclude Include="..\Protocol\PacketID.h" />

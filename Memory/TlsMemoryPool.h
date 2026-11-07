@@ -4,6 +4,8 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
+#include <atomic> // for std::atomic
+
 #include <Windows.h>
 #include <stdint.h>
 
@@ -144,6 +146,6 @@ private:
 	bool m_initialized = false;
 
 	// OS 우회 경로 지표
-	mutable volatile LONG64 m_bypassAcquire = 0;
-	mutable volatile LONG64 m_bypassRelease = 0;
+	mutable std::atomic<LONG64> m_bypassAcquire{0};
+	mutable std::atomic<LONG64> m_bypassRelease{0};
 };

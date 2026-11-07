@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic> // for std::atomic
+
 #include <stdint.h>
 
 #include "ClientLivenessConfig.h"
@@ -58,8 +60,8 @@ private:
 
 	// Arm 이 계산해 넣는다. 0 이면 감시하지 않는다.
 	// 두 값 모두 Arm(다른 스레드)과 Run(이 스레드)이 함께 보므로 원자로 읽고 쓴다.
-	volatile LONGLONG m_idleTimeout_ms = 0;
-	volatile LONG m_fired = 0;
+	std::atomic<uint64_t> m_idleTimeout_ms{0};
+	std::atomic<bool> m_fired{false};
 
 	// 수신 백프레셔로 멈춰 있던 마지막 시각. 이 스레드만 읽고 쓴다.
 	//

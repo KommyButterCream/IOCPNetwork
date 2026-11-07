@@ -1,4 +1,5 @@
-﻿#include "IOCPCore.h"
+﻿#include "EngineExecutionScope.h"
+#include "IOCPCore.h"
 
 #include <stdio.h> // for swprintf_s
 
@@ -60,7 +61,7 @@ bool IOCPCore::Start()
 	// 그대로 이 경로를 밟는다.
 	//
 	// 여기서 되돌리면 두 번째 주기가 자기 자원을 정상적으로 정리한다.
-	::InterlockedExchange(&m_destroyFlag, 0);
+	m_destroyFlag.store(false);
 
 	if (!InitializeWinsock())
 	{
@@ -82,7 +83,7 @@ bool IOCPCore::Start()
 
 void IOCPCore::Stop()
 {
-	if (::InterlockedCompareExchange(&m_destroyFlag, 1, 0) == 1)
+	if (m_destroyFlag.exchange(true))
 		return;
 
 	LOGI("IOCP core shutting down");
@@ -344,6 +345,7 @@ void IOCPCore::RequestIOCPThreadTerminate()
 
 void IOCPCore::IOCPWorkerThreadLoop(IOCPWorkerThread& worker, uint32_t workerIndex)
 {
+	EngineExecutionScope execution;
 	LOGI("GQCS worker %u entering loop", workerIndex);
 
 	while (!worker.IsStopRequested())
