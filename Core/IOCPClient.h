@@ -25,7 +25,8 @@ class ISession;
 class ClientSession;
 class TlsMemoryPool;
 class ClientJobWorker;
-class ClientWatchdogThread;
+class ClientWatchdogTask;
+class BackgroundTaskGroup;
 class PacketHandlerTable;
 class SessionContext;
 
@@ -70,7 +71,7 @@ public:
 		uint32_t iocpThreadCount = 0,
 		const EnginePoolConfig& poolConfig = EnginePoolPreset::Client(),
 		const ClientLivenessConfig& livenessConfig = ClientLivenessConfig());
-	// 외부 호출은 정리가 끝날 때까지 대기한다. 엔진 콜백·Job 안의 호출은 거절한다.
+	// 외부 호출은 정리가 끝날 때까지 대기한다. 엔진 콜백·Job·타이머 콜백 안의 호출은 거절한다.
 	// 객체 파괴 및 서비스의 패킷 핸들 반환은 호출자가 별도로 동기화한다.
 	IOCP_ENGINE_API void StopClient();
 
@@ -209,7 +210,7 @@ private:
 	// StartClient 에서 받아 보관한다. 인증 응답이 도착했을 때 서버가 알려준
 	// 하트비트 주기와 합쳐 실제 유휴 타임아웃을 정한다.
 	ClientLivenessConfig m_livenessConfig;
-	// 서버가 조용해진 것을 알아차리는 감시 스레드.
-	// 왜 잡 스케줄러가 아니라 별도 스레드인지는 ClientWatchdogThread 주석.
-	std::unique_ptr<ClientWatchdogThread> m_clientWatchdog;
+	// 그룹이 작업을 소유한다. 인증 완료 시 Arm에 사용하는 포인터는 빌린 참조다.
+	std::unique_ptr<BackgroundTaskGroup> m_backgroundTasks;
+	ClientWatchdogTask* m_clientWatchdog = nullptr;
 };

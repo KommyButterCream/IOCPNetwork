@@ -59,7 +59,7 @@ enum class DisconnectReason : uint32_t
 
 	// --- 시간 ---
 
-	// 클라이언트 : 서버의 하트비트가 끊겼다. (ClientWatchdogThread)
+	// 클라이언트 : 서버의 하트비트가 끊겼다. (ClientWatchdogTask)
 	IdleTimeout,
 
 	// 서버 : 클라이언트가 하트비트에 답하지 않았다.

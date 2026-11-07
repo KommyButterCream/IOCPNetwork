@@ -54,10 +54,10 @@
     <ClCompile Include="..\Buffer\SendPacketQueue.cpp">
       <Filter>Buffer</Filter>
     </ClCompile>
-    <ClCompile Include="..\Core\ClientWatchdogThread.cpp">
+    <ClCompile Include="..\Core\BackgroundTaskGroup.cpp">
       <Filter>Core</Filter>
     </ClCompile>
-    <ClCompile Include="..\Core\HeartbeatThread.cpp">
+    <ClCompile Include="..\Core\BackgroundTasks.cpp">
       <Filter>Core</Filter>
     </ClCompile>
     <ClCompile Include="..\Core\IOCPClient.cpp">
@@ -128,13 +128,13 @@
     <ClInclude Include="..\Core\ClientLivenessConfig.h">
       <Filter>Core</Filter>
     </ClInclude>
-    <ClInclude Include="..\Core\ClientWatchdogThread.h">
+    <ClInclude Include="..\Core\BackgroundTaskGroup.h">
       <Filter>Core</Filter>
     </ClInclude>
     <ClInclude Include="..\Core\HeartbeatConfig.h">
       <Filter>Core</Filter>
     </ClInclude>
-    <ClInclude Include="..\Core\HeartbeatThread.h">
+    <ClInclude Include="..\Core\BackgroundTasks.h">
       <Filter>Core</Filter>
     </ClInclude>
     <ClInclude Include="..\Core\IOCPClient.h">

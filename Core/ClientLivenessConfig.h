@@ -35,7 +35,7 @@ struct ClientLivenessConfig
 	//
 	// 알려진 한계: 이 판정은 "수신 완료를 마지막으로 처리한 시각" 을 본다.
 	// 수신 백프레셔로 우리가 스스로 멈춘 구간은 빼고 세지만(그 처리는
-	// ClientWatchdogThread::Run 에 있다), GQCS 워커가 전부 서비스 콜백
+	// ClientWatchdogTask::Tick 에 있다), GQCS 워커가 전부 서비스 콜백
 	// (OnReceive 등) 안에 이 시간만큼 붙들려 있으면 완료를 꺼내지 못해
 	// 멀쩡한 연결을 끊을 수 있다. 무거운 일은 EnqueueJob 으로 잡
 	// 큐에 넘기라는 규약이 여기서도 전제다.

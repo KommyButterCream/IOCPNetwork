@@ -1,6 +1,8 @@
 ﻿#include "IOCPClient.h"
 #include "EngineExecutionScope.h"
-#include "ClientWatchdogThread.h"
+#include "BackgroundTaskGroup.h"
+#include "BackgroundTasks.h"
+#include "../../Core/Concurrency/ThreadTimer.h"
 
 #include <WinSock2.h>
 
@@ -58,9 +60,9 @@ IOCPClient::~IOCPClient()
 
 bool IOCPClient::StartClient(const char* serverIp, const uint16_t port, const SessionBufferConfig& bufferConfig, uint32_t iocpThreadCount, const EnginePoolConfig& poolConfig, const ClientLivenessConfig& livenessConfig)
 {
-	if (EngineExecutionScope::IsActive())
+	if (EngineExecutionScope::IsActive() || Core::Concurrency::ThreadTimer::IsCallbackThread())
 	{
-		LOGE("StartClient must be called outside engine callbacks and jobs");
+		LOGE("StartClient must be called outside engine callbacks, jobs and timer callbacks");
 		return false;
 	}
 	std::unique_lock lock(m_controlMutex, std::try_to_lock);
@@ -192,7 +194,7 @@ bool IOCPClient::StartResources(const char* serverIp, const uint16_t port, const
 
 void IOCPClient::StopClient()
 {
-	if (EngineExecutionScope::IsActive())
+	if (EngineExecutionScope::IsActive() || Core::Concurrency::ThreadTimer::IsCallbackThread())
 	{
 		LOGE("StopClient must be requested through an external control thread");
 		return;
@@ -209,12 +211,9 @@ void IOCPClient::StopResources()
 {
 	LOGI("client shutting down");
 
-	// 감시는 먼저 끝내되, 인증 완료 핸들러가 Arm을 호출할 수 있어 객체는 조인 뒤에 해제한다.
-	if (m_clientWatchdog)
-	{
-		m_clientWatchdog->Disarm();
-		m_clientWatchdog->Stop();
-	}
+	// 예약과 실행은 먼저 정지한다. 늦은 인증 응답이 참조할 작업 객체는 워커 조인까지 유지한다.
+	if (m_backgroundTasks)
+		m_backgroundTasks->StopAll();
 
 	m_clientJobWorker.reset();
 
@@ -239,7 +238,8 @@ void IOCPClient::StopResources()
 	//     아래의 세션 및 메모리풀 해제가 안전해진다.
 	IOCPCore::Stop();
 
-	m_clientWatchdog.reset();
+	m_clientWatchdog = nullptr;
+	m_backgroundTasks.reset();
 
 	// [3] 세션 해제
 	m_session.reset();
@@ -397,19 +397,14 @@ bool IOCPClient::StartConnection(const SessionBufferConfig& bufferConfig, const 
 		return false;
 	}
 
-	// 서버가 조용해진 것을 알아차리는 감시 스레드.
-	//
-	// 여기서 만들되 무장은 하지 않는다. 기준이 되는 하트비트 주기를
-	// 서버가 인증 응답으로 알려주기 때문이다. 무장은 그 응답을 처리하는
-	// 자리에서 한다. (HandleSystemPacket 의 SC_SYSTEM_AUTH_RESPONSE)
-	m_clientWatchdog = std::make_unique<ClientWatchdogThread>(m_session.get(), m_livenessConfig);
-
-	if (!m_clientWatchdog->Start())
-	{
-		LOGE("failed to start the client liveness watchdog");
-		m_clientWatchdog.reset();
+	m_backgroundTasks = std::make_unique<BackgroundTaskGroup>();
+	auto watchdog = std::make_unique<ClientWatchdogTask>(*m_session, m_livenessConfig);
+	auto* watchdogObserver = watchdog.get();
+	if (!m_backgroundTasks->Add(std::move(watchdog), ClientWatchdogTask::CheckPeriodMs))
 		return false;
-	}
+	m_clientWatchdog = watchdogObserver;
+	if (!m_backgroundTasks->StartAll())
+		return false;
 
 	// 비동기 Connect To Server
 	// 연결에 대한 통지를 GQCS 에서 처리 한다.

@@ -29,7 +29,8 @@ class SessionManager;
 class ServerReadySessionQueue;
 class ServerJobScheduler;
 class TlsMemoryPool;
-class HeartbeatThread;
+class BackgroundTaskGroup;
+class AcceptRecoveryTask;
 
 struct OverlappedEx;
 
@@ -58,6 +59,9 @@ struct ConnectionPolicyConfig
 	// 이게 없으면 한 주소가 세션 풀을 통째로 채울 수 있고, 그 상태가
 	// 하트비트 타임아웃까지 유지되어 정상 사용자가 들어올 수 없다.
 	uint32_t maxConnectionsPerAddress = 0;
+
+	// 수락 요청 복구 주기. 하트비트와 독립적으로 실행하며 0은 허용하지 않는다.
+	uint32_t acceptRetryInterval_ms = 1'000;
 };
 
 class IOCPServer : public IOCPCore
@@ -90,7 +94,7 @@ public:
 		const ConnectionPolicyConfig& policyConfig = ConnectionPolicyConfig(),
 		const EnginePoolConfig& poolConfig = EnginePoolPreset::Server(),
 		const HeartbeatConfig& heartbeatConfig = HeartbeatConfig());
-	// 외부 호출은 정리가 끝날 때까지 대기한다. 엔진 콜백·Job 안의 호출은 거절한다.
+	// 외부 호출은 정리가 끝날 때까지 대기한다. 엔진 콜백·Job·타이머 콜백 안의 호출은 거절한다.
 	// 객체 파괴 및 서비스의 패킷 핸들 반환은 호출자가 별도로 동기화한다.
 	IOCP_ENGINE_API void StopServer();
 
@@ -175,6 +179,7 @@ private:
 	bool PostAccept(AcceptSession* acceptSession);
 	void RepostAfterAccept(AcceptSession& session);
 	// 주기 점검은 발행 권한을 얻은 수락 세션에만 AcceptEx를 다시 건다.
+	friend class AcceptRecoveryTask;
 	void RefillAcceptSessions();
 	bool CancelAllAcceptIO();
 	// 걸려 있는 AcceptEx 가 0 이면 크게 울린다. 걸기를 시도한 직후에 부른다.
@@ -262,5 +267,6 @@ private:
 	// 인증 응답에 주기를 실어 보내야 하기 때문이다.
 	// (왜 클라가 그 값을 알아야 하는지는 SC_SYSTEM_AUTH_RESPONSE_PACKET 주석)
 	HeartbeatConfig m_heartbeatConfig;
-	std::unique_ptr<HeartbeatThread> m_heartbeatThread;
+	// 세션 관리자보다 먼저 정지·파괴한다.
+	std::unique_ptr<BackgroundTaskGroup> m_backgroundTasks;
 };

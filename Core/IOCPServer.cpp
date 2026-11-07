@@ -1,6 +1,8 @@
 ﻿#include "IOCPServer.h"
 #include "EngineExecutionScope.h"
-#include "HeartbeatThread.h"
+#include "BackgroundTaskGroup.h"
+#include "BackgroundTasks.h"
+#include "../../Core/Concurrency/ThreadTimer.h"
 
 #include "../Diagnostics/EngineAssert.h"
 
@@ -64,9 +66,9 @@ IOCPServer::~IOCPServer()
 
 bool IOCPServer::StartServer(const char* ipAddress, const uint16_t port, const uint32_t maxConnectionCount, const SessionBufferConfig& bufferConfig, const ConnectionPolicyConfig& policyConfig, const EnginePoolConfig& poolConfig, const HeartbeatConfig& heartbeatConfig)
 {
-	if (EngineExecutionScope::IsActive())
+	if (EngineExecutionScope::IsActive() || Core::Concurrency::ThreadTimer::IsCallbackThread())
 	{
-		LOGE("StartServer must be called outside engine callbacks and jobs");
+		LOGE("StartServer must be called outside engine callbacks, jobs and timer callbacks");
 		return false;
 	}
 	std::unique_lock lock(m_controlMutex, std::try_to_lock);
@@ -118,6 +120,12 @@ bool IOCPServer::StartResources(const char* ipAddress, const uint16_t port, cons
 	{
 		LOGE("service capacity %u exceeds the session pool capacity %u",
 			policyConfig.serviceCapacity, maxConnectionCount);
+		return false;
+	}
+
+	if (policyConfig.acceptRetryInterval_ms == 0)
+	{
+		LOGE("accept retry interval must be greater than zero");
 		return false;
 	}
 
@@ -256,29 +264,20 @@ bool IOCPServer::StartResources(const char* ipAddress, const uint16_t port, cons
 		return false;
 	}
 
-	// 걸기가 실패해 비어 버린 수락 세션을 다시 post 하는 일을 이 스레드의
-	// 주기에 얹는다. 실패한 세션은 스스로 복구되지 않으므로 (다음 PostAccept 를
-	// 부를 완료 통지가 애초에 그 실패한 걸기의 것이다) 누군가 다시 걸어 주어야
-	// 한다. 자세한 이유는 AcceptRepostFunc 선언부 주석에 있다.
-	m_heartbeatThread = std::make_unique<HeartbeatThread>(m_sessionManager.get(), heartbeatConfig,
-		[](void* context) { static_cast<IOCPServer*>(context)->RefillAcceptSessions(); }, this);
-	if (!m_heartbeatThread)
-	{
+	// 의존 자원이 모두 준비된 뒤 작업을 구성하고 마지막에 실행을 허용한다.
+	m_backgroundTasks = std::make_unique<BackgroundTaskGroup>();
+	const auto heartbeatPeriod = static_cast<uint32_t>(heartbeatConfig.checkInterval_ms < 50 ? 50 : heartbeatConfig.checkInterval_ms);
+	if (!m_backgroundTasks->Add(std::make_unique<ServerHeartbeatTask>(*m_sessionManager, heartbeatConfig), heartbeatPeriod) ||
+		!m_backgroundTasks->Add(std::make_unique<AcceptRecoveryTask>(*this), policyConfig.acceptRetryInterval_ms) ||
+		!m_backgroundTasks->StartAll())
 		return false;
-	}
-
-	if (!m_heartbeatThread->Start())
-	{
-		m_heartbeatThread.reset();
-		return false;
-	}
 
 	return true;
 }
 
 void IOCPServer::StopServer()
 {
-	if (EngineExecutionScope::IsActive())
+	if (EngineExecutionScope::IsActive() || Core::Concurrency::ThreadTimer::IsCallbackThread())
 	{
 		LOGE("StopServer must be requested through an external control thread");
 		return;
@@ -299,10 +298,10 @@ void IOCPServer::StopResources()
 	// Accept IO 에 대한 예외 처리를 위해 플래그 추가.
 	m_serverShutdownRequested.store(true);
 
-	if (m_heartbeatThread)
+	if (m_backgroundTasks)
 	{
-		m_heartbeatThread->Stop();
-		m_heartbeatThread.reset();
+		m_backgroundTasks->StopAll();
+		m_backgroundTasks.reset();
 	}
 
 	if (m_sessionManager)

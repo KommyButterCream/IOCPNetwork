@@ -47,7 +47,8 @@ struct HeartbeatConfig
 
 	bool IsValid() const
 	{
-		if (checkInterval_ms == 0)
+		// Windows 주기 타이머가 표현할 수 있는 범위만 허용한다.
+		if (checkInterval_ms == 0 || checkInterval_ms > UINT32_MAX)
 			return false;
 
 		// 끄는 것은 허용한다 (0 = 좀비 정리 안 함). 켠다면 최소 2주기.

@@ -26,8 +26,8 @@
     <ClCompile Include="..\Job\JobHandle.cpp" />
     <ClCompile Include="..\Buffer\RecvPacketBuffer.cpp" />
     <ClCompile Include="..\Buffer\SendPacketQueue.cpp" />
-    <ClCompile Include="..\Core\ClientWatchdogThread.cpp" />
-    <ClCompile Include="..\Core\HeartbeatThread.cpp" />
+    <ClCompile Include="..\Core\BackgroundTaskGroup.cpp" />
+    <ClCompile Include="..\Core\BackgroundTasks.cpp" />
     <ClCompile Include="..\Core\IOCPClient.cpp" />
     <ClCompile Include="..\Core\IOCPCore.cpp" />
     <ClCompile Include="..\Core\IOCPServer.cpp" />
@@ -56,9 +56,9 @@
     <ClInclude Include="..\Buffer\SendPacketQueue.h" />
     <ClInclude Include="..\Buffer\SharedPacketHandle.h" />
     <ClInclude Include="..\Core\ClientLivenessConfig.h" />
-    <ClInclude Include="..\Core\ClientWatchdogThread.h" />
+    <ClInclude Include="..\Core\BackgroundTaskGroup.h" />
     <ClInclude Include="..\Core\HeartbeatConfig.h" />
-    <ClInclude Include="..\Core\HeartbeatThread.h" />
+    <ClInclude Include="..\Core\BackgroundTasks.h" />
     <ClInclude Include="..\Core\IOCPClient.h" />
     <ClInclude Include="..\Core\EngineExecutionScope.h" />
     <ClInclude Include="..\Core\IOCPCore.h" />
