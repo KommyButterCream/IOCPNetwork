@@ -1,4 +1,5 @@
 ﻿#include "ClientJobWorker.h"
+#include "../Core/EngineExecutionScope.h"
 
 #include "../Job/Job.h"
 #include "../Session/ClientSession.h"
@@ -112,7 +113,8 @@ void ClientJobWorker::Run()
 
 			ClientJobScope jobScope(*m_clientSession, *jobHandle);
 
-			jobHandle->Execute();
+			if (!InvokeServiceCallback("Job", [&] { jobHandle->Execute(); }))
+				m_clientSession->RequestDisconnect(DisconnectReason::ServiceError);
 		}
 
 		// 저수위에 도달한 세션만 수신을 재개한다.

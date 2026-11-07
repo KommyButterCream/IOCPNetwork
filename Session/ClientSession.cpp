@@ -132,7 +132,7 @@ bool ClientSession::PostConnect(LPFN_CONNECTEX connectEx, const SOCKADDR_IN& add
 	return false;
 }
 
-bool ClientSession::OnConnect()
+void ClientSession::OnConnect()
 {
 	m_state.store(State::Connected);
 
@@ -158,16 +158,8 @@ bool ClientSession::OnConnect()
 	UpdateLastRecvTick();
 	UpdateLastHeartbeatTick();
 
-	if (!PostReceive())
-	{
-		// 첫 수신을 걸지 못하면 이 세션은 아무것도 받을 수 없다.
-		LOGE("session %u failed to post the first recv right after connect", GetSessionID());
-		return false;
-	}
-
-	// 첫 수신을 걸고 접속 통지를 호출할 수 있는 연결만 종료 통지의 짝을 갖는다.
+	// 접속 통지의 짝을 기록한다. 첫 수신은 서비스의 접속 콜백이 끝난 뒤 엔진이 발행한다.
 	m_serviceConnectNotified.store(true);
-	return true;
 }
 
 void ClientSession::RequestDisconnect(DisconnectReason reason)

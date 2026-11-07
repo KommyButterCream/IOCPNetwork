@@ -21,14 +21,13 @@
 enum class IO_OPERATION;
 enum class SYSTEM_AUTH_RESULT : uint16_t;
 
-class ISession;
 class ClientSession;
 class AcceptSession;
 class PacketHandlerTable;
 class SessionManager;
 class ServerReadySessionQueue;
 class ServerJobScheduler;
-class TlsMemoryPool;
+namespace ENGINE_POOL { struct EnginePools; }
 class BackgroundTaskGroup;
 class AcceptRecoveryTask;
 
@@ -43,7 +42,7 @@ struct OverlappedEx;
 // 동작한다.
 struct ConnectionPolicyConfig
 {
-	// 서비스가 실제로 붙잡아 둘 접속 수의 상한. 0 이면 세션 풀 용량과 같다.
+	// 인증을 허용한 연결 수의 상한. 예약은 세션 반환까지 유지하며 0이면 풀 용량과 같다.
 	//
 	// 세션 풀 용량보다 작게 두는 이유는 "거부 사유를 전달할 여유" 다.
 	// 이 값을 넘긴 접속도 세션을 받아 인증 단계까지 오되 SERVER_FULL 로
@@ -99,6 +98,7 @@ public:
 	IOCP_ENGINE_API void StopServer();
 
 	// 핸들러 등록과 패킷 생성
+	// 정지 상태에서 등록한다. 같은 핸들러 재등록은 성공하며, 등록은 재시작 후에도 유지한다.
 	IOCP_ENGINE_API bool RegisterPacketHandler(uint16_t packetId, PacketHandlerFunc handler);
 	[[nodiscard]] IOCP_ENGINE_API PacketHandle CreatePacket(std::size_t size) const;
 	[[nodiscard]] IOCP_ENGINE_API SharedPacketHandle CreateSharedPacket(PacketHandle packet) const;
@@ -162,13 +162,8 @@ private:
 	bool StartResources(const char* ipAddress, const uint16_t port, const uint32_t maxConnectionCount, const SessionBufferConfig& bufferConfig, const ConnectionPolicyConfig& policyConfig, const EnginePoolConfig& poolConfig, const HeartbeatConfig& heartbeatConfig);
 	void StopResources();
 
-	// 메모리 풀 정리
-	// 서비스의 패킷 핸들이 모두 반환된 후에만 풀을 파괴합니다.
-	// 종료 시 풀을 정리하며, 엔진 파괴·재시작 시에는 풀 객체도 삭제합니다.
-	void DestroyMemoryPools();
-
 	// 리슨 소켓 준비와 해제
-	bool CreateListenSocket(const char* ipAddress, uint16_t port);
+	bool CreateListenSocket();
 	void DestroyListenSocket();
 	bool BindServerSocket(SOCKET serverSocket, const char* ipAddress, uint16_t port);
 	bool ListenServerSocket(SOCKET serverSocket);
@@ -188,7 +183,8 @@ private:
 
 	// I/O 완료 분배와 오류 처리
 	// GQCS 에 통지 받은 IO 처리
-	IOCP_ENGINE_API void HandleCompletion(ULONG_PTR completionKey, LPOVERLAPPED overlapped, DWORD bytesTransferred, BOOL completionStatus) override;
+	// 소비 DLL의 파생 클래스 vtable이 참조하므로 private이어도 export가 필요하다.
+	IOCP_ENGINE_API void HandleCompletion(ULONG_PTR completionKey, LPOVERLAPPED overlapped, DWORD bytesTransferred, DWORD completionError) override;
 	// 아래 핸들러들의 세션 인자는 전부 ClientSession 이다.
 	// RECV/SEND 완료 키에 등록되는 것이 ClientSession 뿐이기 때문이다.
 	// (ACCEPT 는 완료 키가 아니라 overlappedEx->sessionId 로 라우팅한다)
@@ -245,20 +241,16 @@ private:
 	// 한 번만 크게 울리기 위한 래치. 매 실패마다 같은 경보를 쏟지 않는다.
 	std::atomic<bool> m_acceptStarvationReported{false};
 
-	// 패킷과 Job 메모리 풀
-	std::unique_ptr<TlsMemoryPool> m_jobMemoryPool;
-	std::unique_ptr<TlsMemoryPool> m_packetMemoryPool;
-	// 공유 패킷 참조 제어 객체용 풀입니다. 큐 배열은 세션이 직접 소유합니다.
-	std::unique_ptr<TlsMemoryPool> m_sharedPacketMemoryPool;
+	// 풀 세 개와 핸들러 컨텍스트를 함께 소유하며, 세션보다 늦게 파괴한다.
+	std::unique_ptr<ENGINE_POOL::EnginePools> m_memoryPools;
 
 	// 세션 관리와 작업 실행
 	std::unique_ptr<SessionManager> m_sessionManager;
 	std::unique_ptr<ServerReadySessionQueue> m_serverReadySessionQueue;
 	std::unique_ptr<ServerJobScheduler> m_serverJobScheduler;
 
-	// 핸들러와 서비스 컨텍스트
+	// 패킷 핸들러 등록
 	std::unique_ptr<PacketHandlerTable> m_packetHandlerTable;
-	HandlerContext m_handlerContext = {};
 
 	// 접속 정책과 하트비트
 	// 접속 수용 정책. StartServer 에서 받아 보관한다.

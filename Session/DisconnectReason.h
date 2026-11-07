@@ -83,6 +83,9 @@ enum class DisconnectReason : uint32_t
 
 	// 패킷 풀 고갈 등. 부하를 줄이거나 설정을 키워야 한다.
 	ResourceExhausted,
+
+	// 서비스 콜백 또는 패킷 핸들러가 예외를 던졌다.
+	ServiceError,
 };
 
 // 로그와 서비스 쪽 표시에 쓴다. 항상 유효한 문자열을 돌려준다.
@@ -106,6 +109,7 @@ inline const char* ToString(DisconnectReason reason)
 	case DisconnectReason::AuthRejectedInvalidState:     return "auth rejected : invalid state";
 	case DisconnectReason::AuthRejectedOther:            return "auth rejected";
 	case DisconnectReason::ResourceExhausted:            return "resource exhausted";
+	case DisconnectReason::ServiceError:                 return "service callback error";
 	}
 
 	return "unrecognised";
@@ -122,6 +126,7 @@ inline bool IsRetryableDisconnect(DisconnectReason reason)
 		// 우리가 내린 결정이다. 서비스가 다시 붙고 싶으면 스스로 붙는다.
 	case DisconnectReason::LocalShutdown:
 	case DisconnectReason::LocalRequest:
+	case DisconnectReason::ServiceError:
 		return false;
 
 		// 다시 붙어도 같은 답이 온다.

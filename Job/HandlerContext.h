@@ -3,8 +3,7 @@
 #include "../Buffer/SharedPacketHandle.h"
 #include <cstdint> // for uint32_t
 class ISession;
-class IOCPServer;
-class IOCPClient;
+namespace ENGINE_POOL { struct EnginePools; }
 
 // 빌려 쓰는 엔진 컨텍스트입니다. 엔진 파괴·재시작 이후까지 보관하지 않습니다.
 struct HandlerContext
@@ -15,8 +14,7 @@ struct HandlerContext
     [[nodiscard]] IOCP_ENGINE_API SharedPacketHandle CreateSharedPacket(PacketHandle packet) const;
 
 private:
-    friend class IOCPServer;
-    friend class IOCPClient;
+    friend struct ENGINE_POOL::EnginePools;
     TlsMemoryPool* m_packetPool = nullptr;
     TlsMemoryPool* m_sharedPool = nullptr;
 };

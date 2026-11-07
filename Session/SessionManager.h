@@ -58,7 +58,6 @@ public:
 	// Client Session //
 public:
 	uint32_t GetClientSessionInUseCount() const;
-	uint32_t CountClientSessionsFromAddress(const char* ipAddress) const;
 
 	uint32_t GetClientSessionCount() const noexcept;
 
@@ -73,7 +72,8 @@ public:
 	// 백프레셔가 걸린 총 횟수 (전 세션 합).
 	uint32_t GetTotalRecvPauseCount() const;
 
-	ClientSession* AcquireClientSession();
+	ClientSession* AcquireClientSession(uint32_t remoteAddress = 0, uint32_t addressLimit = 0);
+	bool TryAdmitClientSession(ClientSession& session, uint32_t capacity);
 
 	void RequestAllRecvSendIOCancel();
 	IOWaitResult WaitForAllRecvSendIOCancelComplete(const uint32_t timeout_ms);

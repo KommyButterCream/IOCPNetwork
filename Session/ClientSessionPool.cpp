@@ -5,7 +5,7 @@
 
 #include "../Diagnostics/EngineAssert.h"
 #include <memory>  // for std::make_unique, std::unique_ptr
-#include <utility> // for std::move
+#include <utility> // for std::move, std::exchange
 #include "../../Core/Sync/SRWLockGuard.h"
 #include "../../Core/Util/Logger.h"
 
@@ -20,6 +20,9 @@ struct ClientSessionPool::SessionNode
 	SessionNode* nextNode = nullptr;
 
 	State state = State::Free;
+	uint32_t remoteAddress = 0;
+	bool addressReserved = false;
+	bool admitted = false;
 };
 
 std::unique_ptr<ClientSessionPool> ClientSessionPool::Create(uint32_t capacity,
@@ -47,7 +50,7 @@ std::unique_ptr<ClientSessionPool> ClientSessionPool::Create(uint32_t capacity,
 
 ClientSessionPool::~ClientSessionPool() = default;
 
-ClientSession* ClientSessionPool::Acquire()
+ClientSession* ClientSessionPool::Acquire(uint32_t remoteAddress, uint32_t addressLimit)
 {
 	Core::Sync::SRWWriteLockGuard lockguard(m_lock);
 
@@ -66,6 +69,16 @@ ClientSession* ClientSessionPool::Acquire()
 		return nullptr;
 	}
 
+	// 검사와 예약을 대여와 같은 락에서 수행한다. 할당 실패 시 노드는 아직 Free다.
+	if (addressLimit != 0)
+	{
+		auto& count = m_addressCounts[remoteAddress];
+		if (count >= addressLimit)
+			return nullptr;
+		++count;
+		node->remoteAddress = remoteAddress;
+		node->addressReserved = true;
+	}
 	m_freeList = node->nextNode;
 	node->nextNode = nullptr;
 	node->state = SessionNode::State::InUse;
@@ -117,23 +130,20 @@ uint32_t ClientSessionPool::GetInUseCount() const
 	return count;
 }
 
-uint32_t ClientSessionPool::CountSessionsFromAddress(const char* ipAddress) const
+bool ClientSessionPool::TryAdmit(ClientSession& session, uint32_t capacity)
 {
-	if (!m_nodes || !m_sessions || !ipAddress || ipAddress[0] == '\0')
-		return 0;
-
-	uint32_t count = 0;
-
-	for (uint32_t i = 0; i < m_capacity; ++i)
-	{
-		auto session = TryAcquireSessionReference(i);
-		if (session && session->HasRemoteAddress(ipAddress))
-		{
-			++count;
-		}
-	}
-
-	return count;
+	Core::Sync::SRWWriteLockGuard lock(m_lock);
+	const auto id = session.GetSessionID();
+	if (id >= m_capacity || m_nodes[id].session != &session || m_nodes[id].state != SessionNode::State::InUse)
+		return false;
+	auto& node = m_nodes[id];
+	if (node.admitted)
+		return true;
+	if (capacity != 0 && m_admittedCount >= capacity)
+		return false;
+	node.admitted = true;
+	++m_admittedCount;
+	return true;
 }
 
 void ClientSessionPool::RequestAllRecvSendIOCancel()
@@ -431,6 +441,16 @@ void ClientSessionPool::CompleteRelease(ClientSession* clientSession)
 
 	{
 		Core::Sync::SRWWriteLockGuard lockguard(m_lock);
+		if (node->addressReserved)
+		{
+			auto entry = m_addressCounts.find(node->remoteAddress);
+			if (--entry->second == 0)
+				m_addressCounts.erase(entry);
+			node->addressReserved = false;
+			node->remoteAddress = 0;
+		}
+		if (std::exchange(node->admitted, false))
+			--m_admittedCount;
 		node->nextNode = m_freeList;
 		m_freeList = node;
 

@@ -21,18 +21,14 @@ enum class IO_OPERATION;
 
 struct OverlappedEx;
 
-class ISession;
 class ClientSession;
-class TlsMemoryPool;
+namespace ENGINE_POOL { struct EnginePools; }
 class ClientJobWorker;
 class ClientWatchdogTask;
 class BackgroundTaskGroup;
 class PacketHandlerTable;
-class SessionContext;
 
 #include "../EngineApi.h"
-
-#define INET_ADDRSTRLEN  22
 
 class IOCPClient : public IOCPCore
 {
@@ -76,6 +72,7 @@ public:
 	IOCP_ENGINE_API void StopClient();
 
 	// 핸들러 등록과 패킷 생성
+	// 정지 상태에서 등록한다. 같은 핸들러 재등록은 성공하며, 등록은 재시작 후에도 유지한다.
 	IOCP_ENGINE_API bool RegisterPacketHandler(uint16_t packetId, PacketHandlerFunc handler);
 	[[nodiscard]] IOCP_ENGINE_API PacketHandle CreatePacket(std::size_t size) const;
 	[[nodiscard]] IOCP_ENGINE_API SharedPacketHandle CreateSharedPacket(PacketHandle packet) const;
@@ -132,11 +129,6 @@ private:
 	bool StartResources(const char* serverIp, const uint16_t port, const SessionBufferConfig& bufferConfig, uint32_t iocpThreadCount, const EnginePoolConfig& poolConfig, const ClientLivenessConfig& livenessConfig);
 	void StopResources();
 
-	// 메모리 풀 정리
-	// 서비스의 패킷 핸들이 모두 반환된 후에만 풀을 파괴합니다.
-	// 종료 시 풀을 정리하며, 엔진 파괴·재시작 시에는 풀 객체도 삭제합니다.
-	void DestroyMemoryPools();
-
 	// 접속 준비와 발행
 	bool StartConnection(const SessionBufferConfig& bufferConfig, const EnginePoolConfig& poolConfig);
 	bool BindClientSocket(SOCKET clientSocket);
@@ -145,7 +137,8 @@ private:
 
 	// I/O 완료 분배와 오류 처리
 	// GQCS 에 통지 받은 IO 처리
-	IOCP_ENGINE_API void HandleCompletion(ULONG_PTR completionKey, LPOVERLAPPED overlapped, DWORD bytesTransferred, BOOL completionStatus) override;
+	// 소비 DLL의 파생 클래스 vtable이 참조하므로 private이어도 export가 필요하다.
+	IOCP_ENGINE_API void HandleCompletion(ULONG_PTR completionKey, LPOVERLAPPED overlapped, DWORD bytesTransferred, DWORD completionError) override;
 	// 아래 핸들러들의 세션 인자는 전부 ClientSession 이다.
 	// 이 클라이언트가 가진 세션은 m_session 하나뿐이다.
 	void HandleSocketError(ClientSession* session, int errorCode, IO_OPERATION ioOperation);
@@ -186,25 +179,19 @@ private:
 	std::atomic<bool> m_disconnecting{false};
 
 	// 연결 대상과 접속 함수
-	// IP Address & Port
-	char m_serverIPAddress[INET_ADDRSTRLEN] = { 0, };
-	uint16_t m_serverPort = 0;
+	SOCKADDR_IN m_serverAddress{};
 	// ConnectEx 함수 포인터
 	LPFN_CONNECTEX m_connectEx = nullptr;
 
-	// 패킷과 Job 메모리 풀
-	std::unique_ptr<TlsMemoryPool> m_jobMemoryPool;
-	std::unique_ptr<TlsMemoryPool> m_packetMemoryPool;
-	// 공유 패킷 참조 제어 객체용 풀입니다.
-	std::unique_ptr<TlsMemoryPool> m_sharedPacketMemoryPool;
+	// 풀 세 개와 핸들러 컨텍스트를 함께 소유하며, 세션보다 늦게 파괴한다.
+	std::unique_ptr<ENGINE_POOL::EnginePools> m_memoryPools;
 
 	// 세션과 작업 실행
 	std::unique_ptr<ClientSession> m_session;
 	std::unique_ptr<ClientJobWorker> m_clientJobWorker;
 
-	// 핸들러와 서비스 컨텍스트
+	// 패킷 핸들러 등록
 	std::unique_ptr<PacketHandlerTable> m_packetHandlerTable;
-	HandlerContext m_handlerContext = {};
 
 	// 연결 생존 감시
 	// StartClient 에서 받아 보관한다. 인증 응답이 도착했을 때 서버가 알려준

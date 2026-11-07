@@ -84,12 +84,9 @@ uint32_t SessionManager::GetClientSessionInUseCount() const
 	return m_clientSessionPool->GetInUseCount();
 }
 
-uint32_t SessionManager::CountClientSessionsFromAddress(const char* ipAddress) const
+bool SessionManager::TryAdmitClientSession(ClientSession& session, uint32_t capacity)
 {
-	if (!m_clientSessionPool)
-		return 0;
-
-	return m_clientSessionPool->CountSessionsFromAddress(ipAddress);
+	return m_clientSessionPool && m_clientSessionPool->TryAdmit(session, capacity);
 }
 
 uint32_t SessionManager::GetClientSessionCount() const noexcept
@@ -120,7 +117,7 @@ uint32_t SessionManager::GetOutstandingIOCount() const
 	return total;
 }
 
-ClientSession* SessionManager::AcquireClientSession()
+ClientSession* SessionManager::AcquireClientSession(uint32_t remoteAddress, uint32_t addressLimit)
 {
 	if (!m_clientSessionPool)
 		return nullptr;
@@ -129,12 +126,12 @@ ClientSession* SessionManager::AcquireClientSession()
 	// 프리 리스트가 비었다는 뜻이고, 양보 없는 루프로는 채워질 수 없으므로
 	// CPU 만 태우는 코드였다. 게다가 정확히 100번째에 성공하면
 	// retryCount == maxRetryCount 가 참이 되어 성공했는데도 단정에 걸렸다.
-	ClientSession* session = m_clientSessionPool->Acquire();
+	ClientSession* session = m_clientSessionPool->Acquire(remoteAddress, addressLimit);
 
 	if (!session)
 	{
 		// 호출부(HandleAccept)가 연결을 거절하는 정상 경로다.
-		LOGW("client session pool is exhausted (capacity %u), the connection will be rejected",
+		LOGW("connection rejected by session capacity or per-address limit (pool capacity %u)",
 			m_clientSessionPool->GetSessionCount());
 	}
 

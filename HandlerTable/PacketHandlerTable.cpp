@@ -8,8 +8,9 @@ bool PacketHandlerTable::Register(uint16_t packetId, PacketHandlerFunc handler)
 	if (!handler)
 		return false;
 
+	// 같은 등록은 재시작 시 반복할 수 있지만 기존 핸들러를 덮어쓰지는 않는다.
 	if (m_handlerTable[packetId] != nullptr)
-		return false;
+		return m_handlerTable[packetId] == handler;
 
 	m_handlerTable[packetId] = handler;
 

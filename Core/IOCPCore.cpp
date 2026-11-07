@@ -4,7 +4,8 @@
 #include <stdio.h> // for swprintf_s
 
 #include "../Diagnostics/EngineAssert.h"
-#include <new>     // for std::nothrow
+#include <memory> // for std::make_unique
+#include <utility> // for std::move
 
 #include "../../Core/Util/Logger.h"
 #include "../../Core/Concurrency/ThreadBase.h"
@@ -73,7 +74,7 @@ bool IOCPCore::Start()
 		return false;
 	}
 
-	if (!CreateIOCPWorkerthread())
+	if (!CreateCompletionWorkers())
 	{
 		return false;
 	}
@@ -95,8 +96,8 @@ void IOCPCore::Stop()
 
 void IOCPCore::StopCompletionWorkers()
 {
-	RequestIOCPThreadTerminate();
-	DestroyIOCPWorkerthread();
+	RequestCompletionWorkersStop();
+	JoinCompletionWorkers();
 }
 
 HANDLE IOCPCore::GetIOCPHandle() const noexcept
@@ -191,7 +192,7 @@ bool IOCPCore::InitializeIOCPHandle()
 
 	// 결과를 지역 변수로 먼저 받는 이유는, 실패한 경우 m_iocpHandle 이
 	// INVALID_HANDLE_VALUE 센티널을 그대로 유지하도록 하기 위함이다.
-	// (FinalizeIOCPHandle, RequestIOCPThreadTerminate 가 이 센티널을 전제로 동작한다)
+	// (FinalizeIOCPHandle, RequestCompletionWorkersStop 가 이 센티널을 전제로 동작한다)
 	m_iocpHandle = iocpHandle;
 
 	return true;
@@ -233,114 +234,79 @@ void IOCPCore::SetIOCPThreadCount(DWORD threadCount)
 	m_iocpThreadCount = threadCount;
 }
 
-bool IOCPCore::CreateIOCPWorkerthread()
+bool IOCPCore::CreateCompletionWorkers()
 {
-	if (m_iocpThreadCount == 0)
+	if (m_iocpThreadCount == 0 || !m_completionWorkers.empty())
 	{
-		LOGE("IOCP worker thread count is zero. call SetIOCPThreadCount first");
+		LOGE("invalid IOCP worker state (requested %lu, existing %zu)", m_iocpThreadCount, m_completionWorkers.size());
 		return false;
 	}
 
-	m_iocpWorkerThreads = static_cast<IOCPWorkerThread**>(
-		::HeapAlloc(::GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(IOCPWorkerThread*) * m_iocpThreadCount));
-	if (!m_iocpWorkerThreads)
+	try
 	{
-		LOGE("failed to allocate the worker table (count %lu)", m_iocpThreadCount);
-		return false;
-	}
-
-	for (DWORD i = 0; i < m_iocpThreadCount; i++)
-	{
-		// 스레드에 이름을 붙여 두면 디버거와 ETW 추적에서 바로 식별된다.
-		wchar_t threadName[64] = {};
-		::swprintf_s(threadName, L"IOCP-GQCS-%lu", i);
-
-		m_iocpWorkerThreads[i] = new (std::nothrow) IOCPWorkerThread(threadName);
-		if (!m_iocpWorkerThreads[i])
+		// 스레드를 띄우기 전에 컨테이너 공간을 확보하고, 시작 전부터 소유권을 보관한다.
+		m_completionWorkers.reserve(m_iocpThreadCount);
+		for (DWORD i = 0; i < m_iocpThreadCount; ++i)
 		{
-			LOGE("failed to create IOCP worker %lu", i);
-			return false;
-		}
-
-		m_iocpWorkerThreads[i]->Bind(this, i);
-
-		if (!m_iocpWorkerThreads[i]->Start())
-		{
-			LOGE("failed to start IOCP worker %lu", i);
-			return false;
+			wchar_t threadName[64]{};
+			::swprintf_s(threadName, L"IOCP-GQCS-%lu", i);
+			auto worker = std::make_unique<IOCPWorkerThread>(threadName);
+			worker->Bind(this, i);
+			m_completionWorkers.push_back(std::move(worker));
+			if (!m_completionWorkers.back()->Start())
+			{
+				LOGE("failed to start IOCP worker %lu", i);
+				StopCompletionWorkers();
+				return false;
+			}
 		}
 	}
+	catch (...)
+	{
+		// 이미 시작한 워커도 깨워 조인한 뒤 상위 시작 실패 처리로 전달한다.
+		StopCompletionWorkers();
+		throw;
+	}
 
-	LOGI("IOCP GQCS workers started (count %lu)", m_iocpThreadCount);
-
+	LOGI("IOCP GQCS workers started (count %zu)", m_completionWorkers.size());
 	return true;
 }
 
-void IOCPCore::DestroyIOCPWorkerthread()
+void IOCPCore::RequestCompletionWorkersStop()
 {
-	if (!m_iocpWorkerThreads)
-	{
+	if (m_completionWorkers.empty())
 		return;
-	}
 
-	LOGI("waiting for the IOCP GQCS workers to exit");
-
-	for (DWORD i = 0; i < m_iocpThreadCount; i++)
-	{
-		if (m_iocpWorkerThreads[i])
-		{
-			// 정지 요청은 RequestIOCPThreadTerminate 가 이미 보냈고
-			// 종료 코드로 GQCS 도 깨워 두었으므로 여기서는 조인만 한다.
-			// ThreadBase 소멸자가 Stop()(정지 요청 + 조인) 을 수행한다.
-			delete m_iocpWorkerThreads[i];
-			m_iocpWorkerThreads[i] = nullptr;
-		}
-	}
-
-	LOGI("IOCP GQCS workers exited");
-
-	::HeapFree(::GetProcessHeap(), 0, m_iocpWorkerThreads);
-	m_iocpWorkerThreads = nullptr;
-}
-
-void IOCPCore::RequestIOCPThreadTerminate()
-{
-	// IOCP 에 종료 신호 보내기
-	// GQCS Worker Thread 를 '우아한 종료' 시키기 위해서라면
-	// 클라이언트쪽에서 연결 해제를 요청해야한다.
-	// 하지만 그럴 수 없는 상황이라면 서버가 종료 메시지를 Post 해주도록 하자.
-	// 스레드를 종료시킨 후에 IOCP Handle 을 Close 해주도록 하자.
-
-	if (!m_iocpWorkerThreads)
-	{
-		return;
-	}
+	// 모든 정지 이벤트를 먼저 설정한다. GQCS에서 잠든 워커는 완료 패킷으로 깨운다.
+	for (const auto& worker : m_completionWorkers)
+		worker->RequestStop();
 
 	if (m_iocpHandle == INVALID_HANDLE_VALUE)
-	{
 		return;
-	}
 
-	LOGI("posting the terminate code to %lu IOCP GQCS workers", m_iocpThreadCount);
-
-	for (DWORD i = 0; i < m_iocpThreadCount; i++)
+	for (const auto& worker : m_completionWorkers)
 	{
-		if (!m_iocpWorkerThreads[i])
+		// 네이티브 스레드 생성에 실패한 마지막 객체에는 깨울 스레드가 없다.
+		if (worker->GetThreadId() == 0)
 			continue;
-
-		// 정지 이벤트만으로는 GQCS 의 무한 대기를 깨울 수 없으므로
-		// 이벤트를 세우고 종료 코드도 함께 Post 한다.
-		m_iocpWorkerThreads[i]->RequestStop();
-
-		BOOL bResult = ::PostQueuedCompletionStatus(m_iocpHandle, 0, TERMINATE_CODE, NULL);
-
-		if (!bResult)
+		if (!::PostQueuedCompletionStatus(m_iocpHandle, 0, TERMINATE_CODE, nullptr))
 		{
-			const DWORD error = ::GetLastError();
-			LOGE("failed to post the terminate code to worker %lu (error %lu)", i, error);
+			LOGE("failed to wake IOCP worker %u for shutdown (error %lu)", worker->GetThreadId(), ::GetLastError());
 			ENGINE_BREAK_IF_DEBUGGER();
 		}
 	}
+}
+
+void IOCPCore::JoinCompletionWorkers()
+{
+	if (m_completionWorkers.empty())
+		return;
+
+	// 파생 객체가 살아 있는 동안 전부 조인한다. 이후 소유 컨테이너를 비운다.
+	for (const auto& worker : m_completionWorkers)
+		worker->Join();
+	m_completionWorkers.clear();
+	LOGI("IOCP GQCS workers exited");
 }
 
 void IOCPCore::IOCPWorkerThreadLoop(IOCPWorkerThread& worker, uint32_t workerIndex)
@@ -362,8 +328,9 @@ void IOCPCore::IOCPWorkerThreadLoop(IOCPWorkerThread& worker, uint32_t workerInd
 			&completionKey,
 			&overlapped,
 			INFINITE);
+		const DWORD completionError = completionStatus ? ERROR_SUCCESS : ::GetLastError();
 
-		if (completionKey == TERMINATE_CODE)
+		if (completionError == ERROR_SUCCESS && completionKey == TERMINATE_CODE && overlapped == nullptr)
 		{
 			// 종료 코드를 수신했으므로 이 스레드만 종료한다.
 			// 이전 구현은 공유 bool 을 false 로 바꿔서 다른 워커까지 한꺼번에
@@ -383,13 +350,13 @@ void IOCPCore::IOCPWorkerThreadLoop(IOCPWorkerThread& worker, uint32_t workerInd
 		//
 		// 막 꺼낸 통지는 처리하는 편이 낫다. 그래야 회계가 맞고, 이 검사가
 		// 없어도 루프 머리의 같은 검사가 다음 바퀴에서 내보낸다. GQCS 의 무한
-		// 대기를 깨우는 것은 이 검사가 아니라 RequestIOCPThreadTerminate 가 넣는
+		// 대기를 깨우는 것은 이 검사가 아니라 RequestCompletionWorkersStop 가 넣는
 		// 종료 코드다.
 		//
 		// 이 워커가 종료 코드를 소비하지 않고 나가도 괜찮다. 코드는 워커 수만큼
 		// 들어가 있고 한 워커는 많아야 하나를 소비하므로, 대기 중인 워커의 몫은
 		// 언제나 남는다.
-		HandleCompletion(completionKey, overlapped, bytesTransferred, completionStatus);
+		HandleCompletion(completionKey, overlapped, bytesTransferred, completionError);
 	}
 
 	LOGI("GQCS worker %u leaving loop", workerIndex);

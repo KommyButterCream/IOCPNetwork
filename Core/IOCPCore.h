@@ -14,6 +14,8 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <atomic> // for std::atomic
+#include <memory> // for std::unique_ptr
+#include <vector> // for std::vector
 
 #include <Windows.h>
 
@@ -95,7 +97,7 @@ protected:
 
 	// 서버, 클라이언트에서 override 필수!
 	// GQCS 에 통지 받은 IO 처리
-	virtual void HandleCompletion(ULONG_PTR completionKey, LPOVERLAPPED overlapped, DWORD bytesTransferred, BOOL completionStatus) = 0;
+	virtual void HandleCompletion(ULONG_PTR completionKey, LPOVERLAPPED overlapped, DWORD bytesTransferred, DWORD completionError) = 0;
 
 	// HandleSocketError 는 여기에 두지 않는다.
 	//
@@ -125,7 +127,7 @@ private:
 	// IOCP GQCS Threads
 	// 스레드 핸들과 정지 이벤트, 조인은 ThreadBase 가 관리한다.
 	DWORD m_iocpThreadCount = 0; // IOCP GQCS 스레드 수량
-	IOCPWorkerThread** m_iocpWorkerThreads = nullptr;
+	std::vector<std::unique_ptr<IOCPWorkerThread>> m_completionWorkers;
 
 private:
 	// Winsock
@@ -137,11 +139,12 @@ private:
 	void FinalizeIOCPHandle();
 
 	// IOCP GQCS Threads
-	bool CreateIOCPWorkerthread();
-	void DestroyIOCPWorkerthread();
-	void RequestIOCPThreadTerminate();
+	bool CreateCompletionWorkers();
+	void RequestCompletionWorkersStop();
+	void JoinCompletionWorkers();
 
-public:
+private:
+	friend class IOCPWorkerThread;
 	// IOCPWorkerThread 가 호출한다.
 	void IOCPWorkerThreadLoop(IOCPWorkerThread& worker, uint32_t workerIndex);
 };

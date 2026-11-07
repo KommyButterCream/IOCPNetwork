@@ -8,6 +8,7 @@
 #include <stdint.h> // for uint32_t, uint64_t
 #include "ClientSession.h"
 #include <memory> // for std::unique_ptr
+#include <unordered_map> // for std::unordered_map
 
 #include "../Buffer/SessionBufferConfig.h"
 
@@ -31,12 +32,13 @@ public:
 	~ClientSessionPool();
 
 	// 대여 중인 세션은 마지막 참조가 반환된 후 다시 대여한다.
-	ClientSession* Acquire();
+	ClientSession* Acquire(uint32_t remoteAddress = 0, uint32_t addressLimit = 0);
+	// 인증 성공에 필요한 수량을 예약한다. 실패·종료 후 최종 반환 시 자동 해제한다.
+	bool TryAdmit(ClientSession& session, uint32_t capacity);
 
 	// 풀 용량과 사용 중인 슬롯을 조회한다.
 	uint32_t GetSessionCount() const;
 	uint32_t GetInUseCount() const;
-	uint32_t CountSessionsFromAddress(const char* ipAddress) const;
 
 	// 종료 시 발행을 중단하고 완료를 기다린 뒤 남은 연결을 정리한다.
 	void RequestAllRecvSendIOCancel();
@@ -75,6 +77,8 @@ private:
 	std::unique_ptr<ClientSession[]> m_sessions;
 	SessionNode* m_freeList = nullptr;
 	uint32_t m_capacity = 0;
+	std::unordered_map<uint32_t, uint32_t> m_addressCounts;
+	uint32_t m_admittedCount = 0;
 	mutable SRWLOCK m_lock = SRWLOCK_INIT;
 	const Callbacks m_callbacks;
 };

@@ -28,7 +28,6 @@
 #include "../Protocol/SystemPacket.h"
 #include "../Job/JobHandle.h"
 #include "../Session/ClientSession.h"
-#include "../Session/SessionManager.h"
 
 #include "../../Core/Util/Logger.h"
 
@@ -53,9 +52,7 @@ IOCPClient::~IOCPClient()
 {
 	StopClient();
 
-	// 정상 종료 후 남겨 둔 풀 객체를 파괴한다.
-	// StopClient 는 Finalize 만 한다. (이유는 ENGINE_POOL::FinalizePools 주석)
-	DestroyMemoryPools();
+	// 풀 묶음은 세션과 워커가 정리된 뒤 멤버 소멸 과정에서 파괴한다.
 }
 
 bool IOCPClient::StartClient(const char* serverIp, const uint16_t port, const SessionBufferConfig& bufferConfig, uint32_t iocpThreadCount, const EnginePoolConfig& poolConfig, const ClientLivenessConfig& livenessConfig)
@@ -88,11 +85,11 @@ bool IOCPClient::StartClient(const char* serverIp, const uint16_t port, const Se
 	catch (...)
 	{
 		StopResources();
-		DestroyMemoryPools();
+		m_memoryPools.reset();
 		throw;
 	}
 	StopResources();
-	DestroyMemoryPools();
+	m_memoryPools.reset();
 	return false;
 }
 
@@ -101,8 +98,8 @@ bool IOCPClient::StartResources(const char* serverIp, const uint16_t port, const
 	m_disconnecting.store(false);
 
 	// 앞선 주기의 풀 객체가 남아 있으면 여기서 지운다. StopClient 는 Finalize
-	// 까지만 하고 객체를 남기기 때문이다. (이유는 ENGINE_POOL::FinalizePools 주석)
-	DestroyMemoryPools();
+	// 까지만 하고 객체를 남기기 때문이다. (이유는 ENGINE_POOL::EnginePools::Finalize 주석)
+	m_memoryPools.reset();
 
 	// 설정 오류는 아무것도 잡기 전에 걸러낸다.
 	if (!bufferConfig.IsValid())
@@ -125,33 +122,15 @@ bool IOCPClient::StartResources(const char* serverIp, const uint16_t port, const
 
 	m_livenessConfig = livenessConfig;
 
-	// 주소를 복사하기 '전' 에 본다.
-	//
-	// 예전에는 곧바로 strcpy_s 였다. 널이거나 버퍼보다 긴 문자열이 들어오면
-	// CRT 의 잘못된 인자 처리기가 불리고, 기본 처리기는 프로세스를 그 자리에서
-	// 죽인다(0xC0000409). 서비스가 설정 파일에서 읽은 값을 그대로 넘기는 것은
-	// 흔한 형태인데, 그 오타 하나가 진단 한 줄 없는 즉사가 된다.
-	//
-	// 형식이 IPv4 인지까지는 여기서 보지 않는다. 그건 PostConnect 의
-	// inet_pton 이 판정하고 거기서 위반으로 남긴다. 여기서 막는 것은
-	// '복사 자체가 프로세스를 죽이는' 입력이다.
-	if (serverIp == nullptr || serverIp[0] == '\0')
+	// 주소는 자원 생성 전에 한 번만 파싱한다.
+	m_serverAddress = {};
+	m_serverAddress.sin_family = AF_INET;
+	m_serverAddress.sin_port = ::htons(port);
+	if (!serverIp || !serverIp[0] || ::inet_pton(AF_INET, serverIp, &m_serverAddress.sin_addr) != 1)
 	{
-		LOGE("StartClient was given no server address");
+		LOGE("invalid server IPv4 address");
 		return false;
 	}
-
-	const size_t addressLength = ::strnlen(serverIp, sizeof(m_serverIPAddress));
-	if (addressLength >= sizeof(m_serverIPAddress))
-	{
-		LOGE("the server address is longer than %zu characters", sizeof(m_serverIPAddress) - 1);
-		return false;
-	}
-
-	::memcpy(m_serverIPAddress, serverIp, addressLength);
-	m_serverIPAddress[addressLength] = '\0';
-
-	m_serverPort = port;
 
 	// 워커 2개.
 	//
@@ -244,25 +223,13 @@ void IOCPClient::StopResources()
 	// [3] 세션 해제
 	m_session.reset();
 
-	// 세션(m_session)을 이미 지웠으므로 세션이 소유한 패킷 참조는 모두 반납된 상태다.
-	if (m_sharedPacketMemoryPool)
-	{
-		m_sharedPacketMemoryPool->LogStats("sharedPacket");
-	}
+	// 세션과 Job이 반환한 뒤 저장 공간을 정리한다. 풀 객체는 재시작·파괴까지 유지한다.
+	if (m_memoryPools)
+		m_memoryPools->Finalize();
 
-	// 재고만 돌려주고 객체는 남긴다. 늦게 도착하는 반납이 해제된 풀을
-	// 역참조하지 않도록 하기 위한 것이고, 실제 delete 는 소멸자가 한다.
-	// (사정은 ENGINE_POOL::FinalizePools 주석)
-	//
-	// 반드시 세션을 지운 뒤여야 한다. 세션 정리가 담고 있던 패킷과 송신
-	// 공유 제어 객체를 이 풀들로 되돌리기 때문이다.
-	ENGINE_POOL::FinalizePools(m_packetMemoryPool.get(), m_jobMemoryPool.get(), m_sharedPacketMemoryPool.get());
-	m_handlerContext = {};
+	// 핸들러 등록은 정지·재시작 사이에도 유지한다.
 
-	m_packetHandlerTable.reset();
-
-	memset(m_serverIPAddress, 0, sizeof(m_serverIPAddress));
-	m_serverPort = 0;
+	m_serverAddress = {};
 
 	m_connectEx = nullptr;
 }
@@ -271,17 +238,33 @@ void IOCPClient::StopResources()
 
 bool IOCPClient::RegisterPacketHandler(uint16_t id, PacketHandlerFunc handler)
 {
-	return m_packetHandlerTable && m_packetHandlerTable->Register(id, handler);
+	// 워커 또는 콜백에서 제어 락을 기다리지 않는다. 실행 중인 테이블은 불변이다.
+	if (EngineExecutionScope::IsActive() || Core::Concurrency::ThreadTimer::IsCallbackThread())
+		return false;
+	std::unique_lock lock(m_controlMutex, std::try_to_lock);
+	if (!lock.owns_lock() || m_running)
+		return false;
+	try
+	{
+		if (!m_packetHandlerTable)
+			m_packetHandlerTable = std::make_unique<PacketHandlerTable>();
+		return m_packetHandlerTable->Register(id, handler);
+	}
+	catch (const std::bad_alloc&)
+	{
+		LOGE("failed to allocate the packet handler table");
+		return false;
+	}
 }
 
 PacketHandle IOCPClient::CreatePacket(std::size_t size) const
 {
-	return m_handlerContext.CreatePacket(size);
+	return m_memoryPools ? m_memoryPools->context.CreatePacket(size) : PacketHandle{};
 }
 
 SharedPacketHandle IOCPClient::CreateSharedPacket(PacketHandle packet) const
 {
-	return m_handlerContext.CreateSharedPacket(std::move(packet));
+	return m_memoryPools ? m_memoryPools->context.CreateSharedPacket(std::move(packet)) : SharedPacketHandle{};
 }
 
 ISession* IOCPClient::GetSession() const
@@ -307,14 +290,14 @@ bool IOCPClient::EnqueueJob(ISession* session, uint16_t packetId, PacketHandle p
 		return false;
 	}
 
-	if (!m_packetHandlerTable || !m_jobMemoryPool || !m_packetMemoryPool)
+	if (!m_packetHandlerTable || !m_memoryPools)
 	{
 		ENGINE_VIOLATION("cannot submit a job : the client is not fully initialized");
 		return false;
 	}
 
-	auto jobHandle = CreatePacketJob(*m_jobMemoryPool, *m_packetHandlerTable,
-		*clientSession, packetId, std::move(packetHandle), m_handlerContext);
+	auto jobHandle = CreatePacketJob(*m_memoryPools->job, *m_packetHandlerTable,
+		*clientSession, packetId, std::move(packetHandle), m_memoryPools->context);
 	if (!jobHandle)
 		return false;
 
@@ -333,16 +316,6 @@ void* IOCPClient::GetServiceContext()
 	return this;
 }
 
-// 메모리 풀 정리
-
-void IOCPClient::DestroyMemoryPools()
-{
-	m_handlerContext = {};
-	m_sharedPacketMemoryPool.reset();
-	m_packetMemoryPool.reset();
-	m_jobMemoryPool.reset();
-}
-
 // 접속 준비와 발행
 
 bool IOCPClient::StartConnection(const SessionBufferConfig& bufferConfig, const EnginePoolConfig& poolConfig)
@@ -357,21 +330,12 @@ bool IOCPClient::StartConnection(const SessionBufferConfig& bufferConfig, const 
 	// 패킷 풀이 수신 상한을 덮는지 확인하는 검사도 그 안으로 들어갔다.
 	// 예전에는 이 검사가 클라에만 있었다 — 서버는 지금 프리셋에서 우연히
 	// 안전할 뿐이고, 서비스가 maxRecvPacketSize 를 올리면 조용히 힙으로 샜다.
-	ENGINE_POOL::EnginePools pools;
-	if (!ENGINE_POOL::CreatePools(poolConfig, bufferConfig.maxRecvPacketSize, "client", pools))
-	{
+	m_memoryPools = ENGINE_POOL::CreatePools(poolConfig, bufferConfig.maxRecvPacketSize, "client", GetServiceContext());
+	if (!m_memoryPools)
 		return false;
-	}
 
-	m_jobMemoryPool = std::move(pools.job);
-	m_packetMemoryPool = std::move(pools.packet);
-	m_sharedPacketMemoryPool = std::move(pools.sharedPacket);
-
-	m_handlerContext.m_sharedPool = m_sharedPacketMemoryPool.get();
-	m_handlerContext.m_packetPool = m_packetMemoryPool.get();
-	m_handlerContext.serviceContext = GetServiceContext();
-
-	m_packetHandlerTable = std::make_unique<PacketHandlerTable>();
+	if (!m_packetHandlerTable)
+		m_packetHandlerTable = std::make_unique<PacketHandlerTable>();
 
 	// 서버와의 통신을 위한 세션 생성
 	m_session = std::make_unique<ClientSession>();
@@ -380,7 +344,7 @@ bool IOCPClient::StartConnection(const SessionBufferConfig& bufferConfig, const 
 		LOGE("failed to initialize the client session");
 		return false;
 	}
-	if (!m_session->InitializeMemoryPool(m_jobMemoryPool.get(), m_packetMemoryPool.get(), bufferConfig))
+	if (!m_session->InitializeMemoryPool(m_memoryPools->job.get(), m_memoryPools->packet.get(), bufferConfig))
 		return false;
 	m_session->SetOwnerCallbacks({this, &IOCPClient::OnDisconnectRequest, &IOCPClient::OnReleaseReady});
 
@@ -418,19 +382,17 @@ bool IOCPClient::StartConnection(const SessionBufferConfig& bufferConfig, const 
 
 bool IOCPClient::BindClientSocket(SOCKET clientSocket)
 {
-	SOCKADDR_IN localAddr;
+	SOCKADDR_IN localAddr{};
 	localAddr.sin_family = AF_INET;
 	localAddr.sin_port = 0;
 	localAddr.sin_addr.s_addr = ::htonl(INADDR_ANY);
 
-	if (::bind(clientSocket, (SOCKADDR*)&localAddr, sizeof(localAddr)) == SOCKET_ERROR)
+	if (::bind(clientSocket, reinterpret_cast<const SOCKADDR*>(&localAddr), sizeof(localAddr)) == SOCKET_ERROR)
 	{
-		//Log::log(LogLevel::LOG_ERROR, "[%s] bind failed - ErroCode : %d", WSAGetLastError());
+		LOGE("client bind failed (error %d)", ::WSAGetLastError());
 
 		return false;
 	}
-
-	//Log::log(LogLevel::LOG_INFO, "[%s] bind success");
 
 	return true;
 }
@@ -454,7 +416,7 @@ bool IOCPClient::InitializeGUIDConnectEx(SOCKET clientSocket)
 		nullptr,
 		nullptr) == SOCKET_ERROR)
 	{
-		//Log::log(LogLevel::LOG_ERROR, "[%s] WSAIoctl Get ConnectEx Pointer Failed - ErroCode : %d", WSAGetLastError());
+		LOGE("could not load ConnectEx (error %d)", ::WSAGetLastError());
 
 		return false;
 	}
@@ -470,39 +432,16 @@ bool IOCPClient::PostConnect(ClientSession* clientSession)
 		return false;
 	}
 
-	SOCKADDR_IN serveraddr = { 0 };
-	serveraddr.sin_family = AF_INET;
-	serveraddr.sin_port = htons(m_serverPort);
-	int nResult = ::inet_pton(AF_INET, m_serverIPAddress, &serveraddr.sin_addr);
-
-	if (nResult != 1)
-	{
-		// inet_pton 은 0(형식이 틀림)과 -1(그 밖의 오류)을 따로 돌려준다.
-		//
-		// 예전에는 -1 분기가 오류 코드를 읽고 디버거만 세운 뒤 그대로 아래로
-		// 떨어졌다. 그러면 serveraddr 의 sin_addr 이 0 인 채로 ConnectEx 가
-		// 나간다 — 0.0.0.0 은 윈도우에서 로컬 호스트로 해석되므로, 주소가
-		// 틀렸다고 알리는 대신 '엉뚱한 곳에 붙은 클라이언트' 가 된다.
-		// 어느 쪽도 접속할 수 없는 주소라는 사실은 같으므로 함께 실패시킨다.
-		// 위반이 아니라 오류로 남긴다. 이건 엔진의 불변식이 깨진 것이 아니라
-		// 서비스가 준 인자가 틀린 것이고, 서버 쪽 BindServerSocket 의 같은
-		// 판정도 LOGE 다. 위반 계수기는 하네스가 건전성 판정에 쓰므로
-		// 인자 오류로 더럽히지 않는다.
-		LOGE("server address '%s' is not a valid IPv4 address (inet_pton %d, error %d)",
-			m_serverIPAddress, nResult, ::WSAGetLastError());
-		return false;
-	}
-
 	// GQCS 사용을 위한 IOCP 등록
 	if (!IOCPCore::RegisterSocketToIOCP((ULONG_PTR)clientSession, clientSession->GetClientSocket()))
 		return false;
 
-	return clientSession->PostConnect(m_connectEx, serveraddr);
+	return clientSession->PostConnect(m_connectEx, m_serverAddress);
 }
 
 // I/O 완료 분배와 오류 처리
 
-void IOCPClient::HandleCompletion(ULONG_PTR completionKey, LPOVERLAPPED overlapped, DWORD bytesTransferred, BOOL completionStatus)
+void IOCPClient::HandleCompletion(ULONG_PTR completionKey, LPOVERLAPPED overlapped, DWORD bytesTransferred, DWORD completionError)
 {
 	// 완료 키에 넣은 것이 ClientSession* 다 (PostConnect 의
 	// RegisterSocketToIOCP 참고). 넣은 타입 그대로 받는다.
@@ -514,7 +453,7 @@ void IOCPClient::HandleCompletion(ULONG_PTR completionKey, LPOVERLAPPED overlapp
 	if (session == nullptr || overlappedEx == nullptr)
 	{
 		LOGW("completion arrived with session %p overlapped %p (status %d, error %lu)",
-			session, overlappedEx, completionStatus, ::GetLastError());
+			session, overlappedEx, completionError == ERROR_SUCCESS, completionError);
 		return;
 	}
 
@@ -526,9 +465,9 @@ void IOCPClient::HandleCompletion(ULONG_PTR completionKey, LPOVERLAPPED overlapp
 	}
 
 	const auto completion = session->TakeIOCompletion();
-	if (!completionStatus)
+	if (completionError != ERROR_SUCCESS)
 	{
-		HandleSocketError(session, ::WSAGetLastError(), overlappedEx->operation);
+		HandleSocketError(session, static_cast<int>(completionError), overlappedEx->operation);
 
 		return;
 	}
@@ -636,15 +575,17 @@ bool IOCPClient::RunClientConnectSequence()
 		}
 	}
 
-	if (!m_session->OnConnect())
+	m_session->OnConnect();
+
+	// 인증 응답보다 서비스의 접속 통지가 먼저 도착해야 한다.
+	if (!InvokeServiceCallback("OnClientConnect", [&] { OnClientConnect(m_session.get()); }))
 	{
-		LOGE("session %u OnConnect failed, dropping the connection", m_session->GetSessionID());
+		m_session->RequestDisconnect(DisconnectReason::ServiceError);
 		return false;
 	}
 
-	// 인증 응답보다 서비스의 접속 통지가 먼저 도착해야 한다.
-	OnClientConnect(m_session.get());
-
+	// 접속 콜백이 만든 컨텍스트를 수신 워커에 공개한 뒤 첫 수신을 건다.
+	m_session->ContinueReceive();
 	if (!SendSystemAuthRequest(m_session.get()))
 	{
 		LOGE("session %u system auth request send failed", m_session->GetSessionID());
@@ -668,7 +609,7 @@ void IOCPClient::HandleConnectFailure(ClientSession* clientSession, int errorCod
 	{
 		// 서비스 콜백이 다른 종료를 요청해도 접속 실패 사유가 먼저 보존된다.
 		clientSession->RequestDisconnect(DisconnectReason::ConnectFailed);
-		OnConnectFailed(errorCode);
+		(void)InvokeServiceCallback("OnConnectFailed", [&] { OnConnectFailed(errorCode); });
 	}
 	else
 		clientSession->RequestDisconnect(DisconnectReason::LocalShutdown);
@@ -698,8 +639,10 @@ bool IOCPClient::HandleReceivedPacket(ClientSession& session, uint16_t packetId,
 {
 	if (IsServicePacketId(packetId))
 	{
-		OnReceive(&session, packetId, std::move(packet));
-		return true;
+		if (InvokeServiceCallback("OnReceive", [&] { OnReceive(&session, packetId, std::move(packet)); }))
+			return true;
+		session.RequestDisconnect(DisconnectReason::ServiceError);
+		return false;
 	}
 
 	const auto* data = reinterpret_cast<const char*>(packet.View().data());
@@ -715,7 +658,9 @@ void IOCPClient::HandleSend(ClientSession* session, DWORD bytesTransferred)
 {
 	ENGINE_CHECK_RETVOID(session->GetSessionRole() == SESSION_ROLE::CLIENT,
 		"unexpected session role for send completion on session %u", session->GetSessionID());
-	OnSend(session, bytesTransferred);
+	// 콜백 실패 시 새 송신을 막되, 이번 완료의 송신 상태와 패킷은 반드시 정리한다.
+	if (!InvokeServiceCallback("OnSend", [&] { OnSend(session, bytesTransferred); }))
+		session->RequestDisconnect(DisconnectReason::ServiceError);
 	session->OnSendCompleted(bytesTransferred);
 }
 
@@ -751,12 +696,12 @@ bool IOCPClient::SendSystemAuthRequest(ClientSession* session)
 
 	// 인증에 사용하는 패킷 풀은 엔진이 소유합니다.
 
-	if (!m_packetMemoryPool)
+	if (!m_memoryPools)
 	{
 		return false;
 	}
 
-	auto packetHandle = MEMORY_POOL::CreatePacketHandle(*m_packetMemoryPool, sizeof(CS_SYSTEM_AUTH_REQUEST_PACKET));
+	auto packetHandle = MEMORY_POOL::CreatePacketHandle(*m_memoryPools->packet, sizeof(CS_SYSTEM_AUTH_REQUEST_PACKET));
 
 	if (!packetHandle)
 	{
@@ -819,7 +764,8 @@ DisconnectReason IOCPClient::HandleAuthResponse(ClientSession* session, const ch
 		m_clientWatchdog->Arm(response->heartbeatIntervalMs);
 	}
 
-	OnSessionEstablished(session);
+	if (!InvokeServiceCallback("OnSessionEstablished", [&] { OnSessionEstablished(session); }))
+		return DisconnectReason::ServiceError;
 	return DisconnectReason::Unknown;
 }
 
@@ -863,6 +809,6 @@ void IOCPClient::OnReleaseReady(void* context, ClientSession* session)
 	session->FinishDisconnect(&IOCPCore::CloseSocketHandle,
 		[](void* owner, ClientSession* ended, DisconnectReason reason)
 		{
-			static_cast<IOCPClient*>(owner)->OnClientDisconnect(ended, reason);
+			(void)InvokeServiceCallback("OnClientDisconnect", [&] { static_cast<IOCPClient*>(owner)->OnClientDisconnect(ended, reason); });
 		}, context);
 }

@@ -59,9 +59,7 @@ IOCPServer::~IOCPServer()
 {
 	StopServer();
 
-	// 정상 종료 후 남겨 둔 풀 객체를 파괴한다.
-	// StopServer 는 Finalize 만 한다. (이유는 ENGINE_POOL::FinalizePools 주석)
-	DestroyMemoryPools();
+	// 풀 묶음은 세션과 워커가 정리된 뒤 멤버 소멸 과정에서 파괴한다.
 }
 
 bool IOCPServer::StartServer(const char* ipAddress, const uint16_t port, const uint32_t maxConnectionCount, const SessionBufferConfig& bufferConfig, const ConnectionPolicyConfig& policyConfig, const EnginePoolConfig& poolConfig, const HeartbeatConfig& heartbeatConfig)
@@ -94,11 +92,11 @@ bool IOCPServer::StartServer(const char* ipAddress, const uint16_t port, const u
 	catch (...)
 	{
 		StopResources();
-		DestroyMemoryPools();
+		m_memoryPools.reset();
 		throw;
 	}
 	StopResources();
-	DestroyMemoryPools();
+	m_memoryPools.reset();
 	return false;
 }
 
@@ -162,7 +160,7 @@ bool IOCPServer::StartResources(const char* ipAddress, const uint16_t port, cons
 		return false;
 	}
 
-	if (!CreateListenSocket(ipAddress, port))
+	if (!CreateListenSocket())
 	{
 		return false;
 	}
@@ -192,18 +190,12 @@ bool IOCPServer::StartResources(const char* ipAddress, const uint16_t port, cons
 	// 만든 풀이 그대로 남은 채 false 만 돌아갔다.
 
 	// 앞선 주기의 풀 객체가 남아 있으면 여기서 지운다. StopServer 는 Finalize
-	// 까지만 하고 객체를 남기기 때문이다. (이유는 ENGINE_POOL::FinalizePools 주석)
-	DestroyMemoryPools();
+	// 까지만 하고 객체를 남기기 때문이다. (이유는 ENGINE_POOL::EnginePools::Finalize 주석)
+	m_memoryPools.reset();
 
-	ENGINE_POOL::EnginePools pools;
-	if (!ENGINE_POOL::CreatePools(poolConfig, bufferConfig.maxRecvPacketSize, "server", pools))
-	{
+	m_memoryPools = ENGINE_POOL::CreatePools(poolConfig, bufferConfig.maxRecvPacketSize, "server", GetServiceContext());
+	if (!m_memoryPools)
 		return false;
-	}
-
-	m_jobMemoryPool = std::move(pools.job);
-	m_packetMemoryPool = std::move(pools.packet);
-	m_sharedPacketMemoryPool = std::move(pools.sharedPacket);
 
 	m_serverReadySessionQueue = std::make_unique<ServerReadySessionQueue>();
 
@@ -214,11 +206,8 @@ bool IOCPServer::StartResources(const char* ipAddress, const uint16_t port, cons
 		return false;
 	}
 
-	m_handlerContext.m_sharedPool = m_sharedPacketMemoryPool.get();
-	m_handlerContext.m_packetPool = m_packetMemoryPool.get();
-	m_handlerContext.serviceContext = GetServiceContext();
-
-	m_packetHandlerTable = std::make_unique<PacketHandlerTable>();
+	if (!m_packetHandlerTable)
+		m_packetHandlerTable = std::make_unique<PacketHandlerTable>();
 
 	m_serverJobScheduler = std::make_unique<ServerJobScheduler>();
 
@@ -251,8 +240,8 @@ bool IOCPServer::StartResources(const char* ipAddress, const uint16_t port, cons
 	if (!m_sessionManager->Initialize(
 		acceptSessionCount,
 		maxConnectionCount,
-		m_jobMemoryPool.get(),
-		m_packetMemoryPool.get(),
+		m_memoryPools->job.get(),
+		m_memoryPools->packet.get(),
 		IOCPCore::CloseSocketHandle,
 		bufferConfig,
 		&IOCPServer::OnSessionDisconnectNotify,
@@ -383,27 +372,11 @@ void IOCPServer::StopResources()
 	// 부르므로, 조인이 끝날 때까지 살아 있어야 한다.
 	m_serverReadySessionQueue.reset();
 
-	m_packetHandlerTable.reset();
+	// 핸들러 등록은 정지·재시작 사이에도 유지한다.
 
-	// 풀 지표를 남긴다.
-	// peak 은 초기 blockCount 산정 근거이고, grow 가 0 이 아니면 초기값이 부족했다는 뜻이며
-	// OUTSTANDING 이 0 이 아니면 누수다. 개별 할당 로그 없이 이걸로 판단한다.
-	//
-	// 공유 패킷 풀은 세션이 전부 내려간 뒤에 찍어야 한다 (세션 매니저를 이미
-	// 지웠으므로 그 조건은 만족한다). 여기서 grow 가 0 이 아니면 초기
-	// SHARED_PACKET_CONTROL_COUNT 로는 버스트를 못 받았다는 뜻이다.
-	if (m_jobMemoryPool)       m_jobMemoryPool->LogStats("job");
-	if (m_packetMemoryPool)    m_packetMemoryPool->LogStats("packet");
-	if (m_sharedPacketMemoryPool) m_sharedPacketMemoryPool->LogStats("sharedPacket");
-
-	// 재고만 돌려주고 객체는 남긴다. 늦게 도착하는 반납이 해제된 풀을
-	// 역참조하지 않도록 하기 위한 것이고, 실제 delete 는 소멸자가 한다.
-	// (사정은 ENGINE_POOL::FinalizePools 주석)
-	//
-	// 반드시 세션 매니저를 지운 뒤여야 한다. 세션 정리가 담고 있던 패킷과
-	// 공유 제어 객체를 이 풀들로 되돌리기 때문이다.
-	ENGINE_POOL::FinalizePools(m_packetMemoryPool.get(), m_jobMemoryPool.get(), m_sharedPacketMemoryPool.get());
-	m_handlerContext = {};
+	// 세션과 Job이 반환한 뒤 저장 공간을 정리한다. 풀 객체는 재시작·파괴까지 유지한다.
+	if (m_memoryPools)
+		m_memoryPools->Finalize();
 
 	Logger::Flush();
 }
@@ -412,17 +385,33 @@ void IOCPServer::StopResources()
 
 bool IOCPServer::RegisterPacketHandler(uint16_t id, PacketHandlerFunc handler)
 {
-	return m_packetHandlerTable && m_packetHandlerTable->Register(id, handler);
+	// 워커 또는 콜백에서 제어 락을 기다리지 않는다. 실행 중인 테이블은 불변이다.
+	if (EngineExecutionScope::IsActive() || Core::Concurrency::ThreadTimer::IsCallbackThread())
+		return false;
+	std::unique_lock lock(m_controlMutex, std::try_to_lock);
+	if (!lock.owns_lock() || m_running)
+		return false;
+	try
+	{
+		if (!m_packetHandlerTable)
+			m_packetHandlerTable = std::make_unique<PacketHandlerTable>();
+		return m_packetHandlerTable->Register(id, handler);
+	}
+	catch (const std::bad_alloc&)
+	{
+		LOGE("failed to allocate the packet handler table");
+		return false;
+	}
 }
 
 PacketHandle IOCPServer::CreatePacket(std::size_t size) const
 {
-	return m_handlerContext.CreatePacket(size);
+	return m_memoryPools ? m_memoryPools->context.CreatePacket(size) : PacketHandle{};
 }
 
 SharedPacketHandle IOCPServer::CreateSharedPacket(PacketHandle packet) const
 {
-	return m_handlerContext.CreateSharedPacket(std::move(packet));
+	return m_memoryPools ? m_memoryPools->context.CreateSharedPacket(std::move(packet)) : SharedPacketHandle{};
 }
 
 // 서비스 작업 등록과 컨텍스트
@@ -440,15 +429,15 @@ bool IOCPServer::EnqueueJob(ISession* session, uint16_t packetId, PacketHandle p
 		return false;
 	}
 
-	if (!m_packetHandlerTable || !m_jobMemoryPool || !m_serverJobScheduler || !m_packetMemoryPool)
+	if (!m_packetHandlerTable || !m_memoryPools || !m_serverJobScheduler)
 	{
 		ENGINE_VIOLATION("session %u cannot submit a job : the server is not fully initialized",
 			clientSession->GetSessionID());
 		return false;
 	}
 
-	auto jobHandle = CreatePacketJob(*m_jobMemoryPool, *m_packetHandlerTable,
-		*clientSession, packetId, std::move(packetHandle), m_handlerContext);
+	auto jobHandle = CreatePacketJob(*m_memoryPools->job, *m_packetHandlerTable,
+		*clientSession, packetId, std::move(packetHandle), m_memoryPools->context);
 	if (!jobHandle)
 		return false;
 
@@ -461,40 +450,21 @@ void* IOCPServer::GetServiceContext()
 	return this;
 }
 
-// 메모리 풀 정리
-
-// 소멸·재시작·시작 실패 복구 시 풀 객체를 파괴한다.
-void IOCPServer::DestroyMemoryPools()
-{
-	m_handlerContext = {};
-	m_sharedPacketMemoryPool.reset();
-	m_packetMemoryPool.reset();
-	m_jobMemoryPool.reset();
-}
-
 // 리슨 소켓 준비와 해제
 
-bool IOCPServer::CreateListenSocket(const char* ipAddress, uint16_t port)
+bool IOCPServer::CreateListenSocket()
 {
 	m_serverSocket.Reset(::WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_OVERLAPPED));
 
 	if (m_serverSocket.Get() == INVALID_SOCKET)
 	{
-		//Log::log(LogLevel::LOG_ERROR, "[%s] WSASocket Listen socket failed");
+		LOGE("listen socket creation failed (error %d)", ::WSAGetLastError());
 		return false;
 	}
 
-	//Log::log(LogLevel::LOG_INFO, "[%s] WSASocket Listen socket success");
-
-	// Listen 소켓도 IOCP에 연결
-	if (CreateIoCompletionPort((HANDLE)m_serverSocket.Get(), GetIOCPHandle(), (ULONG_PTR)m_serverSocket.Get(), 0) == NULL)
-	{
-		//Log::log(LogLevel::LOG_ERROR, "[%s] CreateIoCompletionPort failed for listen socket - ErroCode : %d", WSAGetLastError());
-
+	// 수락 완료는 overlapped의 세션 ID로 분배하므로 완료 키는 0을 사용한다.
+	if (!RegisterSocketToIOCP(0, m_serverSocket.Get()))
 		return false;
-	}
-
-	//Log::log(LogLevel::LOG_INFO, "[%s] CreateIoCompletionPort success for listen socket");
 
 	return true;
 }
@@ -524,14 +494,12 @@ bool IOCPServer::BindServerSocket(SOCKET serverSocket, const char* ipAddress, ui
 		}
 	}
 
-	if (::bind(serverSocket, (SOCKADDR*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR)
+	if (::bind(serverSocket, reinterpret_cast<const SOCKADDR*>(&serverAddr), sizeof(serverAddr)) == SOCKET_ERROR)
 	{
-		//Log::log(LogLevel::LOG_ERROR, "[%s] bind failed - ErroCode : %d", WSAGetLastError());
+		LOGE("server bind failed (error %d)", ::WSAGetLastError());
 
 		return false;
 	}
-
-	//Log::log(LogLevel::LOG_INFO, "[%s] bind success");
 
 	return true;
 }
@@ -540,12 +508,10 @@ bool IOCPServer::ListenServerSocket(SOCKET serverSocket)
 {
 	if (::listen(serverSocket, SOMAXCONN) == SOCKET_ERROR)
 	{
-		//Log::log(LogLevel::LOG_ERROR, "[%s] listen failed - ErroCode : %d", WSAGetLastError());
+		LOGE("listen socket setup failed (error %d)", ::WSAGetLastError());
 
 		return false;
 	}
-
-	//Log::log(LogLevel::LOG_INFO, "[%s] listen success");
 
 	return true;
 }
@@ -569,7 +535,7 @@ bool IOCPServer::InitializeGUIDAcceptEx(SOCKET serverSocket)
 		nullptr,
 		nullptr) == SOCKET_ERROR)
 	{
-		//Log::log(LogLevel::LOG_ERROR, "[%s] WSAIoctl Get AcceptEX Pointer Failed - ErroCode : %d", WSAGetLastError());
+		LOGE("could not load AcceptEx (error %d)", ::WSAGetLastError());
 
 		return false;
 	}
@@ -581,7 +547,7 @@ bool IOCPServer::InitializeGUIDAcceptEx(SOCKET serverSocket)
 		&m_getAcceptExSockAddrs, sizeof(m_getAcceptExSockAddrs),
 		&bytes, nullptr, nullptr) == SOCKET_ERROR)
 	{
-		//Log::log(LogLevel::LOG_ERROR, "[%s] WSAIoctl Get GetAcceptExSockaddrs Pointer Failed - ErroCode : %d", WSAGetLastError());
+		LOGE("could not load GetAcceptExSockaddrs (error %d)", ::WSAGetLastError());
 
 		return false;
 	}
@@ -785,7 +751,7 @@ void IOCPServer::HandleCompletion(
 	ULONG_PTR completionKey,
 	LPOVERLAPPED overlapped,
 	DWORD bytesTransferred,
-	BOOL completionStatus)
+	DWORD completionError)
 {
 	OverlappedEx* overlappedEx = reinterpret_cast<OverlappedEx*>(overlapped);
 
@@ -794,16 +760,16 @@ void IOCPServer::HandleCompletion(
 	if (overlappedEx == nullptr)
 	{
 		LOGW("completion arrived with no overlapped (status %d, error %lu). the IOCP handle was most likely closed",
-			completionStatus, ::GetLastError());
+			completionError == ERROR_SUCCESS, completionError);
 		return;
 	}
 
 	switch (overlappedEx->operation)
 	{
 	case IO_OPERATION::ACCEPT:
-		if (!completionStatus)
+		if (completionError != ERROR_SUCCESS)
 		{
-			HandleSocketError(overlappedEx, nullptr, ::WSAGetLastError(), IO_OPERATION::ACCEPT);
+			HandleSocketError(overlappedEx, nullptr, static_cast<int>(completionError), IO_OPERATION::ACCEPT);
 			return;
 		}
 
@@ -823,9 +789,9 @@ void IOCPServer::HandleCompletion(
 			static_cast<int>(overlappedEx->operation));
 
 		const auto completion = session->TakeIOCompletion();
-		if (!completionStatus)
+		if (completionError != ERROR_SUCCESS)
 		{
-			HandleSocketError(overlappedEx, session, ::WSAGetLastError(), overlappedEx->operation);
+			HandleSocketError(overlappedEx, session, static_cast<int>(completionError), overlappedEx->operation);
 			return;
 		}
 
@@ -918,15 +884,20 @@ void IOCPServer::HandleAccept(uint32_t sessionId)
 	if (peer.sin_family == AF_INET && ::inet_ntop(AF_INET, &peer.sin_addr, ipAddress, sizeof(ipAddress)))
 		port = ::ntohs(peer.sin_port);
 
-	if (m_connectionPolicy.maxConnectionsPerAddress > 0 && ipAddress[0] &&
-		m_sessionManager->CountClientSessionsFromAddress(ipAddress) >= m_connectionPolicy.maxConnectionsPerAddress)
+	if (!ipAddress[0])
 	{
-		LOGW("rejected a connection from %s (per-address limit %u)", ipAddress, m_connectionPolicy.maxConnectionsPerAddress);
 		RepostAfterAccept(*acceptSession);
 		return;
 	}
-
-	ClientSession* clientSession = m_sessionManager->AcquireClientSession();
+	ClientSession* clientSession = nullptr;
+	try
+	{
+		clientSession = m_sessionManager->AcquireClientSession(peer.sin_addr.s_addr, m_connectionPolicy.maxConnectionsPerAddress);
+	}
+	catch (const std::bad_alloc&)
+	{
+		LOGE("could not reserve the connection address");
+	}
 	if (!clientSession)
 	{
 		RepostAfterAccept(*acceptSession);
@@ -979,13 +950,16 @@ bool IOCPServer::RunAcceptedConnectSequence(ClientSession* clientSession, SOCKET
 		return false;
 	}
 
-	if (!clientSession->OnConnect())
+	clientSession->OnConnect();
+
+	if (!InvokeServiceCallback("OnClientConnect", [&] { OnClientConnect(clientSession); }))
 	{
+		clientSession->RequestDisconnect(DisconnectReason::ServiceError);
 		return false;
 	}
 
-	OnClientConnect(clientSession);
-
+	// 서비스가 세션 컨텍스트를 준비한 뒤 첫 수신을 발행한다.
+	clientSession->ContinueReceive();
 	return true;
 }
 
@@ -1038,8 +1012,10 @@ bool IOCPServer::HandleReceivedPacket(ClientSession& session, uint16_t packetId,
 {
 	if (IsServicePacketId(packetId))
 	{
-		OnReceive(&session, packetId, std::move(packet));
-		return true;
+		if (InvokeServiceCallback("OnReceive", [&] { OnReceive(&session, packetId, std::move(packet)); }))
+			return true;
+		session.RequestDisconnect(DisconnectReason::ServiceError);
+		return false;
 	}
 
 	const auto* data = reinterpret_cast<const char*>(packet.View().data());
@@ -1054,7 +1030,9 @@ void IOCPServer::HandleSend(ClientSession* session, DWORD bytesTransferred)
 {
 	ENGINE_CHECK_RETVOID(session->GetSessionRole() == SESSION_ROLE::SERVER,
 		"unexpected session role for send completion on session %u", session->GetSessionID());
-	OnSend(session, bytesTransferred);
+	// 콜백 실패 시 새 송신을 막되, 이번 완료의 송신 상태와 패킷은 반드시 정리한다.
+	if (!InvokeServiceCallback("OnSend", [&] { OnSend(session, bytesTransferred); }))
+		session->RequestDisconnect(DisconnectReason::ServiceError);
 	session->OnSendCompleted(bytesTransferred);
 }
 
@@ -1102,24 +1080,11 @@ IOCPServer::SystemPacketResult IOCPServer::HandleAuthRequest(ClientSession* sess
 		return SystemPacketResult::Rejected;
 	}
 
-	// 서비스가 붙잡아 둘 상한을 넘었는지 여기서 본다.
-	//
-	// accept 단계가 아니라 인증 단계에서 거절하는 이유는, 그 시점에는
-	// 소켓이 아직 세션에 붙지 않아 응답을 보낼 수단이 없기 때문이다.
-	// 여기까지 오면 정상 세션이므로 기존 인증 응답 경로를 그대로 쓴다.
-	if (m_connectionPolicy.serviceCapacity > 0)
+	// 인증을 허용할 연결 수를 원자적으로 예약한다. 세션 반환 시 예약도 해제한다.
+	if (!m_sessionManager->TryAdmitClientSession(*session, m_connectionPolicy.serviceCapacity))
 	{
-		const uint32_t inUse = m_sessionManager->GetClientSessionInUseCount();
-
-		if (inUse > m_connectionPolicy.serviceCapacity)
-		{
-			LOGW("session %u rejected : service capacity reached (%u in use, limit %u)",
-				session->GetSessionID(), inUse, m_connectionPolicy.serviceCapacity);
-
-			session->RejectAuthentication(DisconnectReason::AuthRejectedServerFull, CreateAuthResponse(SYSTEM_AUTH_RESULT::SERVER_FULL));
-
-			return SystemPacketResult::Rejected;
-		}
+		session->RejectAuthentication(DisconnectReason::AuthRejectedServerFull, CreateAuthResponse(SYSTEM_AUTH_RESULT::SERVER_FULL));
+		return SystemPacketResult::Rejected;
 	}
 
 	if (!session->EnqueueSendPacket(CreateAuthResponse(SYSTEM_AUTH_RESULT::SUCCESS)))
@@ -1135,7 +1100,7 @@ IOCPServer::SystemPacketResult IOCPServer::HandleAuthRequest(ClientSession* sess
 
 PacketHandle IOCPServer::CreateAuthResponse(SYSTEM_AUTH_RESULT authResult)
 {
-	auto* packetPool = m_packetMemoryPool.get();
+	auto* packetPool = m_memoryPools ? m_memoryPools->packet.get() : nullptr;
 	if (!packetPool)
 	{
 		return {};
@@ -1183,5 +1148,5 @@ IOCPServer::SystemPacketResult IOCPServer::HandleHeartbeatResponse(ClientSession
 void IOCPServer::OnSessionDisconnectNotify(void* context, ClientSession* session, DisconnectReason reason)
 {
 	EngineExecutionScope execution;
-	static_cast<IOCPServer*>(context)->OnClientDisconnect(session, reason);
+	(void)InvokeServiceCallback("OnClientDisconnect", [&] { static_cast<IOCPServer*>(context)->OnClientDisconnect(session, reason); });
 }

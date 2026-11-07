@@ -21,7 +21,7 @@ class UniqueSocket;
 class RecvPacketBuffer;
 class TlsMemoryPool;
 
-#define INET_ADDRSTRLEN  22
+#include <ws2tcpip.h> // for INET_ADDRSTRLEN
 
 class ClientSession final : public ISession
 {
@@ -46,7 +46,8 @@ public:
 	// 엔진이 세션을 초기화하고 연결 상태를 전환한다.
 	bool Initialize(SESSION_ROLE sessionType, uint32_t sessionId);
 	bool InitializeMemoryPool(TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig);
-	bool OnConnect();
+	// 연결 상태를 준비한다. 접속 콜백 이후 ContinueReceive로 첫 수신을 발행한다.
+	void OnConnect();
 	// 소켓을 닫고 접속을 알렸던 서비스에 종료 사유를 전달한 뒤 연결 상태를 정리한다.
 	void FinishDisconnect(CloseSocketFunc closeSocket, SessionDisconnectNotifyFunc notify, void* context);
 	void ResetSession();

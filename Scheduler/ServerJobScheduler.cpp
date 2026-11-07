@@ -1,4 +1,5 @@
 #include "ServerJobScheduler.h"
+#include "../Core/EngineExecutionScope.h"
 
 #include <utility> // for std::move
 #include <stdio.h> // for swprintf_s
@@ -165,7 +166,8 @@ void ServerJobScheduler::WorkerThreadLoop(ServerJobWorker& worker, uint32_t work
 
 		while (auto jobHandle = session->GetJobQueue().Dequeue())
 		{
-			jobHandle->Execute();
+			if (!InvokeServiceCallback("Job", [&] { jobHandle->Execute(); }))
+				session->RequestDisconnect(DisconnectReason::ServiceError);
 		}
 
 		session->ReleaseProcessing();
