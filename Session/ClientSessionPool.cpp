@@ -90,15 +90,7 @@ void ClientSessionPool::Release(ClientSession* clientSession)
 		return;
 	}
 
-	if (clientSession->IsTransportConnected())
-	{
-		if (!clientSession->CancelPendingIO())
-		{
-			ENGINE_VIOLATION("session %u CancelPendingIO failed during release", sessionId);
-		}
-	}
-
-	FinishReleaseWhenReady(*clientSession);
+	clientSession->CloseWhenIdle();
 }
 
 uint32_t ClientSessionPool::GetSessionCount() const
@@ -157,13 +149,8 @@ void ClientSessionPool::RequestAllRecvSendIOCancel()
 			continue;
 		session->GetJobQueue().RequestStop();
 
-		if (session->IsTransportConnected())
-		{
-			if (!session->CancelPendingIO())
-			{
-				ENGINE_VIOLATION("session %u CancelPendingIO failed during bulk cancel", session->GetSessionID());
-			}
-		}
+		if (!session->CancelPendingIO())
+			ENGINE_VIOLATION("session %u could not cancel IO during shutdown", session->GetSessionID());
 	}
 }
 
@@ -188,12 +175,8 @@ void ClientSessionPool::DisconnectAllSessions()
 	// 워커 종료 후에는 연결 상태와 관계없이 아직 대여 중인 세션을 회수한다.
 	for (uint32_t i = 0; i < m_capacity; ++i)
 	{
-		if (!TryBeginRelease(i))
-			continue;
-
-		auto& session = m_sessions[i];
-		session.NoteDisconnectReason(DisconnectReason::LocalShutdown);
-		FinishReleaseWhenReady(session);
+		if (auto session = TryAcquireSessionReference(i))
+			session->RequestDisconnect(DisconnectReason::LocalShutdown);
 	}
 }
 
@@ -310,15 +293,13 @@ uint32_t ClientSessionPool::DisconnectZombieSessions(uint64_t nowTick, uint64_t 
 		{
 			LOGW("session %u was not reading for %llu ms while sends were still queued, disconnecting",
 				session->GetSessionID(), stalledPeerTimeout_ms);
-			session->NoteDisconnectReason(DisconnectReason::StalledPeer);
 		}
 		else
 		{
 			LOGW("session %u heartbeat timeout, disconnecting", session->GetSessionID());
-			session->NoteDisconnectReason(DisconnectReason::HeartbeatTimeout);
 		}
 		session->MarkHeartbeatTimeout();
-		Release(session.get());
+		session->RequestDisconnect(stalledPeer ? DisconnectReason::StalledPeer : DisconnectReason::HeartbeatTimeout);
 		++disconnectedCount;
 	}
 
@@ -397,12 +378,7 @@ ClientSessionPool::ClientSessionPool(std::unique_ptr<ClientSession[]> sessions, 
 	}
 }
 
-void ClientSessionPool::SessionReferenceReleaser::operator()(ClientSession* session) const noexcept
-{
-	session->ReleaseLifetimeReference();
-}
-
-ClientSessionPool::SessionReference ClientSessionPool::TryAcquireSessionReference(uint32_t slotIndex) const
+ClientSession::Reference ClientSessionPool::TryAcquireSessionReference(uint32_t slotIndex) const
 {
 	Core::Sync::SRWReadLockGuard lock(m_lock);
 
@@ -418,8 +394,7 @@ ClientSessionPool::SessionReference ClientSessionPool::TryAcquireSessionReferenc
 	}
 
 	// 읽기 락을 보유한 동안에는 Release가 이 슬롯을 RELEASING으로 바꿀 수 없습니다.
-	node.session->AddLifetimeReference();
-	return SessionReference{ node.session };
+	return node.session->AcquireReference();
 }
 
 bool ClientSessionPool::TryBeginRelease(uint32_t sessionId)
@@ -434,28 +409,9 @@ bool ClientSessionPool::TryBeginRelease(uint32_t sessionId)
 	return true;
 }
 
-void ClientSessionPool::FinishReleaseWhenReady(ClientSession& session)
-{
-	// 참조가 남으면 마지막 참조를 반환하는 쪽이 OnReleaseReady에서 마무리한다.
-	if (session.RequestRelease())
-		CompleteRelease(&session);
-}
-
 void ClientSessionPool::CleanupDisconnectedSession(ClientSession& session)
 {
-	const SOCKET socket = session.DetachSocket();
-	if (socket != INVALID_SOCKET)
-	{
-		if (m_callbacks.closeSocket)
-			m_callbacks.closeSocket(socket);
-		else if (::closesocket(socket) == SOCKET_ERROR)
-			LOGE("failed to close client socket (error %d)", ::WSAGetLastError());
-	}
-
-	// 서비스가 원격 주소와 컨텍스트를 조회할 수 있도록 초기화 전에 알린다.
-	NotifyServiceDisconnect(&session);
-	session.OnDisconnect();
-
+	session.FinishDisconnect(m_callbacks.closeSocket, m_callbacks.notifyDisconnect, m_callbacks.disconnectContext);
 	session.ResetSession();
 }
 
@@ -492,18 +448,4 @@ void ClientSessionPool::OnReleaseReady(void* context, ClientSession* session)
 	ClientSessionPool* pool = static_cast<ClientSessionPool*>(context);
 
 	pool->CompleteRelease(session);
-}
-
-void ClientSessionPool::NotifyServiceDisconnect(ClientSession* clientSession)
-{
-	if (!m_callbacks.notifyDisconnect)
-		return;
-
-	// 접속을 알린 적 없는 세션은 종료도 알리지 않는다. 수락 직후 거절된
-	// 접속이나 접속 시퀀스가 중간에 실패한 세션이 여기 해당한다.
-	// 래치를 소비하는 스레드는 하나뿐이라 두 번 알리지도 않는다.
-	if (!clientSession->ConsumeServiceConnectNotified())
-		return;
-
-	m_callbacks.notifyDisconnect(m_callbacks.disconnectContext, clientSession);
 }

@@ -74,7 +74,6 @@ public:
 	uint32_t GetTotalRecvPauseCount() const;
 
 	ClientSession* AcquireClientSession();
-	void ReleaseClientSession(ClientSession* session);
 
 	void RequestAllRecvSendIOCancel();
 	IOWaitResult WaitForAllRecvSendIOCancelComplete(const uint32_t timeout_ms);

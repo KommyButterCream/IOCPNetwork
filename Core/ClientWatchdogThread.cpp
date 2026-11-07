@@ -153,10 +153,6 @@ void ClientWatchdogThread::Run()
 			"the connection is dead, dropping it",
 			m_session->GetSessionID(), idle_ms, armed_ms);
 
-		m_session->NoteDisconnectReason(DisconnectReason::IdleTimeout);
-
-		// 이 호출 이후로 세션을 만지면 안 된다. 종료 절차가 다른 스레드에서
-		// 이어질 수 있고, 마지막 DecrementIO 가 세션을 정리한다.
-		m_session->NotifyDisconnect();
+		m_session->RequestDisconnect(DisconnectReason::IdleTimeout);
 	}
 }

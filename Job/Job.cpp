@@ -4,7 +4,7 @@
 
 using namespace Core::Util;
 
-bool Job::SetPacketJob(PacketHandlerFunc handler, ISession* session,
+bool Job::InitializePacketJob(PacketHandlerFunc handler, ISession* session,
     uint16_t packetId, PacketHandle&& packet, const HandlerContext& context)
 {
     if (m_type != JobType::NONE || !handler || !session || !packet || packet.Size() > UINT32_MAX)

@@ -99,13 +99,7 @@
     <ClCompile Include="..\Diagnostics\EngineDiagnostics.cpp">
       <Filter>Diagnostics</Filter>
     </ClCompile>
-    <ClCompile Include="..\Session\ClientSessionLifetime.cpp">
-      <Filter>Session</Filter>
-    </ClCompile>
     <ClCompile Include="..\Session\ClientSession.cpp">
-      <Filter>Session</Filter>
-    </ClCompile>
-    <ClCompile Include="..\Session\ClientSessionIO.cpp">
       <Filter>Session</Filter>
     </ClCompile>
     <ClCompile Include="..\Session\ClientSessionPool.cpp">
@@ -189,6 +183,9 @@
       <Filter>Network</Filter>
     </ClInclude>
     <ClInclude Include="..\Network\SocketOption.h">
+      <Filter>Network</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Network\UniqueSocket.h">
       <Filter>Network</Filter>
     </ClInclude>
     <ClInclude Include="..\Protocol\PacketHeader.h">

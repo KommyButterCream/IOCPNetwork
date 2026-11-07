@@ -2,9 +2,10 @@
 
 #include <stdint.h>
 
+enum class DisconnectReason : uint32_t;
 class ClientSession;
 using CloseSocketFunc = void (*)(uintptr_t);
-using SessionDisconnectNotifyFunc = void (*)(void* context, ClientSession* session);
+using SessionDisconnectNotifyFunc = void (*)(void* context, ClientSession* session, DisconnectReason reason);
 
 enum class IOWaitStatus { Completed, TimedOut, Failed };
 
@@ -33,25 +34,3 @@ enum class SESSION_ROLE
 
 
 static constexpr uint32_t INVALID_SESSION_ID = UINT32_MAX;
-enum class ClientSessionState
-{
-	NONE,
-	CONNECT_READY,
-	CONNECTING,
-	CONNECTED,
-	AUTH_PENDING,
-	ESTABLISHED,
-	CONNECT_ABORTED,
-	DISCONNECTED,
-};
-
-enum class ServerSessionState
-{
-	NONE,
-	CONNECT_READY,
-	CONNECTED,
-	AUTH_PENDING,
-	ESTABLISHED,
-	HEARTBEAT_TIMEOUT,
-	DISCONNECTED,
-};

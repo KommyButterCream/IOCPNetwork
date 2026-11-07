@@ -8,7 +8,7 @@
 #include <stdint.h>
 #include <memory> // for std::unique_ptr
 
-class ClientSession;
+#include "../Session/ClientSession.h"
 
 class ServerReadySessionQueue
 {
@@ -26,10 +26,9 @@ public:
 	[[nodiscard]] bool Initialize(uint32_t maxSessionCount);
 	void Finalize();
 
-	// Enqueue 성공 시 수명 참조를 확보합니다. Dequeue는 그 참조를 호출자에게 넘깁니다.
-	// 반환받은 세션의 마지막 사용 후 ReleaseLifetimeReference를 호출해야 합니다.
-	[[nodiscard]] bool Enqueue(ClientSession* session);
-	[[nodiscard]] ClientSession* Dequeue(uint32_t timeout_ms);
+	// 등록한 세션 참조를 큐가 보유하고 워커가 인출하면 소유권을 넘긴다.
+	[[nodiscard]] bool Enqueue(ClientSession& session);
+	[[nodiscard]] ClientSession::Reference Dequeue(uint32_t timeout_ms);
 
 	// 빈 큐에서 대기하는 워커를 깨우고 이후 빈 큐에서 다시 대기하지 않게 합니다.
 	// 이미 들어 있는 항목의 Dequeue과 워커의 마지막 재등록은 기존처럼 허용합니다.
@@ -39,7 +38,7 @@ public:
 	[[nodiscard]] uint32_t GetCount() const;
 
 private:
-	std::unique_ptr<ClientSession*[]> m_queue;
+	std::unique_ptr<ClientSession::Reference[]> m_queue;
 	uint32_t m_capacity = 0;
 	uint32_t m_head = 0;
 	uint32_t m_tail = 0;

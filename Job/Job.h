@@ -16,8 +16,8 @@ public:
     Job(Job&&) = delete;
     Job& operator=(Job&&) = delete;
 
-    // Configure once before enqueueing. Failure preserves the supplied packet.
-    [[nodiscard]] bool SetPacketJob(PacketHandlerFunc handler, ISession* session,
+    // 빈 Job을 패킷 처리 작업으로 초기화한다. 실패하면 전달받은 핸들의 소유권을 유지한다.
+    [[nodiscard]] bool InitializePacketJob(PacketHandlerFunc handler, ISession* session,
         uint16_t packetId, PacketHandle&& packet, const HandlerContext& context);
 
     // 빈 데이터도 허용하며, 설정에 성공한 경우에만 소유권을 이전한다.

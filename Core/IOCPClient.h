@@ -32,12 +32,13 @@ class SessionContext;
 class IOCPClient : public IOCPCore
 {
 public:
+	// 생성·소멸과 복사 제한
 	IOCP_ENGINE_API IOCPClient();
 	IOCPClient(const IOCPClient&) = delete;
 	IOCPClient& operator=(const IOCPClient&) = delete;
 	IOCP_ENGINE_API virtual ~IOCPClient();
 
-public:
+	// 시작과 종료
 	// iocpThreadCount 는 GQCS 워커 수다. 0 이면 기본값 2 를 쓴다.
 	//
 	// 왜 서버처럼 논리 프로세서 수가 아닌가.
@@ -66,145 +67,22 @@ public:
 		const ClientLivenessConfig& livenessConfig = ClientLivenessConfig());
 	IOCP_ENGINE_API void StopClient();
 
-private:
-	// 서비스의 패킷 핸들이 모두 반환된 후에만 풀을 파괴합니다.
-	// 종료 시 풀을 정리하며, 엔진 파괴·재시작 시에는 풀 객체도 삭제합니다.
-	void DestroyMemoryPools();
-
-	// Destory Flag
-	LONG m_destroyFlag = 0;
-
-	// 종료 절차를 한 스레드만 수행하게 하는 게이트.
-	//
-	// RequestDisconnect 는 여러 경로에서 동시에 들어온다.
-	//   - 앱 스레드의 StopClient()
-	//   - ConnectEx 취소 완료 처리(HandleConnectCancelled)
-	//   - recv/send 소켓 오류 -> ClientSession::NotifyDisconnect
-	//
-	// 가드가 없으면 들어온 스레드마다 종료 절차를 중복 수행한다. 소켓을
-	// 두 번 닫고 OnDisconnect 를 두 번 부른다.
-	// (서버 쪽은 ClientSessionPool 의 poolState CAS 가 같은 역할을 한다)
-	//
-	// 예전에는 그 중복이 각자 10초짜리 WaitForIOCancelComplete 였다.
-	// 이제 그 대기 자체가 없어졌지만(지연 반납) 중복 수행은 여전히
-	// 막아야 하므로 게이트는 남는다.
-	volatile LONG m_disconnecting = 0;
-
-	SOCKET m_clientSocket = INVALID_SOCKET;
-
-	ClientSession* m_session = nullptr;
-
-	TlsMemoryPool* m_jobMemoryPool = nullptr;
-	TlsMemoryPool* m_packetMemoryPool = nullptr;
-
-	// 공유 패킷 참조 제어 객체용 풀입니다.
-	TlsMemoryPool* m_sharedPacketMemoryPool = nullptr;
-	ClientJobWorker* m_clientJobWorker = nullptr;
-
-	// 서버가 조용해진 것을 알아차리는 감시 스레드.
-	// 왜 잡 스케줄러가 아니라 별도 스레드인지는 ClientWatchdogThread 주석.
-	ClientWatchdogThread* m_clientWatchdog = nullptr;
-
-	// StartClient 에서 받아 보관한다. 인증 응답이 도착했을 때 서버가 알려준
-	// 하트비트 주기와 합쳐 실제 유휴 타임아웃을 정한다.
-	ClientLivenessConfig m_livenessConfig;
-	PacketHandlerTable* m_packetHandlerTable = nullptr;
-	HandlerContext m_handlerContext = {};
-
-	// IP Address & Port
-	char m_serverIPAddress[INET_ADDRSTRLEN] = { 0, };
-	uint16_t m_serverPort = 0;
-
-private:
-	// for ConnectEx
-	using LPFN_CONNECTEX = BOOL(__stdcall*)(
-		_In_ SOCKET s,
-		_In_reads_bytes_(namelen) const struct sockaddr FAR* name,
-		_In_ int namelen,
-		_In_reads_bytes_opt_(dwSendDataLength) PVOID lpSendBuffer,
-		_In_ DWORD dwSendDataLength,
-		_Out_ LPDWORD lpdwBytesSent,
-		_Inout_ LPOVERLAPPED lpOverlapped
-		);
-
-	// ConnectEx 함수 포인터
-	LPFN_CONNECTEX m_connectEx = nullptr;
-
-private:
-	// GQCS 에 통지 받은 IO 처리
-	IOCP_ENGINE_API void HandleCompletion(ULONG_PTR completionKey, LPOVERLAPPED overlapped, DWORD bytesTransferred, BOOL completionStatus) override;
-	// 아래 핸들러들의 세션 인자는 전부 ClientSession 이다.
-	// 이 클라이언트가 가진 세션은 m_session 하나뿐이다.
-	void HandleSocketError(OverlappedEx* overlappedEx, ClientSession* session, int errorCode, IO_OPERATION ioOperation);
-
-	void HandleConnect(uint32_t sessionId, DWORD bytesTransferred);
-
-	// 접속 완료 후의 소켓 옵션 / OnConnect / 인증 요청까지.
-	// 실패를 반환값 하나로 모으려고 떼어냈다. 이유는 서버 쪽
-	// RunAcceptedConnectSequence 와 같다.
-	bool RunClientConnectSequence();
-
-	void HandleConnectCancelled(OverlappedEx* overlappedEx, ClientSession* session, int errorCode);
-
-	void HandleRecv(OverlappedEx* overlappedEx, ClientSession* session, DWORD bytesTransferred);
-	void HandleRecvCancelled(OverlappedEx* overlappedEx, ClientSession* session);
-
-	void HandleSend(OverlappedEx* overlappedEx, ClientSession* session, DWORD bytesTransferred);
-	void HandleSendCancelled(OverlappedEx* overlappedEx, ClientSession* session);
-
-	void HandleSessionDisconnected(OverlappedEx* overlappedEx, ClientSession* session, DWORD bytesTransferred);
-
-private:
-	bool CreateConnectSocket();
-	void DestroyConnectSocket();
-
-	bool BindClientSocket(SOCKET clientSocket);
-	bool ListenServerSocket(SOCKET clientSocket);
-
-	bool InitializeGUIDConnectEx(SOCKET clientSocket);
-	void FinalizeGUIDConnectEx();
-
-	bool PrepareConnect();
-	bool PostConnect(ClientSession* clientSession);
-	bool SendSystemAuthRequest(ClientSession* session);
-	bool HandleSystemPacket(ClientSession* session, uint16_t packetId, const char* packetData, uint32_t packetSize);
-
-	void RequestDisconnect(ClientSession* session);
-	static void OnDisconnectRequest(void* context, ClientSession* session);
-
-	// 종료 절차의 뒷부분. 소켓을 닫고 세션 상태를 정리한다.
-	// RequestDisconnect 가 그 자리에서 부르거나(남은 I/O 가 없을 때),
-	// 마지막 DecrementIO 가 부른다.
-	void CompleteDisconnect(ClientSession* clientSession);
-
-	// ClientSession 이 마지막 DecrementIO 에서 부르는 진입점.
-	static void OnReleaseReady(void* context, ClientSession* session);
-
-	// 서비스가 넘긴 세션이 이 클라이언트 소유인지 확인한다.
-	ClientSession* ResolveOwnSession(ISession* session, const char* calledFrom);
-
-public:
+	// 핸들러 등록과 패킷 생성
 	IOCP_ENGINE_API bool RegisterPacketHandler(uint16_t packetId, PacketHandlerFunc handler);
 	[[nodiscard]] IOCP_ENGINE_API PacketHandle CreatePacket(std::size_t size) const;
 	[[nodiscard]] IOCP_ENGINE_API SharedPacketHandle CreateSharedPacket(PacketHandle packet) const;
-	IOCP_ENGINE_API const HandlerContext& GetHandlerContext() const;
 	IOCP_ENGINE_API ISession* GetSession() const;
 
-	// 이 클라이언트 세션이 들고 있는 미완료 I/O 수.
-	// 조용한 상태에서 0 으로 돌아오지 않으면 Increment 와 Decrement 의
-	// 짝이 맞지 않는다는 신호다.
-	IOCP_ENGINE_API uint32_t GetOutstandingIOCount() const;
+protected:
+	// 서비스 작업 등록과 컨텍스트
+	// 패킷으로 Job을 초기화하고 큐에 등록한다. 실패 시 전달받은 패킷은 자동 반환한다.
+	IOCP_ENGINE_API bool EnqueueJob(ISession* session, uint16_t packetId, PacketHandle packetHandle);
+	// 핸들러에 전달할 서비스 객체를 파생 클래스에서 지정한다.
 	IOCP_ENGINE_API virtual void* GetServiceContext();
 
-
-protected:
-	// Consumes packetHandle on both success and failure.
-	// Success transfers ownership to the Job; failure returns the packet automatically.
-	IOCP_ENGINE_API bool SubmitPacketJob(ISession* session, uint16_t packetId, PacketHandle packetHandle);
-
+	// 서비스 이벤트
 	virtual void OnClientConnect(ISession*) {};
 	virtual void OnSessionEstablished(ISession*) {};
-
 	// reason 은 이 연결이 왜 끝났는지다.
 	//
 	// 예전에는 인자가 세션 하나뿐이라 서비스가 알 수 있는 것이 "끝났다"
@@ -216,7 +94,6 @@ protected:
 	// 재접속 여부만 알면 되면 IsRetryableDisconnect(reason) 를 쓰면 된다.
 	// (값 목록은 Session/DisconnectReason.h)
 	virtual void OnClientDisconnect(ISession*, DisconnectReason) {};
-
 	// 접속 자체가 성립하지 않았다. errorCode 는 WSA 오류 코드다.
 	//
 	// OnClientDisconnect 와 짝이 아니라 별개인 이유는, 접속한 적이 없으면
@@ -229,9 +106,98 @@ protected:
 	virtual void OnConnectFailed(int) {};
 	virtual void OnReceive(ISession*, uint16_t, PacketHandle) {};
 	virtual void OnSend(ISession*, uint32_t) {};
+
+private:
+	// 내부 타입
+	// for ConnectEx
+	using LPFN_CONNECTEX = BOOL(__stdcall*)(
+		_In_ SOCKET s,
+		_In_reads_bytes_(namelen) const struct sockaddr FAR* name,
+		_In_ int namelen,
+		_In_reads_bytes_opt_(dwSendDataLength) PVOID lpSendBuffer,
+		_In_ DWORD dwSendDataLength,
+		_Out_ LPDWORD lpdwBytesSent,
+		_Inout_ LPOVERLAPPED lpOverlapped
+		);
+
+	// 메모리 풀 정리
+	// 서비스의 패킷 핸들이 모두 반환된 후에만 풀을 파괴합니다.
+	// 종료 시 풀을 정리하며, 엔진 파괴·재시작 시에는 풀 객체도 삭제합니다.
+	void DestroyMemoryPools();
+
+	// 접속 준비와 발행
+	bool StartConnection(const SessionBufferConfig& bufferConfig, const EnginePoolConfig& poolConfig);
+	bool BindClientSocket(SOCKET clientSocket);
+	bool InitializeGUIDConnectEx(SOCKET clientSocket);
+	bool PostConnect(ClientSession* clientSession);
+
+	// I/O 완료 분배와 오류 처리
+	// GQCS 에 통지 받은 IO 처리
+	IOCP_ENGINE_API void HandleCompletion(ULONG_PTR completionKey, LPOVERLAPPED overlapped, DWORD bytesTransferred, BOOL completionStatus) override;
+	// 아래 핸들러들의 세션 인자는 전부 ClientSession 이다.
+	// 이 클라이언트가 가진 세션은 m_session 하나뿐이다.
+	void HandleSocketError(ClientSession* session, int errorCode, IO_OPERATION ioOperation);
+
+	// 접속 완료와 실패
+	void HandleConnect();
+	// 접속 완료 후의 소켓 옵션 / OnConnect / 인증 요청까지.
+	// 실패를 반환값 하나로 모으려고 떼어냈다. 이유는 서버 쪽
+	// RunAcceptedConnectSequence 와 같다.
+	bool RunClientConnectSequence();
+	void HandleConnectFailure(ClientSession* clientSession, int errorCode);
+
+	// 송수신 완료와 패킷 분배
+	// 수신 완료를 세션에 전달하고 완성된 패킷의 분배 경로를 연결한다.
+	void HandleReceive(ClientSession* session, DWORD bytesTransferred);
+	bool HandleReceivedPacket(ClientSession& session, uint16_t packetId, PacketHandle&& packet);
+	void HandleSend(ClientSession* session, DWORD bytesTransferred);
+
+	// 인증과 하트비트
+	DisconnectReason HandleSystemPacket(ClientSession* session, uint16_t packetId, const char* packetData, uint32_t packetSize);
+	bool SendSystemAuthRequest(ClientSession* session);
+	// 패킷별 크기·상태 검사와 인증 또는 하트비트 처리를 수행한다.
+	DisconnectReason HandleAuthResponse(ClientSession* session, const char* packetData, uint32_t packetSize);
+	DisconnectReason HandleHeartbeatRequest(ClientSession* session, const char* packetData, uint32_t packetSize);
+
+	// 세션 종료 요청과 반환 통지
+	static void OnDisconnectRequest(void* context, ClientSession* session);
+	// 마지막 I/O와 수명 참조가 반환되면 소켓을 닫고 서비스에 통지한다.
+	static void OnReleaseReady(void* context, ClientSession* session);
+
+private:
+
+	// 종료 상태
+	// Destory Flag
+	LONG m_destroyFlag = 0;
+	// 같은 연결에서 종료 절차를 한 번만 시작한다.
+	volatile LONG m_disconnecting = 0;
+
+	// 연결 대상과 접속 함수
+	// IP Address & Port
+	char m_serverIPAddress[INET_ADDRSTRLEN] = { 0, };
+	uint16_t m_serverPort = 0;
+	// ConnectEx 함수 포인터
+	LPFN_CONNECTEX m_connectEx = nullptr;
+
+	// 세션과 작업 실행
+	ClientSession* m_session = nullptr;
+	ClientJobWorker* m_clientJobWorker = nullptr;
+
+	// 핸들러와 서비스 컨텍스트
+	PacketHandlerTable* m_packetHandlerTable = nullptr;
+	HandlerContext m_handlerContext = {};
+
+	// 패킷과 Job 메모리 풀
+	TlsMemoryPool* m_jobMemoryPool = nullptr;
+	TlsMemoryPool* m_packetMemoryPool = nullptr;
+	// 공유 패킷 참조 제어 객체용 풀입니다.
+	TlsMemoryPool* m_sharedPacketMemoryPool = nullptr;
+
+	// 연결 생존 감시
+	// StartClient 에서 받아 보관한다. 인증 응답이 도착했을 때 서버가 알려준
+	// 하트비트 주기와 합쳐 실제 유휴 타임아웃을 정한다.
+	ClientLivenessConfig m_livenessConfig;
+	// 서버가 조용해진 것을 알아차리는 감시 스레드.
+	// 왜 잡 스케줄러가 아니라 별도 스레드인지는 ClientWatchdogThread 주석.
+	ClientWatchdogThread* m_clientWatchdog = nullptr;
 };
-
-
-
-
-

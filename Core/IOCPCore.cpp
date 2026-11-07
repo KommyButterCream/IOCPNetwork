@@ -211,10 +211,7 @@ void IOCPCore::FinalizeIOCPHandle()
 
 void IOCPCore::CloseSocketHandle(SOCKET socket)
 {
-	// Listen, Client 세션의 소켓 해제
-	// 소켓 생성을 Server/Client 가 했으므로
-	// 닫아주는 역할도 Server/Client 가 해주어야 한다. 세션이 아니다.
-
+	// 소유자가 분리한 소켓을 닫고 결과를 기록한다.
 	if (socket != INVALID_SOCKET)
 	{
 		if (::closesocket(socket) == SOCKET_ERROR)
@@ -377,7 +374,7 @@ void IOCPCore::IOCPWorkerThreadLoop(IOCPWorkerThread& worker, uint32_t workerInd
 		// 여기 있던 "정지 요청이면 그냥 나간다" 검사를 뺐다.
 		//
 		// 이미 큐에서 꺼낸 완료 통지를 처리하지 않고 나가면, 그 I/O 의
-		// DecrementIO 가 영영 실행되지 않는다. 세션은 카운트가 0 이 아닌 채로
+		// 완료 가드가 I/O를 반환할 기회가 없다. 세션은 카운트가 0 이 아닌 채로
 		// 정리되고 "finalized while N IO operations are still outstanding" 이 남는다.
 		// 실측(예전 bench 로그) : 버려진 통지 수와 그 위반 수가 8:9, 9:10, 6:7,
 		// 12:13 으로 나란히 움직였다 — 버린 통지가 그대로 그 위반이었다.

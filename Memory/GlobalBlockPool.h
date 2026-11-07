@@ -84,7 +84,7 @@ namespace MemoryPoolDetail
 		//
 		// 상한에 걸리면 확장을 거부하고 Acquire 가 nullptr 을 반환한다.
 		// 그 경로는 이미 끝까지 구현되어 있다 —
-		// CreateJob 실패는 SubmitPacketJob 이 패킷을 버리고 false 를 돌려주고,
+		// CreateJob 실패는 EnqueueJob 이 패킷을 버리고 false 를 돌려주고,
 		// CreatePacket 실패는 ReadPacket 이 OutOfMemory 를 반환해 세션을 정리한다.
 		// 새 실패 경로가 생기는 것이 아니라, 죽는 대신 실패하게 된다.
 		//

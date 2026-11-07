@@ -22,7 +22,7 @@ bool ServerReadySessionQueue::Initialize(uint32_t maxSessionCount)
 		return false;
 	}
 
-	auto queue = std::unique_ptr<ClientSession*[]>(new (std::nothrow) ClientSession*[maxSessionCount]{});
+	auto queue = std::unique_ptr<ClientSession::Reference[]>(new (std::nothrow) ClientSession::Reference[maxSessionCount]);
 
 	if (!queue)
 	{
@@ -40,23 +40,17 @@ bool ServerReadySessionQueue::Initialize(uint32_t maxSessionCount)
 void ServerReadySessionQueue::Finalize()
 {
 	// 생산자 중지와 워커 Join 뒤, 세션 풀을 파괴하기 전에 호출합니다.
-	while (auto* session = Dequeue(0))
+	while (auto session = Dequeue(0))
 	{
 		session->ReleaseProcessing();
-		session->ReleaseLifetimeReference();
 	}
 	m_queue.reset();
 	m_capacity = m_head = m_tail = m_count = 0;
 	m_stopFlag = true;
 }
 
-bool ServerReadySessionQueue::Enqueue(ClientSession* session)
+bool ServerReadySessionQueue::Enqueue(ClientSession& session)
 {
-	if (!session)
-	{
-		return false;
-	}
-
 	Core::Sync::SRWWriteLockGuard lock(m_srwLock);
 
 	if (m_count >= m_capacity)
@@ -66,8 +60,7 @@ bool ServerReadySessionQueue::Enqueue(ClientSession* session)
 	}
 
 	// 호출자는 수신 I/O 또는 실행 중인 워커의 참조로 세션 수명을 보장합니다.
-	session->AddLifetimeReference();
-	m_queue[m_tail] = session;
+	m_queue[m_tail] = session.AcquireReference();
 	m_tail = (m_tail + 1) % m_capacity;
 	++m_count;
 
@@ -76,7 +69,7 @@ bool ServerReadySessionQueue::Enqueue(ClientSession* session)
 	return true;
 }
 
-ClientSession* ServerReadySessionQueue::Dequeue(uint32_t timeout_ms)
+ClientSession::Reference ServerReadySessionQueue::Dequeue(uint32_t timeout_ms)
 {
 	Core::Sync::SRWWriteLockGuard lock(m_srwLock);
 
@@ -105,8 +98,7 @@ ClientSession* ServerReadySessionQueue::Dequeue(uint32_t timeout_ms)
 		}
 	}
 
-	ClientSession* session = m_queue[m_head];
-	m_queue[m_head] = nullptr;
+	auto session = std::move(m_queue[m_head]);
 	m_head = (m_head + 1) % m_capacity;
 	--m_count;
 

@@ -58,12 +58,13 @@ struct ConnectionPolicyConfig
 class IOCPServer : public IOCPCore
 {
 public:
+	// 생성·소멸과 복사 제한
 	IOCP_ENGINE_API IOCPServer();
 	IOCPServer(const IOCPServer&) = delete;
 	IOCPServer& operator=(const IOCPServer&) = delete;
 	IOCP_ENGINE_API virtual ~IOCPServer();
 
-public:
+	// 시작과 종료
 	// poolConfig 는 메모리 풀 세 개의 빈 목록과 커밋 상한이다.
 	//
 	// 예전에는 이 값들이 StartServer 안에 상수로 박혀 있었다. 풀에 담기는
@@ -85,50 +86,32 @@ public:
 		const HeartbeatConfig& heartbeatConfig = HeartbeatConfig());
 	IOCP_ENGINE_API void StopServer();
 
-private:
-	// 서비스의 패킷 핸들이 모두 반환된 후에만 풀을 파괴합니다.
-	// 종료 시 풀을 정리하며, 엔진 파괴·재시작 시에는 풀 객체도 삭제합니다.
-	void DestroyMemoryPools();
+	// 핸들러 등록과 패킷 생성
+	IOCP_ENGINE_API bool RegisterPacketHandler(uint16_t packetId, PacketHandlerFunc handler);
+	[[nodiscard]] IOCP_ENGINE_API PacketHandle CreatePacket(std::size_t size) const;
+	[[nodiscard]] IOCP_ENGINE_API SharedPacketHandle CreateSharedPacket(PacketHandle packet) const;
 
-	SOCKET m_serverSocket = INVALID_SOCKET;
+protected:
+	// 서비스 작업 등록과 컨텍스트
+	// 패킷으로 Job을 초기화하고 큐에 등록한다. 실패 시 전달받은 패킷은 자동 반환한다.
+	IOCP_ENGINE_API bool EnqueueJob(ISession* session, uint16_t packetId, PacketHandle packetHandle);
+	// 핸들러에 전달할 서비스 객체를 파생 클래스에서 지정한다.
+	IOCP_ENGINE_API virtual void* GetServiceContext();
 
-	SessionManager* m_sessionManager = nullptr;
-	ServerReadySessionQueue* m_serverReadySessionQueue = nullptr;
-	ServerJobScheduler* m_serverJobScheduler = nullptr;
-	HeartbeatThread* m_heartbeatThread = nullptr;
-	PacketHandlerTable* m_packetHandlerTable = nullptr;
-	TlsMemoryPool* m_jobMemoryPool = nullptr;
-	TlsMemoryPool* m_packetMemoryPool = nullptr;
-
-	// 공유 패킷 참조 제어 객체용 풀입니다. 큐 배열은 세션이 직접 소유합니다.
-	TlsMemoryPool* m_sharedPacketMemoryPool = nullptr;
-
-	HandlerContext m_handlerContext = {};
-
-	volatile LONG m_serverShutdownRequested = FALSE;
-
-	// 지금 리슨 소켓에 걸려 있는 AcceptEx 개수.
+	// 서비스 이벤트
+	virtual void OnClientConnect(ISession* session) = 0;
+	// reason 은 이 세션이 왜 끝났는지다.
 	//
-	// 이게 0 이 되면 서버는 살아 있는 채로 새 접속을 하나도 받지 못한다.
-	// 예전에는 그 상태와 정상 동작이 로그로 구분되지 않았다.
-	volatile LONG m_postedAcceptCount = 0;
-
-	// 유지하려는 개수. 자원 부족 등으로 걸기가 실패해 이보다 줄어들면
-	// 주기 점검이 유휴 수락 세션을 다시 채운다.
-	uint32_t m_desiredAcceptCount = 0;
-
-	// 한 번만 크게 울리기 위한 래치. 매 실패마다 같은 경보를 쏟지 않는다.
-	volatile LONG m_acceptStarvationReported = FALSE;
-
-	// 접속 수용 정책. StartServer 에서 받아 보관한다.
-	ConnectionPolicyConfig m_connectionPolicy;
-
-	// 하트비트 설정. 스레드에 넘기고 끝이 아니라 여기에도 남긴다 —
-	// 인증 응답에 주기를 실어 보내야 하기 때문이다.
-	// (왜 클라가 그 값을 알아야 하는지는 SC_SYSTEM_AUTH_RESPONSE_PACKET 주석)
-	HeartbeatConfig m_heartbeatConfig;
+	// 예전에는 인자가 세션 하나뿐이라 서비스가 알 수 있는 것이 "끝났다"
+	// 뿐이었다. 만석 거절과 프로토콜 위반과 하트비트 타임아웃과 서버 종료가
+	// 같은 신호로 도착했고, 엔진은 넷을 전부 알면서 로그로만 남기고 버렸다.
+	// (값 목록은 Session/DisconnectReason.h)
+	virtual void OnClientDisconnect(ISession* session, DisconnectReason reason) = 0;
+	virtual void OnReceive(ISession* session, uint16_t packetId, PacketHandle packetHandle) = 0;
+	virtual void OnSend(ISession* session, uint32_t bytesTransferred) = 0;
 
 private:
+	// 내부 타입
 	// for AcceptEX
 	using LPFN_ACCEPTEX = BOOL(__stdcall*)(
 		_In_ SOCKET sListenSocket,
@@ -140,7 +123,6 @@ private:
 		_Out_ LPDWORD lpdwBytesReceived,
 		_Inout_ LPOVERLAPPED lpOverlapped
 		);
-
 	// for GetAcceptEXSockAddrs
 	using LPFN_GETACCEPTEXSOCKADDRS = VOID(__stdcall*)(
 		_In_reads_bytes_(dwReceiveDataLength + dwLocalAddressLength + dwRemoteAddressLength) PVOID lpOutputBuffer,
@@ -152,60 +134,6 @@ private:
 		_Outptr_result_bytebuffer_(*RemoteSockaddrLength) struct sockaddr** RemoteSockaddr,
 		_Out_ LPINT RemoteSockaddrLength
 		);
-
-
-	// AcceptEx 함수 포인터
-	LPFN_ACCEPTEX m_acceptEx = nullptr;
-
-	// GetAcceptEXSockAddrs 함수 포인터
-	LPFN_GETACCEPTEXSOCKADDRS m_getAcceptExSockAddrs = nullptr;
-
-private:
-	// GQCS 에 통지 받은 IO 처리
-	IOCP_ENGINE_API void HandleCompletion(ULONG_PTR completionKey, LPOVERLAPPED overlapped, DWORD bytesTransferred, BOOL completionStatus) override;
-	// 아래 핸들러들의 세션 인자는 전부 ClientSession 이다.
-	// RECV/SEND 완료 키에 등록되는 것이 ClientSession 뿐이기 때문이다.
-	// (ACCEPT 는 완료 키가 아니라 overlappedEx->sessionId 로 라우팅한다)
-	void HandleSocketError(OverlappedEx* overlappedEx, ClientSession* session, int errorCode, IO_OPERATION ioOperation);
-
-	void HandleAccept(uint32_t sessionId, DWORD bytesTransferred);
-
-	// 수락한 소켓에 옵션을 걸고 IOCP 에 등록해 수신을 시작한다.
-	// 실패를 반환값 하나로 모으려고 떼어냈다. 예전에는 실패 지점마다
-	// ReleaseClientSession 이 붙어 있었는데, 그러면 반납 시점이 여러
-	// 갈래로 흩어져 "세션을 붙잡고 있는 구간" 을 만들 수 없다.
-	bool RunAcceptedConnectSequence(ClientSession* clientSession);
-	void HandleAcceptIOCancelled(uint32_t sessionId);
-	void HandleRecv(OverlappedEx* overlappedEx, ClientSession* session, DWORD bytesTransferred);
-	void HandleRecvCancelled(OverlappedEx* overlappedEx, ClientSession* session);
-	void HandleSend(OverlappedEx* overlappedEx, ClientSession* session, DWORD bytesTransferred);
-	void HandleSendCancelled(OverlappedEx* overlappedEx, ClientSession* session);
-	void HandleSessionDisconnected(OverlappedEx* overlappedEx, ClientSession* session, DWORD bytesTransferred);
-
-private:
-	bool CreateListenSocket(const char* ipAddress, uint16_t port);
-	void DestroyListenSocket();
-
-	bool BindServerSocket(SOCKET serverSocket, const char* ipAddress, uint16_t port);
-	bool ListenServerSocket(SOCKET serverSocket);
-
-	bool InitializeGUIDAcceptEx(SOCKET serverSocket);
-	void FinalizeGUIDAcceptEx();
-	bool CancelAllAcceptIO();
-	bool PrepareAccept();
-	bool PrepareAccept(uint32_t sessionId);
-	bool PostAccept(AcceptSession* acceptSession);
-
-	// ClientSessionPool 이 세션을 실제로 반납할 때 부르는 진입점.
-	// 여기서 서비스의 OnClientDisconnect 로 넘긴다.
-	static void OnSessionDisconnectNotify(void* context, ClientSession* session);
-
-	// 주기 점검은 발행 권한을 얻은 수락 세션에만 AcceptEx를 다시 건다.
-	void RefillAcceptSessions();
-
-	// 걸려 있는 AcceptEx 가 0 이면 크게 울린다. 걸기를 시도한 직후에 부른다.
-	void ReportAcceptStarvationIfNeeded();
-	bool SendSystemAuthResponse(ClientSession* session, SYSTEM_AUTH_RESULT authResult);
 	// 시스템 패킷 처리 결과.
 	//
 	// 예전에는 bool 이라 "정상적인 거절" 과 "처리 실패" 가 구분되지 않았다.
@@ -214,79 +142,110 @@ private:
 	enum class SystemPacketResult
 	{
 		Ok,        // 처리 완료. 세션 유지
-		Rejected,  // 정상적인 거절. 응답을 보냈으니 세션을 정리한다 (오류 아님)
+		Rejected,  // 거절 응답과 종료를 이미 요청했다.
 		Failed,    // 처리 실패. 세션을 정리한다 (오류)
 	};
 
+	// 메모리 풀 정리
+	// 서비스의 패킷 핸들이 모두 반환된 후에만 풀을 파괴합니다.
+	// 종료 시 풀을 정리하며, 엔진 파괴·재시작 시에는 풀 객체도 삭제합니다.
+	void DestroyMemoryPools();
+
+	// 리슨 소켓 준비와 해제
+	bool CreateListenSocket(const char* ipAddress, uint16_t port);
+	void DestroyListenSocket();
+	bool BindServerSocket(SOCKET serverSocket, const char* ipAddress, uint16_t port);
+	bool ListenServerSocket(SOCKET serverSocket);
+	bool InitializeGUIDAcceptEx(SOCKET serverSocket);
+
+	// 수락 I/O 발행과 유지
+	bool PrepareAccept();
+	bool PostAccept(AcceptSession* acceptSession);
+	void RepostAfterAccept(AcceptSession& session);
+	// 주기 점검은 발행 권한을 얻은 수락 세션에만 AcceptEx를 다시 건다.
+	void RefillAcceptSessions();
+	bool CancelAllAcceptIO();
+	// 걸려 있는 AcceptEx 가 0 이면 크게 울린다. 걸기를 시도한 직후에 부른다.
+	void ReportAcceptStarvationIfNeeded();
+	uint32_t GetPostedAcceptCount() const;
+
+	// I/O 완료 분배와 오류 처리
+	// GQCS 에 통지 받은 IO 처리
+	IOCP_ENGINE_API void HandleCompletion(ULONG_PTR completionKey, LPOVERLAPPED overlapped, DWORD bytesTransferred, BOOL completionStatus) override;
+	// 아래 핸들러들의 세션 인자는 전부 ClientSession 이다.
+	// RECV/SEND 완료 키에 등록되는 것이 ClientSession 뿐이기 때문이다.
+	// (ACCEPT 는 완료 키가 아니라 overlappedEx->sessionId 로 라우팅한다)
+	void HandleSocketError(OverlappedEx* overlappedEx, ClientSession* session, int errorCode, IO_OPERATION ioOperation);
+
+	// 접속 수락과 취소 완료
+	void HandleAccept(uint32_t sessionId);
+	// 수락한 소켓에 옵션을 적용하고 첫 수신과 서비스 접속 통지를 시작한다.
+	bool RunAcceptedConnectSequence(ClientSession* clientSession, SOCKET socket);
+	void HandleAcceptIOCancelled(uint32_t sessionId);
+
+	// 송수신 완료와 패킷 분배
+	// 수신 완료를 세션에 전달하고 완성된 패킷의 분배 경로를 연결한다.
+	void HandleReceive(ClientSession* session, DWORD bytesTransferred);
+	bool HandleReceivedPacket(ClientSession& session, uint16_t packetId, PacketHandle&& packet);
+	void HandleSend(ClientSession* session, DWORD bytesTransferred);
+
+	// 인증과 하트비트
 	SystemPacketResult HandleSystemPacket(ClientSession* session, uint16_t packetId, const char* packetData, uint32_t packetSize);
+	// 패킷별 크기·상태 검사와 인증 또는 하트비트 처리를 수행한다.
+	SystemPacketResult HandleAuthRequest(ClientSession* session, const char* packetData, uint32_t packetSize);
+	PacketHandle CreateAuthResponse(SYSTEM_AUTH_RESULT authResult);
+	SystemPacketResult HandleHeartbeatResponse(ClientSession* session, const char* packetData, uint32_t packetSize);
+
+	// 세션 종료 통지
+	// ClientSessionPool 이 세션을 실제로 반납할 때 부르는 진입점.
+	// 여기서 서비스의 OnClientDisconnect 로 넘긴다.
+	static void OnSessionDisconnectNotify(void* context, ClientSession* session, DisconnectReason reason);
 
 private:
 
-public:
-	// 지금 걸려 있는 AcceptEx 개수와 유지 목표. 운영 지표라 서비스가 읽는다.
-	// 이 값이 목표보다 오래 낮게 머물면 자원 부족을 의심해야 하고,
-	// 0 이면 새 접속을 전혀 받지 못하는 상태다.
-	IOCP_ENGINE_API uint32_t GetPostedAcceptCount() const;
-	IOCP_ENGINE_API uint32_t GetDesiredAcceptCount() const;
+	// 서버 종료 상태
+	volatile LONG m_serverShutdownRequested = FALSE;
 
-	// 지금 이 서버의 세션들이 들고 있는 미완료 I/O 총합.
+	// 리슨 소켓과 수락 함수
+	SOCKET m_serverSocket = INVALID_SOCKET;
+	// AcceptEx 함수 포인터
+	LPFN_ACCEPTEX m_acceptEx = nullptr;
+	// GetAcceptEXSockAddrs 함수 포인터
+	LPFN_GETACCEPTEXSOCKADDRS m_getAcceptExSockAddrs = nullptr;
+
+	// 수락 발행 상태와 진단
+	// 지금 리슨 소켓에 걸려 있는 AcceptEx 개수.
 	//
-	// 이 값이 0 이라는 것은 어떤 스레드도 완료 핸들러 안에서 세션을
-	// 만지고 있지 않다는 뜻이고, 엔진의 수명 규약 전체가 이 하나에
-	// 얹혀 있다. 조용한 상태에서 0 으로 돌아오지 않으면 Increment 와
-	// Decrement 의 짝이 맞지 않는다는 신호다.
-	IOCP_ENGINE_API uint32_t GetOutstandingIOCount() const;
+	// 이게 0 이 되면 서버는 살아 있는 채로 새 접속을 하나도 받지 못한다.
+	// 예전에는 그 상태와 정상 동작이 로그로 구분되지 않았다.
+	volatile LONG m_postedAcceptCount = 0;
+	// 유지하려는 개수. 자원 부족 등으로 걸기가 실패해 이보다 줄어들면
+	// 주기 점검이 유휴 수락 세션을 다시 채운다.
+	uint32_t m_desiredAcceptCount = 0;
+	// 한 번만 크게 울리기 위한 래치. 매 실패마다 같은 경보를 쏟지 않는다.
+	volatile LONG m_acceptStarvationReported = FALSE;
 
-	// 지금 임대되어 있는 클라이언트 세션 수. 운영 지표이자, 반납이
-	// 실제로 이루어졌는지 확인하는 유일한 외부 관측점이다.
-	// 미완료 I/O 가 0 이어도 세션이 풀로 돌아오지 않았을 수 있다 —
-	// 그 둘은 별개의 실패다.
-	IOCP_ENGINE_API uint32_t GetInUseSessionCount() const;
+	// 세션 관리와 작업 실행
+	SessionManager* m_sessionManager = nullptr;
+	ServerReadySessionQueue* m_serverReadySessionQueue = nullptr;
+	ServerJobScheduler* m_serverJobScheduler = nullptr;
 
-	// 지금 가장 밀린 세션의 잡 큐가 도달했던 최고 깊이.
-	//
-	// 잡 큐에는 상한이 없다. 핸들러가 유입보다 느리면 잡이 계속 쌓이고,
-	// 잡 하나가 패킷 하나를 붙들고 있으므로 메모리도 함께 자란다.
-	// 상한을 어디에 둘지는 이 값을 실제로 보고 정해야 한다.
-	//
-	// 합이 아니라 최댓값인 이유는 ClientSessionPool 쪽 주석 참고.
-	IOCP_ENGINE_API uint32_t GetPeakJobQueueDepth() const;
+	// 핸들러와 서비스 컨텍스트
+	PacketHandlerTable* m_packetHandlerTable = nullptr;
+	HandlerContext m_handlerContext = {};
 
-	// 수신 백프레셔가 걸린 총 횟수.
-	//
-	// 잡 큐가 SessionBufferConfig::recvPauseJobDepth 에 닿아 다음 WSARecv 를
-	// 걸지 않은 횟수의 전 세션 합이다. 이 값이 0 이면 부하가 고수위까지
-	// 가지 않은 것이고, 0 이 아니면서 세션이 끊기지 않았다면 백프레셔가
-	// 의도대로 동작한 것이다 — 예전에는 그 상황에서 세션을 잃었다.
-	IOCP_ENGINE_API uint32_t GetRecvPauseCount() const;
+	// 패킷과 Job 메모리 풀
+	TlsMemoryPool* m_jobMemoryPool = nullptr;
+	TlsMemoryPool* m_packetMemoryPool = nullptr;
+	// 공유 패킷 참조 제어 객체용 풀입니다. 큐 배열은 세션이 직접 소유합니다.
+	TlsMemoryPool* m_sharedPacketMemoryPool = nullptr;
 
-public:
-	IOCP_ENGINE_API bool RegisterPacketHandler(uint16_t packetId, PacketHandlerFunc handler);
-	[[nodiscard]] IOCP_ENGINE_API PacketHandle CreatePacket(std::size_t size) const;
-	[[nodiscard]] IOCP_ENGINE_API SharedPacketHandle CreateSharedPacket(PacketHandle packet) const;
-	IOCP_ENGINE_API const HandlerContext& GetHandlerContext() const;
-	IOCP_ENGINE_API virtual void* GetServiceContext();
-
-protected:
-	// Consumes packetHandle on both success and failure.
-	// Success transfers ownership to the Job; failure returns the packet automatically.
-	IOCP_ENGINE_API bool SubmitPacketJob(ISession* session, uint16_t packetId, PacketHandle packetHandle);
-
-protected:
-	virtual void OnClientConnect(ISession* session) = 0;
-
-	// reason 은 이 세션이 왜 끝났는지다.
-	//
-	// 예전에는 인자가 세션 하나뿐이라 서비스가 알 수 있는 것이 "끝났다"
-	// 뿐이었다. 만석 거절과 프로토콜 위반과 하트비트 타임아웃과 서버 종료가
-	// 같은 신호로 도착했고, 엔진은 넷을 전부 알면서 로그로만 남기고 버렸다.
-	// (값 목록은 Session/DisconnectReason.h)
-	virtual void OnClientDisconnect(ISession* session, DisconnectReason reason) = 0;
-	virtual void OnReceive(ISession* session, uint16_t packetId, PacketHandle packetHandle) = 0;
-	virtual void OnSend(ISession* session, uint32_t bytesTransferred) = 0;
+	// 접속 정책과 하트비트
+	// 접속 수용 정책. StartServer 에서 받아 보관한다.
+	ConnectionPolicyConfig m_connectionPolicy;
+	// 하트비트 설정. 스레드에 넘기고 끝이 아니라 여기에도 남긴다 —
+	// 인증 응답에 주기를 실어 보내야 하기 때문이다.
+	// (왜 클라가 그 값을 알아야 하는지는 SC_SYSTEM_AUTH_RESPONSE_PACKET 주석)
+	HeartbeatConfig m_heartbeatConfig;
+	HeartbeatThread* m_heartbeatThread = nullptr;
 };
-
-
-
-
-

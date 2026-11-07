@@ -1,5 +1,6 @@
 #include "ServerJobScheduler.h"
 
+#include <utility> // for std::move
 #include <stdio.h> // for swprintf_s
 #include <memory> // for std::make_unique, std::unique_ptr
 #include <new> // for std::bad_alloc
@@ -13,17 +14,6 @@
 #include "../../Core/Util/Logger.h"
 
 using namespace Core::Util;
-
-namespace
-{
-	struct SessionReferenceDeleter
-	{
-		void operator()(ClientSession* session) const noexcept
-		{
-			session->ReleaseLifetimeReference();
-		}
-	};
-}
 
 void ServerJobWorker::Run()
 {
@@ -100,6 +90,27 @@ bool ServerJobScheduler::Initialize(uint32_t workerCount, ServerReadySessionQueu
 	return true;
 }
 
+bool ServerJobScheduler::EnqueueJob(ClientSession& session, JobHandle&& job)
+{
+	if (!session.EnqueueJob(std::move(job)))
+		return false;
+
+	Schedule(session);
+	return true;
+}
+
+void ServerJobScheduler::Schedule(ClientSession& session)
+{
+	if (!session.TryClaimProcessing())
+		return;
+
+	if (!m_serverReadySessionQueue->Enqueue(session))
+	{
+		session.ReleaseProcessing();
+		LOGE("could not schedule session %u: ready queue full", session.GetSessionID());
+	}
+}
+
 void ServerJobScheduler::Finalize()
 {
 	StopAndDestroyWorkers();
@@ -148,12 +159,9 @@ void ServerJobScheduler::WorkerThreadLoop(ServerJobWorker& worker, uint32_t work
 	{
 		constexpr uint32_t timeout_ms = INFINITE;
 
-		ClientSession* session = m_serverReadySessionQueue->Dequeue(timeout_ms);
+		auto session = m_serverReadySessionQueue->Dequeue(timeout_ms);
 		if (!session)
 			continue;
-
-		// 큐에서 넘겨받은 수명 참조는 이 반복의 마지막까지 유지합니다.
-		std::unique_ptr<ClientSession, SessionReferenceDeleter> sessionReference(session);
 
 		while (auto jobHandle = session->GetJobQueue().Dequeue())
 		{
@@ -164,20 +172,8 @@ void ServerJobScheduler::WorkerThreadLoop(ServerJobWorker& worker, uint32_t work
 
 		// 드레인 중에 새로 들어온 Job 이 있으면 다시 큐에 올린다.
 		if (session->GetJobQueue().HasRunnableJobs())
-		{
-			if (session->TryClaimProcessing())
-			{
-				if (!m_serverReadySessionQueue->Enqueue(session))
-				{
-					// Enqueue 실패 시 소유권 플래그를 되돌려야 세션이 영구히 묶이지 않는다.
-					session->ReleaseProcessing();
-					LOGE("failed to re-queue session %u : ready queue is full", session->GetSessionID());
-				}
-			}
-		}
+			Schedule(*session);
 
-		// 수신 재개에서 I/O 참조가 반환되어도 sessionReference가 세션을 보호합니다.
-		// 반복 종료 시 마지막 수명 참조가 반환되면 세션이 풀로 돌아갈 수 있습니다.
 		session->ResumeReceiveIfDrained();
 	}
 

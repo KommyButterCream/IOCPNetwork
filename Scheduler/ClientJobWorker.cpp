@@ -115,11 +115,7 @@ void ClientJobWorker::Run()
 			jobHandle->Execute();
 		}
 
-		// 백프레셔 해제. 서버 쪽 ServerJobScheduler 와 같은 자리다.
-		//
-		// 이 스레드가 클라이언트의 유일한 소비자라, 멈춰 뒀던 수신을 다시
-		// 걸어 줄 수 있는 것도 여기뿐이다. 반드시 루프 본문의 마지막 줄이어야
-		// 한다 — 안에서 일시정지의 IO 카운트를 내려놓는다.
+		// 저수위에 도달한 세션만 수신을 재개한다.
 		m_clientSession->ResumeReceiveIfDrained();
 	}
 }

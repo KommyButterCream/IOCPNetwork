@@ -20,7 +20,7 @@
 // 기록 규칙 : 먼저 쓴 사유가 이긴다.
 //   종료는 보통 연쇄로 일어난다. 프로토콜 위반으로 끊기로 결정하면 곧이어
 //   소켓이 닫히고 걸려 있던 I/O 가 10054 로 실패한다. 나중 것을 쓰면 근본
-//   원인이 매번 SocketError 로 덮인다. (ClientSession::NoteDisconnectReason)
+//   원인이 매번 SocketError 로 덮인다. (ClientSession::RequestDisconnect)
 enum class DisconnectReason : uint32_t
 {
 	// 사유를 남긴 경로가 없다. 새 종료 경로를 만들면서 표시를 빠뜨렸다는 뜻이라

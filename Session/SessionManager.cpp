@@ -2,12 +2,11 @@
 
 #include "AcceptSession.h"
 
-#include "../Diagnostics/EngineAssert.h"
+#include "../../Core/Util/Logger.h"
 #include <utility> // for std::move
 
 using namespace Core::Util;
 #include "AcceptSessionPool.h"
-#include "ClientSession.h"
 #include "ClientSessionPool.h"
 
 SessionManager::SessionManager() = default;
@@ -140,21 +139,6 @@ ClientSession* SessionManager::AcquireClientSession()
 	}
 
 	return session;
-}
-
-void SessionManager::ReleaseClientSession(ClientSession* session)
-{
-	if (!m_clientSessionPool)
-		return;
-
-	ENGINE_CHECK_RETVOID(session != nullptr, "ReleaseClientSession called with a null session");
-
-	const uint32_t sessionId = session->GetSessionID();
-	ENGINE_CHECK_RETVOID(sessionId < m_clientSessionPool->GetSessionCount(),
-		"ReleaseClientSession called with session id %u but capacity is %u",
-		sessionId, m_clientSessionPool->GetSessionCount());
-
-	m_clientSessionPool->Release(session);
 }
 
 void SessionManager::RequestAllRecvSendIOCancel()

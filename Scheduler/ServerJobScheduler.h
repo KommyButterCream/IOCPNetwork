@@ -11,6 +11,9 @@
 
 #include "../../Core/Concurrency/ThreadBase.h"
 
+#include "../Job/JobHandle.h"
+
+class ClientSession;
 class ServerReadySessionQueue;
 class ServerJobScheduler;
 
@@ -52,6 +55,8 @@ public:
 	// 종료 시 큐도 중지되므로 재시작하려면 새로 초기화한 큐를 전달합니다.
 	bool Initialize(uint32_t workerCount, ServerReadySessionQueue* readySessionQueue);
 	void Finalize();
+	// Job 등록과 준비 큐 실행권 확보를 함께 처리한다.
+	[[nodiscard]] bool EnqueueJob(ClientSession& session, JobHandle&& job);
 
 	// ServerJobWorker 가 호출한다. 정지 판정은 워커의 정지 이벤트로 한다.
 	void WorkerThreadLoop(ServerJobWorker& worker, uint32_t workerIndex);
@@ -61,5 +66,6 @@ private:
 	ServerReadySessionQueue* m_serverReadySessionQueue = nullptr;
 
 
+	void Schedule(ClientSession& session);
 	void StopAndDestroyWorkers();
 };

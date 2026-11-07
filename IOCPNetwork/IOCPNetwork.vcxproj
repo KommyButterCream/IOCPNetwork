@@ -42,9 +42,7 @@
     <ClCompile Include="..\Diagnostics\EngineDiagnostics.cpp" />
     <ClCompile Include="..\Session\AcceptSession.cpp" />
     <ClCompile Include="..\Session\AcceptSessionPool.cpp" />
-    <ClCompile Include="..\Session\ClientSessionLifetime.cpp" />
     <ClCompile Include="..\Session\ClientSession.cpp" />
-    <ClCompile Include="..\Session\ClientSessionIO.cpp" />
     <ClCompile Include="..\Session\ClientSessionPool.cpp" />
     <ClCompile Include="..\Session\SessionJobQueue.cpp" />
     <ClCompile Include="..\Session\SessionManager.cpp" />
@@ -80,6 +78,7 @@
     <ClInclude Include="..\Memory\TlsMemoryPool.h" />
     <ClInclude Include="..\Network\OverlappedEx.h" />
     <ClInclude Include="..\Network\SocketOption.h" />
+    <ClInclude Include="..\Network\UniqueSocket.h" />
     <ClInclude Include="..\Protocol\PacketHeader.h" />
     <ClInclude Include="..\Protocol\PacketID.h" />
     <ClInclude Include="..\Protocol\SystemPacket.h" />

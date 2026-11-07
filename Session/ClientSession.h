@@ -9,13 +9,15 @@
 #include "DisconnectReason.h"
 
 #include "../Network/OverlappedEx.h"
-#include "../Protocol/PacketID.h"
-#include "../Buffer/SendPacketQueue.h"
+#include <mswsock.h> // for LPFN_CONNECTEX
 #include "../Buffer/SessionBufferConfig.h"
+#include "../Buffer/SendPacketQueue.h"
+#include <span> // for std::span
 #include "../Job/JobHandle.h"
 
 class Job;
 class SessionJobQueue;
+class UniqueSocket;
 class RecvPacketBuffer;
 class TlsMemoryPool;
 
@@ -23,7 +25,13 @@ class TlsMemoryPool;
 
 class ClientSession final : public ISession
 {
+	struct ReturnReference { void operator()(ClientSession* session) const noexcept; };
+	struct FinishIO { void operator()(ClientSession* session) const noexcept; };
+
 public:
+	using Reference = std::unique_ptr<ClientSession, ReturnReference>;
+	using IOCompletion = std::unique_ptr<ClientSession, FinishIO>;
+
 	// 종료 요청과 마지막 참조 반환을 같은 소유자에게 전달한다.
 	struct OwnerCallbacks
 	{
@@ -39,70 +47,55 @@ public:
 	bool Initialize(SESSION_ROLE sessionType, uint32_t sessionId);
 	bool InitializeMemoryPool(TlsMemoryPool* jobMemoryPool, TlsMemoryPool* packetMemoryPool, const SessionBufferConfig& bufferConfig);
 	bool OnConnect();
-	void OnDisconnect();
+	// 소켓을 닫고 접속을 알렸던 서비스에 종료 사유를 전달한 뒤 연결 상태를 정리한다.
+	void FinishDisconnect(CloseSocketFunc closeSocket, SessionDisconnectNotifyFunc notify, void* context);
 	void ResetSession();
 
-	// 소켓의 부착과 분리는 연결 소유자가 담당한다.
-	void AttachSocket(SOCKET socket);
-	SOCKET DetachSocket();
-	SOCKET GetClientSocket() const { return m_clientSocket; }
-	bool IsSocketInvalid() const { return (m_clientSocket == INVALID_SOCKET); }
-	OverlappedEx& GetConnectOverlapped();
+	// 소켓 소유권을 인수하고 엔진에는 IOCP 등록에 쓸 핸들만 빌려준다.
+	[[nodiscard]] bool AttachSocket(UniqueSocket socket, const char* remoteIP = nullptr, uint16_t port = 0);
+	SOCKET GetClientSocket() const { return m_clientSocket.load(); }
+	bool IsSocketInvalid() const { return GetClientSocket() == INVALID_SOCKET; }
+	bool PostConnect(LPFN_CONNECTEX connectEx, const SOCKADDR_IN& address);
 
 	// 역할에 맞는 연결 상태를 읽거나 변경한다.
 	uint32_t GetSessionID() const override { return m_sessionId; }
 	SESSION_ROLE GetSessionRole() const { return m_sessionRole; }
-	ClientSessionState GetClientSessionState() const
-	{
-		return static_cast<ClientSessionState>(::ReadAcquire(&m_clientSessionState));
-	}
-	void SetClientSessionState(ClientSessionState sessionState)
-	{
-		::InterlockedExchange(&m_clientSessionState, static_cast<LONG>(sessionState));
-	}
-	ServerSessionState GetServerSessionState() const
-	{
-		return static_cast<ServerSessionState>(::ReadAcquire(&m_serverSessionState));
-	}
-	void SetServerSessionState(ServerSessionState sessionState)
-	{
-		::InterlockedExchange(&m_serverSessionState, static_cast<LONG>(sessionState));
-	}
+	bool IsReadyToConnect() const;
+	bool BeginAuthentication();
+	bool Establish();
+	void RejectAuthentication(DisconnectReason reason, PacketHandle response);
 	bool IsTransportConnected() const;
 	bool IsEstablished() const override;
 
 	// 최초 종료 사유를 보존하고 접속을 알린 세션에만 종료를 한 번 통지한다.
-	void NoteDisconnectReason(DisconnectReason reason)
-	{
-		::InterlockedCompareExchange(&m_disconnectReason,
-			static_cast<LONG>(reason), static_cast<LONG>(DisconnectReason::Unknown));
-	}
-	DisconnectReason GetDisconnectReason() const
-	{
-		return static_cast<DisconnectReason>(::ReadAcquire(&m_disconnectReason));
-	}
-	void MarkServiceConnectNotified();
-	bool ConsumeServiceConnectNotified();
-	void NotifyDisconnect();
+	void RequestDisconnect(DisconnectReason reason);
 
 	// 참조를 보유한 동안만 세션을 사용할 수 있다. 마지막 참조는 예약된 반환을 실행할 수 있다.
-	void SetOwnerCallbacks(OwnerCallbacks callbacks);
-	void AddLifetimeReference();
-	void ReleaseLifetimeReference();
-	// 즉시 반환 가능하면 true, 참조가 남으면 마지막 반환자에게 마무리를 맡긴다.
-	bool RequestRelease();
-	bool IsReleasePending() const;
+	void SetOwnerCallbacks(OwnerCallbacks callbacks) { m_ownerCallbacks = callbacks; }
+	[[nodiscard]] Reference AcquireReference();
+	// 종료를 선점한 소유자가 호출한다. 새 I/O를 차단하고 마지막 사용자에게 반환을 맡긴다.
+	void CloseWhenIdle();
 
-	// 미완료 I/O를 추적한다. I/O 완료와 세션의 마지막 수명 참조 반환은 별개다.
-	void IncrementIO();
-	void DecrementIO();
+	// 완료 분배자가 발행 시 확보한 한 건을 인수하고 핸들러가 끝날 때 반환한다.
+	[[nodiscard]] IOCompletion TakeIOCompletion();
 	LONG GetOutstandingIOCount() const;
 	bool CancelPendingIO();
 	IOWaitResult WaitForIOCancelComplete(const uint32_t timeout_ms);
 
-	// 수신 완료 처리와 Job 큐 수위에 따른 일시정지·재개를 지원한다.
-	RecvPacketBuffer& GetReceiveBuffer();
-	bool PostReceiveOrPause();
+	enum class ReceiveStatus { Packet, NeedMoreData, Stopped };
+	struct [[nodiscard]] ReceiveResult
+	{
+		ReceiveStatus status;
+		PacketHandle packet;
+		uint16_t packetId = 0;
+	};
+
+	// 수신 바이트를 반영한다. 종료 또는 오류이면 false를 반환한다.
+	[[nodiscard]] bool OnReceiveCompleted(DWORD bytesTransferred);
+	// 완성된 패킷 하나를 이동 반환하며, 종료 요청 이후에는 인출을 중단한다.
+	[[nodiscard]] ReceiveResult ReadReceivedPacket();
+	// 큐 수위와 취소 상태에 따라 다음 수신을 발행하거나 일시정지한다.
+	void ContinueReceive();
 	void ResumeReceiveIfDrained();
 	bool IsReceivePaused() const;
 	uint32_t GetRecvPauseCount() const;
@@ -110,27 +103,22 @@ public:
 	// 단독 송신은 성공할 때만 핸들을 인수하고 공유 송신은 전달된 참조를 소비한다.
 	[[nodiscard]] bool EnqueueSendPacket(PacketHandle&& packetHandle) override;
 	[[nodiscard]] bool EnqueueSharedSendPacket(SharedPacketHandle packetHandle) override;
-	bool OnSendCompleted(const DWORD bytesTransferred);
+	void OnSendCompleted(const DWORD bytesTransferred);
 	bool HasPendingSend() const;
 
 	// Job을 등록하고 워커가 실행할 세션을 한 번만 선점한다.
-	[[nodiscard]] bool SubmitJob(JobHandle&& jobHandle);
+	[[nodiscard]] bool EnqueueJob(JobHandle&& jobHandle);
 	SessionJobQueue& GetJobQueue() const;
 	uint32_t GetJobQueuePeakDepth() const;
-	// 이미 실행권을 가진 워커가 있으면 false를 반환한다.
-	[[nodiscard]] bool TryClaimProcessing();
-	void ReleaseProcessing();
 	void SetCurrentJob(Job* job);
 	[[nodiscard]] PacketHandle TakeCurrentPacket() override;
 
 	// 서비스 컨텍스트를 소유하고 연결의 원격 주소를 관리한다.
 	void SetSessionContext(SessionContext* sessionContext) override;
 	SessionContext* GetSessionContext() const override;
-	void SetRemoteAddress(const char* ipAddress, uint16_t port);
 	[[nodiscard]] bool HasRemoteAddress(const char* ipAddress) const;
 
 	// 최근 통신 시각으로 타임아웃을 판단하고 시스템 하트비트를 송수신한다.
-	void UpdateLastRecvTick();
 	uint64_t GetLastRecvTick() const;
 	void UpdateLastHeartbeatTick();
 	bool IsHeartbeatTimedOut(uint64_t nowTick, uint64_t timeout_ms) const;
@@ -139,74 +127,60 @@ public:
 	bool SendSystemHeartbeatResponse(uint64_t requestTick);
 
 private:
-	enum class SendRejectReason : uint32_t
-	{
-		NotEstablished = 0,
-		SendQueueFull = 1,
-		Count
-	};
+	friend class ServerReadySessionQueue;
+	friend class ServerJobScheduler;
 
-	// 관측값은 연결별로 집계하며 송수신이나 수명 전이를 결정하지 않는다.
-	struct Diagnostics
-	{
-		struct SendRejectWindow
-		{
-			std::atomic<uint64_t> lastLogTick{0};
-			std::atomic<uint32_t> suppressed{0};
-		};
+	bool TryClaimProcessing();
+	void ReleaseProcessing();
+	void NotifyReleaseReady();
+	void RecordDisconnectReason(DisconnectReason reason);
 
-		std::atomic<uint32_t> recvPauseCount{0};
-		SendRejectWindow sendRejects[static_cast<uint32_t>(SendRejectReason::Count)]{};
-
-		bool ShouldLogSendReject(SendRejectReason reason, uint32_t& outSuppressed);
-		void Reset();
-	};
-
+	enum class State { Ready, Connecting, Connected, Authenticating, Established, TimedOut, Disconnected };
 	// 재사용 및 소멸 전제와 역할별 초기 상태를 관리한다.
-	void SetConnectReadyState();
-	void CheckCleanupPreconditions() const;
 	void ClearRemoteAddress();
-	void ReleaseMemoryResources();
 
-	// 발행 전에 참조를 확보하고 취소 이후의 추가 I/O를 차단한다.
-	bool BeginIO();
-	bool IsIOCancelRequested() const;
-	[[nodiscard]] bool BeginIOCancellation();
-	void ReissueCancelIo();
-	void HandleSocketError(int errorCode, IO_OPERATION ioOperation);
+	// 발행과 취소를 같은 락으로 직렬화하고 마지막 완료 또는 참조 반환에서 소유자를 깨운다.
+	template<typename StartOperation> int PostIO(StartOperation start);
+	void CompleteIO();
+	void ReleaseReference();
+	bool ClaimReleaseLocked();
+	DWORD CancelSocketIOLocked() const;
+	void CheckIdle() const;
+	bool TryPauseReceive();
+	Reference TakeReceivePauseLocked();
+
+	bool CanEnqueueSend(std::span<const std::byte> bytes) const;
+	bool StartQueuedSend(bool enqueued);
+	void TrySendNext();
+	void PostCurrentSend();
+
+	void HandlePostError(int errorCode, IO_OPERATION operation);
 
 	// 재개와 취소 중 한 경로만 일시정지 참조를 반환한다.
+	void UpdateLastRecvTick();
 	bool PostReceive();
 	uint32_t GetJobQueueDepth() const;
-	void ResumeReceive();
-	void ReleaseUnpostedIO();
-
-	// 송신 권한을 확보하고 부분 송신의 다음 구간을 발행한다.
-	bool TrySendNext();
-	bool PostCurrentSend();
-	bool CanSendPacket(PACKET_ID_TYPE packetId) const;
 
 	// 수신과 하트비트 중 더 최근의 시각을 조회한다.
-	uint64_t GetLastHeartbeatTick() const;
 	uint64_t GetLastActiveTick() const;
 
 	// 세션 식별자와 연결 상태
 	SESSION_ROLE m_sessionRole = SESSION_ROLE::NONE;
 	uint32_t m_sessionId = INVALID_SESSION_ID;
-	volatile LONG m_clientSessionState = static_cast<LONG>(ClientSessionState::NONE);
-	volatile LONG m_serverSessionState = static_cast<LONG>(ServerSessionState::NONE);
-	SOCKET m_clientSocket = INVALID_SOCKET;
+	std::atomic<State> m_state{State::Ready};
+	std::atomic<SOCKET> m_clientSocket{INVALID_SOCKET};
 	volatile LONG m_disconnectReason = static_cast<LONG>(DisconnectReason::Unknown);
 	volatile LONG m_serviceConnectNotified = 0;
 
-	// 소유자와 수명 참조. 반환 예약과 참조 수는 같은 락으로 보호한다.
+	// 수명·취소 상태는 풀의 슬롯마다 한 번 만들고 재대여할 때 재사용한다.
 	OwnerCallbacks m_ownerCallbacks{};
 	mutable SRWLOCK m_lifetimeLock = SRWLOCK_INIT;
-	LONG m_lifetimeReferences = 0;
+	CONDITION_VARIABLE m_ioCompleted = CONDITION_VARIABLE_INIT;
+	LONG m_ioCount = 0;
+	LONG m_referenceCount = 0;
 	bool m_releasePending = false;
-	volatile LONG m_ioCount = 0;
-	volatile LONG m_cancelIo = 0;
-	HANDLE m_ioCancelCompleteEvent = nullptr;
+	bool m_cancelled = false;
+	bool m_recvPaused = false;
 
 	// 서비스 데이터와 원격 주소
 	SessionContext* m_sessionContext = nullptr;
@@ -219,14 +193,13 @@ private:
 	OverlappedEx m_connectOverlapped{};
 	OverlappedEx m_recvOverlapped{};
 	std::unique_ptr<RecvPacketBuffer> m_recvPacketBuffer;
-	volatile LONG m_recvPaused = 0;
 
-	// 송신 완료 전까지 보관하는 패킷과 오프셋
+	// 송신 실행권을 가진 한 작업만 현재 패킷과 부분 송신 위치를 변경한다.
+	SendPacketQueue m_sendQueue;
 	OverlappedEx m_sendOverlapped{};
-	std::unique_ptr<SendPacketQueue> m_sendPacketQueue;
 	SendPacket m_currentSendPacket;
 	uint32_t m_sendOffset = 0;
-	volatile LONG m_sending = 0;
+	std::atomic<bool> m_sending{false};
 
 	// Job 실행권과 핸들러가 빌려 쓰는 현재 Job
 	std::unique_ptr<SessionJobQueue> m_jobQueue;
@@ -238,5 +211,6 @@ private:
 	volatile LONGLONG m_lastRecvTick = 0;
 	volatile LONGLONG m_lastHeartbeatTick = 0;
 
-	Diagnostics m_diagnostics;
+	// 진단용 누계. 수신 재개 판단에는 사용하지 않는다.
+	std::atomic<uint32_t> m_recvPauseCount{0};
 };

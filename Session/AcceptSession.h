@@ -1,14 +1,13 @@
 ﻿#pragma once
 
 #include "../Network/OverlappedEx.h"
-#include <MSWSock.h> // for LPFN_ACCEPTEX
+#include <MSWSock.h> // for LPFN_ACCEPTEX, LPFN_GETACCEPTEXSOCKADDRS
+
+class UniqueSocket;
 
 class AcceptSession final
 {
 public:
-	enum class State { NONE, ACCEPT_READY, ACCEPT_WAIT, ACCEPT_COMPLETE, ACCEPT_ABORTED };
-	static constexpr DWORD AddressLength = sizeof(SOCKADDR_IN) + 16;
-
 	AcceptSession();
 	~AcceptSession();
 	AcceptSession(const AcceptSession&) = delete;
@@ -16,13 +15,10 @@ public:
 
 	[[nodiscard]] bool Initialize(uint32_t sessionId);
 	[[nodiscard]] uint32_t GetSessionID() const noexcept;
-	[[nodiscard]] State GetState() const;
-	void SetState(State state);
-
 	bool TryAcquireSession();
 	void ReleaseSession();
-	void ResetForRepost();
-	char* GetAcceptBuffer();
+	// 수락한 연결을 인계하면서 재등록 전에 원격 주소를 복사한다.
+	[[nodiscard]] UniqueSocket DetachAcceptedConnection(LPFN_GETACCEPTEXSOCKADDRS getAddresses, SOCKADDR_IN& peer);
 
 	[[nodiscard]] int PostAcceptSocket(SOCKET listenSocket, SOCKET acceptSocket, LPFN_ACCEPTEX acceptEx);
 	[[nodiscard]] SOCKET DetachAcceptSocket();
@@ -33,6 +29,8 @@ public:
 	[[nodiscard]] IOWaitResult WaitForAcceptIOComplete(uint32_t timeout_ms) const;
 
 private:
+	static constexpr DWORD AddressLength = sizeof(SOCKADDR_IN) + 16;
+
 	struct AcceptRequest
 	{
 		OverlappedEx overlapped{};
@@ -40,7 +38,6 @@ private:
 	};
 
 	uint32_t m_sessionId = INVALID_SESSION_ID;
-	volatile LONG m_state = static_cast<LONG>(State::NONE);
 	// 완료 워커와 주기 점검 중 한 쪽만 다음 요청을 발행할 수 있다.
 	volatile LONG m_sessionOwned = 0;
 	

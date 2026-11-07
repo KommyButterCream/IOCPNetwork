@@ -6,12 +6,11 @@
 
 #include <Windows.h>
 #include <stdint.h> // for uint32_t, uint64_t
-#include "SessionDefs.h"
+#include "ClientSession.h"
 #include <memory> // for std::unique_ptr
 
 #include "../Buffer/SessionBufferConfig.h"
 
-class ClientSession;
 class TlsMemoryPool;
 
 class ClientSessionPool
@@ -33,7 +32,6 @@ public:
 
 	// 대여 중인 세션은 마지막 참조가 반환된 후 다시 대여한다.
 	ClientSession* Acquire();
-	void Release(ClientSession* clientSession);
 
 	// 풀 용량과 사용 중인 슬롯을 조회한다.
 	uint32_t GetSessionCount() const;
@@ -60,26 +58,17 @@ private:
 
 	ClientSessionPool(std::unique_ptr<ClientSession[]> sessions, uint32_t capacity, const Callbacks& callbacks);
 
-	// 순회가 끝나면 빌린 세션 참조를 반환한다.
-	struct SessionReferenceReleaser
-	{
-		void operator()(ClientSession* session) const noexcept;
-	};
-
-	using SessionReference = std::unique_ptr<ClientSession, SessionReferenceReleaser>;
-
-	[[nodiscard]] SessionReference TryAcquireSessionReference(uint32_t slotIndex) const;
+	[[nodiscard]] ClientSession::Reference TryAcquireSessionReference(uint32_t slotIndex) const;
 
 	// 반환 권한을 선점하고 마지막 참조가 사라진 뒤 프리 리스트에 올린다.
+	void Release(ClientSession* clientSession);
 	bool TryBeginRelease(uint32_t sessionId);
-	void FinishReleaseWhenReady(ClientSession& session);
 	void CleanupDisconnectedSession(ClientSession& session);
 	void CompleteRelease(ClientSession* clientSession);
 
 	// 세션 소유자로서 종료 요청과 지연 반환을 처리한다.
 	static void OnDisconnectRequest(void* context, ClientSession* session);
 	static void OnReleaseReady(void* context, ClientSession* session);
-	void NotifyServiceDisconnect(ClientSession* clientSession);
 
 	// 노드 상태와 프리 리스트는 풀의 락으로 함께 변경한다.
 	std::unique_ptr<SessionNode[]> m_nodes;

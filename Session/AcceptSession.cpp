@@ -1,4 +1,5 @@
 ﻿#include "AcceptSession.h"
+#include "../Network/UniqueSocket.h"
 
 #include <WinSock2.h>
 
@@ -39,7 +40,6 @@ bool AcceptSession::Initialize(uint32_t sessionId)
 		return false;
 
 	m_sessionId = sessionId;
-	SetState(State::ACCEPT_READY);
 
 	return true;
 }
@@ -47,16 +47,6 @@ bool AcceptSession::Initialize(uint32_t sessionId)
 uint32_t AcceptSession::GetSessionID() const noexcept
 {
 	return m_sessionId;
-}
-
-AcceptSession::State AcceptSession::GetState() const
-{
-	return static_cast<State>(::ReadAcquire(&m_state));
-}
-
-void AcceptSession::SetState(State state)
-{
-	::InterlockedExchange(&m_state, static_cast<LONG>(state));
 }
 
 bool AcceptSession::TryAcquireSession()
@@ -74,16 +64,21 @@ void AcceptSession::ReleaseSession()
 	}
 }
 
-void AcceptSession::ResetForRepost()
+UniqueSocket AcceptSession::DetachAcceptedConnection(LPFN_GETACCEPTEXSOCKADDRS getAddresses, SOCKADDR_IN& peer)
 {
-	SetState(State::ACCEPT_READY);
-	::ZeroMemory(m_request.addressBuffer, sizeof(m_request.addressBuffer));
-	m_request.overlapped.Clear();
-}
-
-char* AcceptSession::GetAcceptBuffer()
-{
-	return m_request.addressBuffer;
+	// 이 완료 워커만 재발행 권한을 보유한다. 주소는 다음 AcceptEx를 걸기 전에 복사한다.
+	peer = {};
+	if (getAddresses)
+	{
+		sockaddr* local = nullptr;
+		sockaddr* remote = nullptr;
+		int localLength = 0, remoteLength = 0;
+		getAddresses(m_request.addressBuffer, 0, AddressLength, AddressLength,
+			&local, &localLength, &remote, &remoteLength);
+		if (remote && remote->sa_family == AF_INET && remoteLength >= static_cast<int>(sizeof(peer)))
+			peer = *reinterpret_cast<const SOCKADDR_IN*>(remote);
+	}
+	return UniqueSocket(DetachAcceptSocket());
 }
 
 int AcceptSession::PostAcceptSocket(SOCKET listenSocket, SOCKET acceptSocket, LPFN_ACCEPTEX acceptEx)
@@ -102,8 +97,8 @@ int AcceptSession::PostAcceptSocket(SOCKET listenSocket, SOCKET acceptSocket, LP
 	m_acceptSocket = acceptSocket;
 	++m_acceptIOCount;
 
+	::ZeroMemory(m_request.addressBuffer, sizeof(m_request.addressBuffer));
 	m_request.overlapped.ResetForNextIO(GetSessionID());
-	SetState(State::ACCEPT_WAIT);
 
 	DWORD bytesReceived = 0;
 	const BOOL posted = acceptEx(
@@ -127,8 +122,6 @@ int AcceptSession::PostAcceptSocket(SOCKET listenSocket, SOCKET acceptSocket, LP
 
 	// 발행되지 않았으므로 완료 통지는 오지 않는다. 이번 발행의 몫을 되돌린다.
 	m_acceptSocket = INVALID_SOCKET;
-	SetState(State::ACCEPT_ABORTED);
-	ResetForRepost();
 	--m_acceptIOCount;
 
 	return error;

@@ -1,29 +1,62 @@
 ﻿#include "ClientSession.h"
-
-#include <WinSock2.h>
-
-#include "../Diagnostics/EngineAssert.h"
-
 #include "SessionJobQueue.h"
-
+#include "../Network/UniqueSocket.h"
 #include "../Buffer/RecvPacketBuffer.h"
-#include "../Buffer/SendPacketQueue.h"
-#include "../Memory/EngineMemoryPoolHelper.h"
-#include "../../Core/Util/Logger.h"
-
+#include "../Diagnostics/EngineAssert.h"
 #include "../Job/Job.h"
+#include "../Memory/EngineMemoryPoolHelper.h"
+#include "../Protocol/PacketHeader.h"
 #include "../Protocol/PacketID.h"
 #include "../Protocol/SystemPacket.h"
-#include "../Buffer/PacketHandle.h"
-#include "../Buffer/SharedPacketHandle.h"
 #include "../../Core/Sync/SRWLockGuard.h"
+#include "../../Core/Util/Logger.h"
+
 #include <cstring> // for std::strncmp, std::memcpy
+#include <memory> // for std::construct_at, std::make_unique
+#include <utility> // for std::exchange, std::move
 
-#include <utility> // for std::move
-#include <memory>  // for std::construct_at, std::make_unique
-#pragma comment(lib, "ws2_32.lib") // for WinSock2
-
+#pragma comment(lib, "ws2_32.lib")
+using namespace Core::Sync;
 using namespace Core::Util;
+
+namespace
+{
+	// 상대가 연결을 끊어서 발생한 I/O 실패인지 판정한다.
+	// 이건 정상적인 종료 경로이므로 ERROR 로 올리면 진짜 문제가 묻힌다.
+	bool IsPeerClosedError(int errorCode)
+	{
+		switch (errorCode)
+		{
+		case WSAECONNRESET:         // 상대가 강제 종료 (RST)
+		case WSAECONNABORTED:       // 연결 중단
+		case WSAENOTCONN:           // 이미 끊김
+		case WSAESHUTDOWN:          // 송수신 불가
+		case ERROR_NETNAME_DELETED: // 네트워크 이름 삭제 = 연결 끊김
+			return true;
+		default:
+			return false;
+		}
+	}
+}
+
+// 발행과 취소 사이에 틈이 없도록 소켓 호출까지 같은 락에서 실행한다.
+// 동기 성공과 pending은 완료 통지를 기다리고 즉시 실패는 집계하지 않는다.
+template<typename StartOperation>
+int ClientSession::PostIO(StartOperation start)
+{
+	Core::Sync::SRWWriteLockGuard lock(m_lifetimeLock);
+	if (m_cancelled)
+		return ERROR_OPERATION_ABORTED;
+
+	const int error = start() ? ERROR_SUCCESS : ::WSAGetLastError();
+	if (error != ERROR_SUCCESS && error != WSA_IO_PENDING)
+		return error;
+
+	++m_ioCount;
+	return ERROR_SUCCESS;
+}
+
+// 생성 및 연결 수명 주기
 
 ClientSession::ClientSession()
 {
@@ -34,34 +67,20 @@ ClientSession::ClientSession()
 
 ClientSession::~ClientSession()
 {
-	CheckCleanupPreconditions();
-	if (m_ioCancelCompleteEvent)
-		::CloseHandle(m_ioCancelCompleteEvent);
+	CheckIdle();
+	if (!IsSocketInvalid())
+		ENGINE_VIOLATION("session %u destroyed with a live socket", GetSessionID());
 
 	SetSessionContext(nullptr);
-	// 현재 송신을 먼저 반환한 뒤 송신 큐, Job 큐, 수신 링을 해제한다.
-	m_currentSendPacket.Reset();
-	ReleaseMemoryResources();
 }
 
 bool ClientSession::Initialize(SESSION_ROLE sessionType, uint32_t sessionId)
 {
+	if (sessionType == SESSION_ROLE::NONE || sessionId == INVALID_SESSION_ID)
+		return false;
+
 	m_sessionRole = sessionType;
 	m_sessionId = sessionId;
-
-	if (!m_ioCancelCompleteEvent)
-	{
-		m_ioCancelCompleteEvent = ::CreateEvent(nullptr, TRUE, FALSE, nullptr);
-		if (!m_ioCancelCompleteEvent)
-			return false;
-	}
-	else
-	{
-		::ResetEvent(m_ioCancelCompleteEvent);
-	}
-
-	SetConnectReadyState();
-
 	return true;
 }
 
@@ -85,28 +104,55 @@ bool ClientSession::InitializeMemoryPool(TlsMemoryPool* jobMemoryPool, TlsMemory
 
 	auto jobQueue = std::make_unique<SessionJobQueue>(GetSessionRole(), *jobMemoryPool);
 
-	auto sendPacketQueue = std::make_unique<SendPacketQueue>();
-	if (!sendPacketQueue->Initialize(bufferConfig.sendQueueDepth))
+	if (!m_sendQueue.Initialize(bufferConfig.sendQueueDepth))
 		return false;
 
 	m_bufferConfig = bufferConfig;
 	m_packetMemoryPool = packetMemoryPool;
 	m_recvPacketBuffer = std::move(recvPacketBuffer);
 	m_jobQueue = std::move(jobQueue);
-	m_sendPacketQueue = std::move(sendPacketQueue);
 	return true;
+}
+
+bool ClientSession::AttachSocket(UniqueSocket socket, const char* remoteIP, uint16_t port)
+{
+	SOCKET expected = INVALID_SOCKET;
+	if (socket.Get() == INVALID_SOCKET || !IsReadyToConnect() ||
+		!m_clientSocket.compare_exchange_strong(expected, socket.Get()))
+	{
+		ENGINE_VIOLATION("session %u could not take ownership of a connection socket", GetSessionID());
+		return false;
+	}
+	(void)socket.Release();
+	if (remoteIP)
+	{
+		SRWWriteLockGuard lock(m_remoteAddressLock);
+		::strncpy_s(m_clientIPAddress, sizeof(m_clientIPAddress), remoteIP, _TRUNCATE);
+		m_clientPort = port;
+	}
+	return true;
+}
+
+bool ClientSession::PostConnect(LPFN_CONNECTEX connectEx, const SOCKADDR_IN& address)
+{
+	m_connectOverlapped.ResetForNextIO(GetSessionID());
+	const int error = PostIO([&] {
+		DWORD bytesSent = 0;
+		m_state.store(State::Connecting);
+		return connectEx(GetClientSocket(), reinterpret_cast<const sockaddr*>(&address), sizeof(address),
+			nullptr, 0, &bytesSent, &m_connectOverlapped.wsaOverlapped) != FALSE;
+	});
+	if (error == ERROR_SUCCESS)
+		return true;
+
+	if (error != ERROR_OPERATION_ABORTED)
+		RequestDisconnect(DisconnectReason::ConnectFailed);
+	return false;
 }
 
 bool ClientSession::OnConnect()
 {
-	if (GetSessionRole() == SESSION_ROLE::CLIENT)
-	{
-		SetClientSessionState(ClientSessionState::CONNECTED);
-	}
-	else if (GetSessionRole() == SESSION_ROLE::SERVER)
-	{
-		SetServerSessionState(ServerSessionState::CONNECTED);
-	}
+	m_state.store(State::Connected);
 
 	char ipAddress[sizeof(m_clientIPAddress)] = {};
 	uint16_t port = 0;
@@ -137,102 +183,74 @@ bool ClientSession::OnConnect()
 		return false;
 	}
 
+	// 첫 수신을 걸고 접속 통지를 호출할 수 있는 연결만 종료 통지의 짝을 갖는다.
+	::InterlockedExchange(&m_serviceConnectNotified, 1);
 	return true;
 }
 
-void ClientSession::OnDisconnect()
+void ClientSession::RequestDisconnect(DisconnectReason reason)
 {
+	RecordDisconnectReason(reason);
+	if (m_ownerCallbacks.requestDisconnect)
+	{
+		m_ownerCallbacks.requestDisconnect(m_ownerCallbacks.owner, this);
+	}
+}
+
+void ClientSession::RecordDisconnectReason(DisconnectReason reason)
+{
+	::InterlockedCompareExchange(&m_disconnectReason, static_cast<LONG>(reason),
+		static_cast<LONG>(DisconnectReason::Unknown));
+}
+
+void ClientSession::FinishDisconnect(CloseSocketFunc closeSocket, SessionDisconnectNotifyFunc notify, void* context)
+{
+	const SOCKET socket = m_clientSocket.exchange(INVALID_SOCKET);
+	if (socket != INVALID_SOCKET)
+	{
+		if (closeSocket)
+			closeSocket(socket);
+		else if (::closesocket(socket) == SOCKET_ERROR)
+			LOGE("failed to close client socket (error %d)", ::WSAGetLastError());
+	}
+
+	// 서비스가 원격 주소와 컨텍스트를 마지막으로 조회할 수 있게 락 밖에서 먼저 알린다.
+	if (::InterlockedExchange(&m_serviceConnectNotified, 0) && notify)
+		notify(context, this, static_cast<DisconnectReason>(::ReadAcquire(&m_disconnectReason)));
+
 	ClearRemoteAddress();
-	if (m_clientSocket != INVALID_SOCKET)
-	{
-		// 소켓은 반드시 DetachSocket 으로 먼저 떼어낸 뒤 여기 와야 한다.
-		LOGE("session %u disconnecting with a live socket %d. it was not detached",
-			GetSessionID(), static_cast<int>(m_clientSocket));
-		ENGINE_BREAK_IF_DEBUGGER();
-	}
-
-	switch (m_sessionRole)
-	{
-	case SESSION_ROLE::CLIENT:
-		SetClientSessionState(ClientSessionState::DISCONNECTED);
-		break;
-	case SESSION_ROLE::SERVER:
-		SetServerSessionState(ServerSessionState::DISCONNECTED);
-		break;
-	default:
-		break;
-	}
-
+	m_state.store(State::Disconnected);
 	LOGI("session %u disconnected (role %d)", GetSessionID(), static_cast<int>(m_sessionRole));
 }
 
 void ClientSession::ResetSession()
 {
-	SetClientSessionState(ClientSessionState::NONE);
-	SetServerSessionState(ServerSessionState::NONE);
-
-	// 지난 접속의 종료 사유를 지운다. 남겨 두면 이 슬롯을 다음에 쓰는
-	// 접속이 끝날 때 남의 사유를 물려받는다.
-	//
-	// 서비스 통지보다 뒤여야 한다. ClientSessionPool::CompleteRelease 가
-	// NotifyServiceDisconnect -> OnDisconnect -> ResetSession 순으로 부르므로
-	// 지금 순서는 맞다.
+	CheckIdle();
+	{
+		SRWWriteLockGuard lock(m_lifetimeLock);
+		m_cancelled = false;
+	}
+	m_state.store(State::Ready);
 	::InterlockedExchange(&m_disconnectReason, static_cast<LONG>(DisconnectReason::Unknown));
-
-	CheckCleanupPreconditions();
-
-	::InterlockedExchange(&m_cancelIo, 0);
-
-	// 취소 완료 이벤트는 여기서 되돌리지 않는다.
-	//
-	// 되돌렸었다. 그런데 이 함수는 지연 반납의 마무리 경로에서도 불리고,
-	// 그 경로는 방금 DecrementIO 가 이벤트를 세운 직후다. 종료 절차의
-	// 대기자가 그 사이에 깨어나지 못하면 신호를 놓치고 10초를 태운다.
-	//
-	// 무장하는 쪽(CancelPendingIO)에서 되돌린다. 그러면 세워진 이벤트가
-	// 대기자 밑에서 사라지는 일이 없다. 대기는 언제나 무장 뒤에 오므로
-	// 재사용된 세션이 이전 주기의 신호를 물려받지도 않는다.
-
-	SetConnectReadyState();
-
-	::InterlockedExchange(&m_sending, 0);
 	::InterlockedExchange(&m_processing, 0);
+	m_recvPauseCount.store(0, std::memory_order_relaxed);
 
-	// 백프레셔 상태도 지운다.
-	//
-	// 여기 도달했다는 것은 IO 카운트가 0 이라는 뜻이고, 멈춰 있는 세션은
-	// 카운트를 하나 들고 있으므로 이 값은 이미 0 이어야 한다. 그래도 지우는
-	// 이유는 다음 접속이 이 슬롯을 그대로 쓰기 때문이다 — 1 이 남아 있으면
-	// 새 접속이 첫 수신부터 "이미 멈춰 있다" 로 오해된다.
-	::InterlockedExchange(&m_recvPaused, 0);
-	m_diagnostics.Reset();
-
-	// 래치가 남아 있으면 다음 접속이 이 세션을 쓰다가, 접속을 알린 적도
-	// 없는데 종료 통지를 받는다. 정상 경로에서는 반납 직전에 이미
-	// 소비되지만 통지 배선이 없는 구성도 있어 여기서 확실히 지운다.
+	// 풀 재대여는 새 연결이므로 통지 기록도 초기화한다.
 	::InterlockedExchange(&m_serviceConnectNotified, 0);
 
 	SetSessionContext(nullptr);
 
-	if (m_sendPacketQueue)
-	{
-		m_sendPacketQueue->Reset();
-	}
+	m_sendQueue.Reset();
+	m_currentSendPacket.Reset();
+	m_sendOffset = 0;
+	m_sending.store(false);
+	m_sendOverlapped.Clear();
 
-	// 수신 링을 비운다. 이게 없으면 세션이 끊길 때 링에 남아 있던 바이트가
-	// 그대로 살아남아, 이 슬롯을 재사용하는 다음 클라이언트의 스트림 앞에
-	// 붙는다. 그 클라이언트는 첫 바이트부터 남의 데이터를 헤더로 읽는다.
-	//
-	// GetReceiveBuffer 는 널 검사 없이 역참조하는데, ResetSession 은 정리
-	// 경로에서도 불리므로 포인터로 직접 다룬다.
+	// 이전 연결의 미완성 패킷이 다음 연결의 헤더에 섞이지 않도록 비운다.
 	if (m_recvPacketBuffer)
 	{
 		m_recvPacketBuffer->Reset();
 	}
-
-	// 미완료 IO가 정리된 뒤 세션이 보관한 송신 패킷을 반환합니다.
-	m_currentSendPacket.Reset();
-	m_sendOffset = 0;
 
 	if (m_jobQueue)
 	{
@@ -249,82 +267,469 @@ void ClientSession::ResetSession()
 	else if (GetSessionRole() == SESSION_ROLE::SERVER)
 	{
 		m_recvOverlapped.Clear();
-		m_sendOverlapped.Clear();
 	}
 }
 
-OverlappedEx& ClientSession::GetConnectOverlapped()
+// 연결 상태와 인증
+
+bool ClientSession::IsReadyToConnect() const
 {
-	return m_connectOverlapped;
+	return m_state.load() == State::Ready;
 }
 
-// 소켓이 붙어 있는가. 인증 여부는 보지 않는다.
-//
-// IsEstablished(인증까지 끝났는가) 와 짝을 이루는 두 단계 중 아래쪽이다.
-// 시스템 패킷(인증 요청, 하트비트)은 인증 전에도 오가야 하므로 이쪽을 보고,
-// 서비스 패킷은 IsEstablished 를 본다. CanSendPacket 이 그 분기다.
-//
-// 예전에는 이 함수의 별칭인 IsConnected 가 따로 있었다. 두 이름이 같은 것을
-// 계산하니 독자는 없는 구분을 찾게 되고, 한쪽만 고치면 조용히 갈라진다.
 bool ClientSession::IsTransportConnected() const
 {
-	// 상태를 지역 변수에 한 번만 받는다.
-	//
-	// 예전에는 비교마다 getter 를 다시 불렀다. 상태가 평범한 멤버이던
-	// 시절에도 옳지 않았고(다른 스레드가 그 사이에 바꾼다) 지금은 호출마다
-	// 실제로 다시 읽으므로 분명한 결함이다. 비교 도중에 값이 바뀌면
-	// 어느 항목에도 걸리지 않아, 실제로는 접속되어 있는 세션이
-	// "접속 아님" 으로 판정될 수 있다.
-	if (GetSessionRole() == SESSION_ROLE::CLIENT)
-	{
-		const ClientSessionState state = GetClientSessionState();
-		return (state == ClientSessionState::CONNECTED
-			|| state == ClientSessionState::AUTH_PENDING
-			|| state == ClientSessionState::ESTABLISHED);
-	}
-
-	if (GetSessionRole() == SESSION_ROLE::SERVER)
-	{
-		const ServerSessionState state = GetServerSessionState();
-		return (state == ServerSessionState::CONNECTED
-			|| state == ServerSessionState::AUTH_PENDING
-			|| state == ServerSessionState::ESTABLISHED
-			|| state == ServerSessionState::HEARTBEAT_TIMEOUT);
-	}
-
-	return false;
+	const State state = m_state.load();
+	return state == State::Connected || state == State::Authenticating ||
+		state == State::Established || state == State::TimedOut;
 }
 
 bool ClientSession::IsEstablished() const
 {
-	if (GetSessionRole() == SESSION_ROLE::CLIENT)
-		return (GetClientSessionState() == ClientSessionState::ESTABLISHED);
+	return m_state.load() == State::Established;
+}
 
-	if (GetSessionRole() == SESSION_ROLE::SERVER)
-		return (GetServerSessionState() == ServerSessionState::ESTABLISHED);
+bool ClientSession::BeginAuthentication()
+{
+	State expected = State::Connected;
+	return m_state.compare_exchange_strong(expected, State::Authenticating);
+}
 
+bool ClientSession::Establish()
+{
+	State expected = State::Authenticating;
+	return m_state.compare_exchange_strong(expected, State::Established);
+}
+
+void ClientSession::RejectAuthentication(DisconnectReason reason, PacketHandle response)
+{
+	// 거절 응답의 즉시 송신 실패가 최초 사유를 덮어쓰지 않게 한다.
+	RecordDisconnectReason(reason);
+	if (response)
+		(void)EnqueueSendPacket(std::move(response));
+	RequestDisconnect(reason);
+}
+
+// 수명 참조와 비동기 I/O 완료·취소
+
+ClientSession::Reference ClientSession::AcquireReference()
+{
+	SRWWriteLockGuard lock(m_lifetimeLock);
+	++m_referenceCount;
+	return Reference(this);
+}
+
+void ClientSession::ReturnReference::operator()(ClientSession* session) const noexcept
+{
+	session->ReleaseReference();
+}
+
+void ClientSession::ReleaseReference()
+{
+	{
+		SRWWriteLockGuard lock(m_lifetimeLock);
+		ENGINE_CHECK_RETVOID(m_referenceCount > 0, "session %u released an unowned reference", GetSessionID());
+		--m_referenceCount;
+		if (!ClaimReleaseLocked())
+			return;
+	}
+	NotifyReleaseReady();
+}
+
+ClientSession::IOCompletion ClientSession::TakeIOCompletion()
+{
+	return IOCompletion(this);
+}
+
+void ClientSession::FinishIO::operator()(ClientSession* session) const noexcept
+{
+	session->CompleteIO();
+}
+
+void ClientSession::CompleteIO()
+{
+	{
+		SRWWriteLockGuard lock(m_lifetimeLock);
+		ENGINE_CHECK_RETVOID(m_ioCount > 0, "session %u completed an unposted IO", GetSessionID());
+		if (--m_ioCount == 0)
+			::WakeAllConditionVariable(&m_ioCompleted);
+		if (!ClaimReleaseLocked())
+			return;
+	}
+	NotifyReleaseReady();
+}
+
+void ClientSession::CloseWhenIdle()
+{
+	if (!CancelPendingIO())
+		ENGINE_VIOLATION("session %u could not cancel IO during disconnect", GetSessionID());
+	{
+		SRWWriteLockGuard lock(m_lifetimeLock);
+		m_releasePending = true;
+		if (!ClaimReleaseLocked())
+			return;
+	}
+	NotifyReleaseReady();
+}
+
+bool ClientSession::ClaimReleaseLocked()
+{
+	if (m_ioCount != 0 || m_referenceCount != 0)
+		return false;
+	return std::exchange(m_releasePending, false);
+}
+
+void ClientSession::NotifyReleaseReady()
+{
+	if (m_ownerCallbacks.releaseReady)
+		m_ownerCallbacks.releaseReady(m_ownerCallbacks.owner, this);
+}
+
+bool ClientSession::CancelPendingIO()
+{
+	ClientSession::Reference pause;
+	DWORD error;
+	{
+		SRWWriteLockGuard lock(m_lifetimeLock);
+		m_cancelled = true;
+		pause = TakeReceivePauseLocked();
+		error = CancelSocketIOLocked();
+	}
+	if (error != ERROR_SUCCESS)
+		LOGE("session %u CancelIoEx failed (error %lu)", GetSessionID(), error);
+	// 일시정지 참조의 반환은 소켓 취소 결과와 무관하며 락 밖에서 끝낸다.
+	return error == ERROR_SUCCESS;
+}
+
+DWORD ClientSession::CancelSocketIOLocked() const
+{
+	const SOCKET socket = GetClientSocket();
+	if (m_ioCount == 0 || socket == INVALID_SOCKET || ::CancelIoEx(reinterpret_cast<HANDLE>(socket), nullptr))
+		return ERROR_SUCCESS;
+
+	const DWORD error = ::GetLastError();
+	// 이미 완료 큐에 있거나 핸들러가 처리 중인 요청도 카운트에 남는다.
+	return error == ERROR_NOT_FOUND ? ERROR_SUCCESS : error;
+}
+
+IOWaitResult ClientSession::WaitForIOCancelComplete(uint32_t timeoutMs)
+{
+	const ULONGLONG deadline = ::GetTickCount64() + timeoutMs;
+	SRWWriteLockGuard lock(m_lifetimeLock);
+	while (m_ioCount != 0)
+	{
+		const ULONGLONG now = ::GetTickCount64();
+		if (now >= deadline)
+			return { IOWaitStatus::TimedOut, GetSessionID() };
+
+		if (!::SleepConditionVariableSRW(&m_ioCompleted, &m_lifetimeLock, static_cast<DWORD>(deadline - now), 0))
+		{
+			const DWORD error = ::GetLastError();
+			if (error != ERROR_TIMEOUT)
+				return { IOWaitStatus::Failed, GetSessionID(), error };
+			// 이전 소켓 취소가 실패했으면 다음 진단 주기에도 취소할 기회를 준다.
+			if (m_cancelled && m_ioCount != 0)
+				CancelSocketIOLocked();
+		}
+	}
+	return { IOWaitStatus::Completed };
+}
+
+LONG ClientSession::GetOutstandingIOCount() const
+{
+	SRWReadLockGuard lock(m_lifetimeLock);
+	return m_ioCount;
+}
+
+void ClientSession::CheckIdle() const
+{
+	SRWReadLockGuard lock(m_lifetimeLock);
+	if (m_ioCount || m_referenceCount || m_releasePending || m_recvPaused)
+		ENGINE_VIOLATION("session %u cleaned up while still in use (io %ld, references %ld)",
+			GetSessionID(), m_ioCount, m_referenceCount);
+}
+
+void ClientSession::HandlePostError(int error, IO_OPERATION operation)
+{
+	if (error == ERROR_OPERATION_ABORTED)
+		return;
+
+	if (IsPeerClosedError(error))
+		LOGI("session %u peer closed while posting io %d (error %d)", GetSessionID(), static_cast<int>(operation), error);
+	else
+		LOGE("session %u could not post io %d (error %d)", GetSessionID(), static_cast<int>(operation), error);
+
+	const bool exhausted = error == WSAENOBUFS || error == WSAEMFILE;
+	// 일시적인 송신 자원 부족은 이번 패킷만 포기한다. 수신 실패는 후속 수신이 없어 종료한다.
+	if (exhausted && operation == IO_OPERATION::SEND)
+		return;
+	RequestDisconnect(exhausted ? DisconnectReason::ResourceExhausted : DisconnectReason::SocketError);
+}
+
+// 수신 완료와 Job 큐 수위에 따른 재발행
+
+bool ClientSession::OnReceiveCompleted(DWORD bytesTransferred)
+{
+	if (bytesTransferred == 0)
+	{
+		RequestDisconnect(DisconnectReason::PeerClosed);
+		return false;
+	}
+	UpdateLastRecvTick();
+	auto& buffer = *m_recvPacketBuffer;
+	if (!buffer.CommitWrite(bytesTransferred))
+	{
+		ENGINE_VIOLATION("session %u recv ring overflow: %lu bytes (stored %zu / capacity %zu)",
+			GetSessionID(), bytesTransferred, buffer.GetBufferedSize(), buffer.GetCapacity());
+		RequestDisconnect(DisconnectReason::ProtocolError);
+		return false;
+	}
+	return true;
+}
+
+ClientSession::ReceiveResult ClientSession::ReadReceivedPacket()
+{
+	// 서비스 콜백이 종료를 요청하거나 다른 스레드가 수신을 취소한 경우 인출을 멈춘다.
+	{
+		SRWReadLockGuard lock(m_lifetimeLock);
+		if (m_cancelled || ::ReadAcquire(&m_disconnectReason) != static_cast<LONG>(DisconnectReason::Unknown))
+			return { ReceiveStatus::Stopped };
+	}
+	auto [status, packet, id] = m_recvPacketBuffer->ReadPacket();
+	if (status == PacketReadStatus::NeedMoreData)
+		return { ReceiveStatus::NeedMoreData };
+	if (status != PacketReadStatus::Ok)
+	{
+		LOGE("session %u failed to read packet: %s", GetSessionID(),
+			status == PacketReadStatus::Invalid ? "invalid packet size" : "packet pool exhausted");
+		RequestDisconnect(status == PacketReadStatus::Invalid ?
+			DisconnectReason::ProtocolError : DisconnectReason::ResourceExhausted);
+		return { ReceiveStatus::Stopped };
+	}
+	if (!IsValidPacketId(id))
+	{
+		LOGE("session %u received invalid packet id %u", GetSessionID(), id);
+		RequestDisconnect(DisconnectReason::ProtocolError);
+		return { ReceiveStatus::Stopped };
+	}
+	if (IsServicePacketId(id) && !IsEstablished())
+	{
+		LOGW("session %u received service packet %u before authentication", GetSessionID(), id);
+		RequestDisconnect(DisconnectReason::UnexpectedPacket);
+		return { ReceiveStatus::Stopped };
+	}
+	return { ReceiveStatus::Packet, std::move(packet), id };
+}
+
+bool ClientSession::PostReceive()
+{
+	if (!IsTransportConnected())
+		return false;
+
+	auto& buffer = *m_recvPacketBuffer;
+	buffer.PrepareForReceive();
+	const auto writable = buffer.GetWritableSpan();
+	if (writable.empty())
+	{
+		LOGE("session %u recv ring is full (%zu bytes)", GetSessionID(), buffer.GetBufferedSize());
+		RequestDisconnect(DisconnectReason::ResourceExhausted);
+		return false;
+	}
+
+	m_recvOverlapped.ResetForNextIO(GetSessionID(), writable.data(), static_cast<ULONG>(writable.size()));
+	const int error = PostIO([&] {
+		DWORD flags = 0;
+		return ::WSARecv(GetClientSocket(), &m_recvOverlapped.wsaBuffer, 1, nullptr, &flags,
+			&m_recvOverlapped.wsaOverlapped, nullptr) != SOCKET_ERROR;
+	});
+	if (error == ERROR_SUCCESS)
+		return true;
+
+	HandlePostError(error, IO_OPERATION::RECV);
 	return false;
 }
 
-void ClientSession::MarkServiceConnectNotified()
+void ClientSession::ContinueReceive()
 {
-	::InterlockedExchange(&m_serviceConnectNotified, 1);
-}
-
-bool ClientSession::ConsumeServiceConnectNotified()
-{
-	return (::InterlockedExchange(&m_serviceConnectNotified, 0) == 1);
-}
-
-void ClientSession::NotifyDisconnect()
-{
-	if (m_ownerCallbacks.requestDisconnect)
 	{
-		m_ownerCallbacks.requestDisconnect(m_ownerCallbacks.owner, this);
+		SRWReadLockGuard lock(m_lifetimeLock);
+		if (m_cancelled || ::ReadAcquire(&m_disconnectReason) != static_cast<LONG>(DisconnectReason::Unknown))
+			return;
+	}
+	// 검사 이후의 취소 경합도 PostIO와 TryPauseReceive의 락에서 다시 확인한다.
+	const uint32_t pauseLevel = m_bufferConfig.recvPauseJobDepth;
+	if (pauseLevel == 0 || GetJobQueueDepth() < pauseLevel)
+	{
+		PostReceive();
+		return;
+	}
+
+	// 취소와 같은 락에서 표시하고 수명 참조를 받는다. 실제 소켓 I/O는 없다.
+	if (!TryPauseReceive())
+		return;
+
+	m_recvPauseCount.fetch_add(1, std::memory_order_relaxed);
+	// 워커가 표시 직전에 큐를 비웠더라도 재개 기회를 잃지 않는다.
+	ResumeReceiveIfDrained();
+}
+
+bool ClientSession::TryPauseReceive()
+{
+	SRWWriteLockGuard lock(m_lifetimeLock);
+	if (m_cancelled || m_recvPaused)
+		return false;
+
+	m_recvPaused = true;
+	++m_referenceCount;
+	return true;
+}
+
+void ClientSession::ResumeReceiveIfDrained()
+{
+	if (!IsReceivePaused())
+		return;
+
+	if (GetJobQueueDepth() > m_bufferConfig.recvResumeJobDepth)
+		return;
+
+	Reference pause;
+	{
+		SRWWriteLockGuard lock(m_lifetimeLock);
+		pause = TakeReceivePauseLocked();
+	}
+	if (pause)
+		PostReceive();
+}
+
+ClientSession::Reference ClientSession::TakeReceivePauseLocked()
+{
+	if (!std::exchange(m_recvPaused, false))
+		return {};
+	return ClientSession::Reference(this);
+}
+
+bool ClientSession::IsReceivePaused() const
+{
+	SRWReadLockGuard lock(m_lifetimeLock);
+	return m_recvPaused;
+}
+
+uint32_t ClientSession::GetRecvPauseCount() const
+{
+	return m_recvPauseCount.load(std::memory_order_relaxed);
+}
+
+// 송신 큐와 부분 송신
+
+bool ClientSession::EnqueueSendPacket(PacketHandle&& packet)
+{
+	if (!packet || !CanEnqueueSend(packet.View()))
+		return false;
+	return StartQueuedSend(m_sendQueue.Enqueue(std::move(packet)));
+}
+
+bool ClientSession::EnqueueSharedSendPacket(SharedPacketHandle packet)
+{
+	if (!packet || !CanEnqueueSend(packet.View()))
+		return false;
+	return StartQueuedSend(m_sendQueue.EnqueueShared(std::move(packet)));
+}
+
+bool ClientSession::CanEnqueueSend(std::span<const std::byte> bytes) const
+{
+	if (bytes.size() < sizeof(PACKET_HEADER) || bytes.size() > PACKET_SIZE_LIMIT || bytes.size() > m_bufferConfig.maxSendPacketSize)
+	{
+		LOGE("session %u invalid send size %zu (limit %u)", GetSessionID(), bytes.size(), m_bufferConfig.maxSendPacketSize);
+		return false;
+	}
+	const auto* header = reinterpret_cast<const PACKET_HEADER*>(bytes.data());
+	if (header->packetSize != bytes.size())
+	{
+		LOGE("session %u send size mismatch (header %u, buffer %zu)", GetSessionID(), header->packetSize, bytes.size());
+		return false;
+	}
+
+	return (IsSystemPacketId(header->packetId) && IsTransportConnected()) ||
+		(IsServicePacketId(header->packetId) && IsEstablished());
+}
+
+bool ClientSession::StartQueuedSend(bool enqueued)
+{
+	if (!enqueued)
+	{
+		LOGW("session %u send queue admission failed", GetSessionID());
+		return false;
+	}
+	TrySendNext();
+	return true;
+}
+
+void ClientSession::TrySendNext()
+{
+	for (;;)
+	{
+		if (m_sending.exchange(true))
+			return;
+
+		m_currentSendPacket = m_sendQueue.Dequeue();
+		if (m_currentSendPacket)
+		{
+			m_sendOffset = 0;
+			PostCurrentSend();
+			return;
+		}
+
+		// 실행권을 놓기 직전에 들어온 패킷을 큐에 남겨 두지 않는다.
+		m_sending.store(false);
+		if (m_sendQueue.IsEmpty())
+			return;
 	}
 }
 
-bool ClientSession::SubmitJob(JobHandle&& jobHandle)
+void ClientSession::PostCurrentSend()
+{
+	const auto bytes = m_currentSendPacket.View().subspan(m_sendOffset);
+	m_sendOverlapped.ResetForNextIO(GetSessionID(),
+		const_cast<char*>(reinterpret_cast<const char*>(bytes.data())), static_cast<ULONG>(bytes.size()));
+	const int error = PostIO([&] {
+		return ::WSASend(GetClientSocket(), &m_sendOverlapped.wsaBuffer, 1, nullptr, 0,
+			&m_sendOverlapped.wsaOverlapped, nullptr) != SOCKET_ERROR;
+	});
+	if (error == ERROR_SUCCESS)
+		return;
+
+	m_currentSendPacket.Reset();
+	m_sendOffset = 0;
+	m_sending.store(false);
+	HandlePostError(error, IO_OPERATION::SEND);
+}
+
+void ClientSession::OnSendCompleted(DWORD bytesTransferred)
+{
+	if (!m_currentSendPacket)
+		return;
+
+	m_sendOffset += bytesTransferred;
+	if (m_sendOffset < m_currentSendPacket.Size())
+	{
+		PostCurrentSend();
+		return;
+	}
+
+	m_currentSendPacket.Reset();
+	m_sendOffset = 0;
+	m_sending.store(false);
+	TrySendNext();
+}
+
+bool ClientSession::HasPendingSend() const
+{
+	return m_sending.load() || !m_sendQueue.IsEmpty();
+}
+
+// Job 등록과 실행권
+
+bool ClientSession::EnqueueJob(JobHandle&& jobHandle)
 {
 	if (!m_jobQueue)
 	{
@@ -337,6 +742,11 @@ bool ClientSession::SubmitJob(JobHandle&& jobHandle)
 SessionJobQueue& ClientSession::GetJobQueue() const
 {
 	return *m_jobQueue;
+}
+
+uint32_t ClientSession::GetJobQueueDepth() const
+{
+	return m_jobQueue ? m_jobQueue->GetCount() : 0;
 }
 
 uint32_t ClientSession::GetJobQueuePeakDepth() const
@@ -357,7 +767,7 @@ void ClientSession::ReleaseProcessing()
 
 void ClientSession::SetCurrentJob(Job* job)
 {
-	// Borrowed while the client handler runs; TakeCurrentPacket moves ownership.
+	// 클라이언트 핸들러가 실행되는 동안만 현재 Job을 빌린다.
 	m_currentJob = job;
 }
 
@@ -380,6 +790,8 @@ PacketHandle ClientSession::TakeCurrentPacket()
 	return m_currentJob->TakePacket();
 }
 
+// 서비스 컨텍스트와 원격 주소
+
 void ClientSession::SetSessionContext(SessionContext* sessionContext)
 {
 	if (m_sessionContext != nullptr && m_sessionContext != sessionContext)
@@ -395,16 +807,6 @@ SessionContext* ClientSession::GetSessionContext() const
 	return m_sessionContext;
 }
 
-void ClientSession::SetRemoteAddress(const char* ipAddress, uint16_t port)
-{
-	if (ipAddress == nullptr)
-		return;
-
-	Core::Sync::SRWWriteLockGuard lock(m_remoteAddressLock);
-	::strncpy_s(m_clientIPAddress, sizeof(m_clientIPAddress), ipAddress, _TRUNCATE);
-	m_clientPort = port;
-}
-
 bool ClientSession::HasRemoteAddress(const char* ipAddress) const
 {
 	if (!ipAddress || ipAddress[0] == '\0')
@@ -415,6 +817,15 @@ bool ClientSession::HasRemoteAddress(const char* ipAddress) const
 	Core::Sync::SRWReadLockGuard lock(m_remoteAddressLock);
 	return std::strncmp(m_clientIPAddress, ipAddress, sizeof(m_clientIPAddress)) == 0;
 }
+
+void ClientSession::ClearRemoteAddress()
+{
+	Core::Sync::SRWWriteLockGuard lock(m_remoteAddressLock);
+	memset(m_clientIPAddress, 0, sizeof(m_clientIPAddress));
+	m_clientPort = 0;
+}
+
+// 활동 시각과 하트비트
 
 void ClientSession::UpdateLastRecvTick()
 {
@@ -429,6 +840,13 @@ uint64_t ClientSession::GetLastRecvTick() const
 void ClientSession::UpdateLastHeartbeatTick()
 {
 	::InterlockedExchange64(&m_lastHeartbeatTick, static_cast<LONGLONG>(::GetTickCount64()));
+}
+
+uint64_t ClientSession::GetLastActiveTick() const
+{
+	const uint64_t lastRecvTick = GetLastRecvTick();
+	const auto lastHeartbeatTick = static_cast<uint64_t>(::ReadAcquire64(&m_lastHeartbeatTick));
+	return (lastRecvTick > lastHeartbeatTick) ? lastRecvTick : lastHeartbeatTick;
 }
 
 bool ClientSession::IsHeartbeatTimedOut(uint64_t nowTick, uint64_t timeout_ms) const
@@ -451,7 +869,7 @@ void ClientSession::MarkHeartbeatTimeout()
 {
 	if (GetSessionRole() == SESSION_ROLE::SERVER)
 	{
-		SetServerSessionState(ServerSessionState::HEARTBEAT_TIMEOUT);
+		m_state.store(State::TimedOut);
 	}
 }
 
@@ -495,42 +913,4 @@ bool ClientSession::SendSystemHeartbeatResponse(uint64_t requestTick)
 	response->tick = requestTick;
 
 	return EnqueueSendPacket(std::move(packetHandle));
-}
-
-void ClientSession::SetConnectReadyState()
-{
-	if (GetSessionRole() == SESSION_ROLE::CLIENT)
-	{
-		SetClientSessionState(ClientSessionState::CONNECT_READY);
-	}
-	else if (GetSessionRole() == SESSION_ROLE::SERVER)
-	{
-		SetServerSessionState(ServerSessionState::CONNECT_READY);
-	}
-}
-
-void ClientSession::ClearRemoteAddress()
-{
-	Core::Sync::SRWWriteLockGuard lock(m_remoteAddressLock);
-	memset(m_clientIPAddress, 0, sizeof(m_clientIPAddress));
-	m_clientPort = 0;
-}
-
-void ClientSession::ReleaseMemoryResources()
-{
-	m_sendPacketQueue.reset();
-	m_jobQueue.reset();
-	m_recvPacketBuffer.reset();
-}
-
-uint64_t ClientSession::GetLastHeartbeatTick() const
-{
-	return static_cast<uint64_t>(::ReadAcquire64(&m_lastHeartbeatTick));
-}
-
-uint64_t ClientSession::GetLastActiveTick() const
-{
-	const uint64_t lastRecvTick = GetLastRecvTick();
-	const uint64_t lastHeartbeatTick = GetLastHeartbeatTick();
-	return (lastRecvTick > lastHeartbeatTick) ? lastRecvTick : lastHeartbeatTick;
 }
