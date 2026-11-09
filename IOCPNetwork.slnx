@@ -1,0 +1,8 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="IOCPNetwork.SmokeTest/IOCPNetwork.SmokeTest.vcxproj" Id="2fa46fe2-8fba-484c-9c9b-98e407ebbb75" />
+  <Project Path="IOCPNetwork/IOCPNetwork.vcxproj" Id="ed18f67e-82cb-4ada-a3e8-958381f4dbf9" />
+</Solution>

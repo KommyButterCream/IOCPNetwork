@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IOCPNetwork 개발 로드맵 — 1~19단계</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f1f5f8;color:#193247;font:16px/1.85 "Malgun Gothic",system-ui,sans-serif}main{max-width:1000px;margin:auto;padding:40px 24px}header{background:#183d50;color:white;padding:32px;border-radius:14px}h1{line-height:1.4;font-size:30px}section{background:white;border:1px solid #dce5ed;border-radius:12px;padding:24px;margin-top:24px}h2{font-size:21px;margin:0 0 12px}li{padding:12px 0;border-bottom:1px solid #e2e9ee;break-inside:avoid}li:last-child{border:0}li strong{display:block;color:#116d65;font-size:18px}li p{margin:6px 0}small,.note{color:#52697a}code{overflow-wrap:anywhere}a{color:#087a7c}footer{font-size:13px;margin-top:24px;color:#52697a}@media(max-width:600px){main{padding:16px}header,section{padding:18px}h1{font-size:25px}ol{padding-left:25px}}@media print{body{background:white}main{padding:0}header{background:white;color:#193247;border-bottom:2px solid}section{border:0;padding:0}}
+</style>
+</head>
+<body><main>
+<header><p>C++20 · Windows IOCP · DLL · VS2026</p><h1>IOCPNetwork 전체 개발 단계<br>1~19단계 로드맵</h1><p>기록일: 2026-11-09<br>프로젝트: <code>C:\RYLYNN\Workspace\Module\IOCPNetwork</code></p></header>
+<section><h2>현재 위치</h2><p>대화의 완료 보고 기준으로 <strong>1·2단계 완료</strong>. 2단계는 Debug·Release x64에서 각각 91개 검사와 DLL 호출 테스트를 통과했다. 다음은 <strong>3단계 Packet·PacketView·PacketWriter</strong>다.</p><p class="note">저장 당시의 기록이며 자동 갱신되지 않는다. 이후 이 문서를 기준으로 진행하되 실제 코드와 검증 결과를 확인한다. 기존 19단계 순서를 유지하고 작업 범위와 검증 항목을 요약했다.</p><p>직접 타이핑·설명·디버깅을 포함한 기존 전체 예상: <strong>130~220시간</strong>, 여유 포함 <strong>150~250시간</strong>. 확정 일정이나 현재 남은 시간 추정은 아니다.</p></section>
+<section><h2>전체 개발 목록</h2><ol>
+<li><strong>DLL 프로젝트 생성 — 완료 기록</strong><p>C++20 DLL, export 매크로·공개 헤더, 소비 테스트 프로젝트와 VS 설정.</p><small>검증: Debug·Release x64 빌드, DLL 링크·호출.</small></li>
+<li><strong>공통 타입·전송 규격 — 완료 기록</strong><p>PacketId·길이 상수, 헤더 읽기·쓰기, ConnectionId, Send/Post 결과, 종료 사유, 서버·클라이언트 설정.</p><small>검증: 리틀엔디언, ID·길이 경계, 부분 프레임, 설정 검증.</small></li>
+<li><strong>Packet·PacketView·PacketWriter — 다음 단계</strong><p>불변 공유 Packet, 빌린 읽기 뷰, 이동 전용 Writer와 Finish 소유권 전환.</p><small>검증: 복사·이동·빈 값, Finish 성공·실패, 뷰 수명 조건.</small></li>
+<li><strong>PacketPool·TLS 캐시</strong><p>통합 패킷 블록, 크기 등급, 워커 TLS 캐시, 공용 반환 경로와 풀 공유 수명.</p><small>검증: 외부·늦은 반환, 할당 실패, 캐시 상한, 엔진 파괴 후 Packet 반환.</small></li>
+<li><strong>RecvPacketBuffer</strong><p>원형 수신 버퍼, 쓰기 영역 확보·반영, 프레임 읽기와 완성 패킷 보관.</p><small>검증: 링 경계, 분할·다중 패킷, 잘못된 길이, 미완성 데이터 유지.</small></li>
+<li><strong>SendPacketQueue·배치 송신 준비</strong><p>원형 송신 큐, Packet 소유, WSABUF 배치와 부분 완료 위치 관리.</p><small>검증: FIFO, 개수·바이트 한도, 부분 송신, 실패 시 원본 유지.</small></li>
+<li><strong>ClientSessionPool·세션 수명</strong><p>세션 배열·빈 인덱스 스택, 세대 ID, SessionReference와 상태 전환.</p><small>검증: 오래된 ID·다른 엔진 ID 거절, 마지막 참조, 종료·재대여 경합.</small></li>
+<li><strong>Job·SessionJobQueue</strong><p>작은 값 Job과 variant, 별도 Task 소유, 원형 큐와 연결 통지 예약 슬롯.</p><small>검증: 이동·반환, FIFO, 일반 작업 예산, 큐 포화·취소.</small></li>
+<li><strong>공통 JobScheduler</strong><p>서버·클라이언트 공통 스케줄러, 내부 준비 큐, 배치·예산·중복 예약 방지와 최종 마무리.</p><small>검증: 중복 실행·예약 누락 방지, 미실행 배치 복원, 공정성·종료 통지.</small></li>
+<li><strong>IOCP·IOWorkerPool</strong><p>하나의 IOCP를 여러 워커가 대기하고 Session completion key로 완료를 전달.</p><small>검증: 워커 시작 실패, 완료 전달, 종료 신호와 워커 합류.</small></li>
+<li><strong>서버 Accept</strong><p>서버 Impl의 고정 AcceptSession 배열, AcceptEx 등록·완료·재등록, 통신 세션으로 소켓 이전.</p><small>검증: 풀 포화, 즉시 실패, 취소·재등록·서버 종료 경합.</small></li>
+<li><strong>클라이언트 Connect</strong><p>비동기 연결 시작·완료·실패와 세션 연결, 재접속 시도 식별.</p><small>검증: 접속 실패, 연결 중 종료, 이전 시도 완료와 재접속 분리.</small></li>
+<li><strong>세션 송수신 연결</strong><p>세션당 WSARecv·WSASend 각각 하나, 수신→Packet→Job, 송신 큐→배치 I/O 연결.</p><small>검증: 실제 분할·다중 수신, 부분 송신, 백프레셔 중지·재개, I/O 참조 반환.</small></li>
+<li><strong>시스템 프로토콜·백그라운드 작업</strong><p>핸드셰이크·버전 확인, 하트비트·무수신·백프레셔 타임아웃, Accept 복구.</p><small>검증: 준비 전 서비스 패킷 차단, 실패 시 종료, 타이머 중첩·종료 경합.</small></li>
+<li><strong>IOCPBase·Server·Client와 Impl</strong><p>공통 기능과 역할별 기능 연결, Impl 소유, Start·Stop과 시작 실패 복구.</p><small>검증: 같은 객체 재시작, 중복 시작 방어, 초기화 실패 자원 회수.</small></li>
+<li><strong>Graceful shutdown 통합</strong><p>접수한 Job·보관한 완성 패킷 처리, 종료 중 응답 송신, 전체 기한과 최종 반환 순서.</p><small>검증: 기한 내 응답, 기한 초과 취소, 실행 중 콜백·I/O 보호, Stop 후 콜백 부재.</small></li>
+<li><strong>서비스 API·핸들러·이벤트</strong><p>핸들러 등록, Packet 생성·Send·Post·종료 요청, ConnectionId와 연결·종료 이벤트.</p><small>검증: 공개 API만으로 사용, Queued일 때만 소유권 이전, 이벤트 순서·예외 처리.</small></li>
+<li><strong>에코·브로드캐스트 예제</strong><p>서버·클라이언트 소비 앱, 공유 Packet 송신과 서비스 상태의 서비스 레이어 관리.</p><small>검증: 에코·브로드캐스트, 연결·종료 통지, 재접속·재시작.</small></li>
+<li><strong>부하·경합·성능 검증</strong><p>동시 연결·종료·재대여 스트레스와 기존 엔진 대비 측정.</p><small>검증: 처리량·지연·CPU·메모리·할당, 누수·잔여 참조, 측정에 근거한 최적화.</small></li>
+</ol></section>
+<section><h2>진행 원칙</h2><p>종료·실패 처리는 해당 자원 구현 때 함께 검증한다. 기반 타입 테스트와 실제 소켓·IOCP 통합 테스트를 구분한다. 공개 API는 서비스가 내부 카운터나 예약 순서를 몰라도 사용할 수 있게 한다.</p><p>Packet과 Session의 수명을 분리하고 Room·서비스 상태는 서비스 레이어에 둔다. 성능 개선은 측정으로 확인한다. Accept 수량·전체 종료 기한·풀 상한 등 미정 값은 해당 구현 시 결정한다.</p><p>필요한 API 골격은 앞 단계에서 먼저 만들고, 15~17단계에서 전체 계약을 통합·검증한다.</p><p>상세 설계: <a href="../../NetworkEngine/docs/hybrid-engine-design.md">hybrid-engine-design.md</a></p></section>
+<footer>예정 단계의 구현 완료나 성능 보장을 의미하지 않는다. 후속 작업의 순서를 기억하기 위한 기준 문서다.</footer>
+</main></body></html>
