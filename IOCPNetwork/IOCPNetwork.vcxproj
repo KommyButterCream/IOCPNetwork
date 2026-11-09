@@ -143,6 +143,7 @@
   <ItemGroup>
     <ClCompile Include="Detail\PacketBlock.cpp" />
     <ClCompile Include="Detail\PacketPool.cpp" />
+    <ClCompile Include="Detail\RecvPacketBuffer.cpp" />
     <ClCompile Include="IOCPNetwork.cpp" />
     <ClCompile Include="Packet.cpp" />
     <ClCompile Include="PacketWriter.cpp" />
@@ -153,6 +154,7 @@
     <ClInclude Include="Detail\PacketBlock.h" />
     <ClInclude Include="Detail\PacketHeader.h" />
     <ClInclude Include="Detail\PacketPool.h" />
+    <ClInclude Include="Detail\RecvPacketBuffer.h" />
     <ClInclude Include="Export.h" />
     <ClInclude Include="IOCPNetwork.h" />
     <ClInclude Include="NetworkOptions.h" />
