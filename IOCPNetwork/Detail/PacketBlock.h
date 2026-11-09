@@ -16,6 +16,10 @@ namespace IOCPNetwork::Detail
 
     // 통합 블록의 제어부다. 바로 뒤에 전송 헤더와 본문을 배치한다.
     // 저장소를 대여할 때 생성하고 풀에 반환하기 전에 소멸한다.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4324) // 16바이트 정렬에 필요한 끝 패딩을 의도적으로 허용한다.
+#endif
     struct alignas(16) PacketBlock
     {
         // Writer 또는 Packet이 가진 소유 참조 수.
@@ -47,6 +51,9 @@ namespace IOCPNetwork::Detail
             return reinterpret_cast<const std::byte*>(this + 1);
         }
     };
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
     // 호출자가 소유 중인 유효한 블록의 참조를 하나 추가한다.
     void AddPacketReference(PacketBlock* block) noexcept;

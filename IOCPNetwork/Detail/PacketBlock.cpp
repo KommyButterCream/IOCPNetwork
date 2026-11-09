@@ -12,6 +12,60 @@
 
 namespace IOCPNetwork::Detail
 {
+    static_assert(!FindPacketSizeClass(0).has_value());
+
+    static_assert(!FindPacketSizeClass(MaxPacketSize + 1).has_value());
+
+    static_assert(FindPacketSizeClass(4).value() == 0);
+
+    static_assert(FindPacketSizeClass(64).value() == 0);
+
+    static_assert(FindPacketSizeClass(65).value() == 1);
+
+    static_assert(FindPacketSizeClass(128).value() == 1);
+
+    static_assert(FindPacketSizeClass(129).value() == 2);
+
+    static_assert(FindPacketSizeClass(MaxPacketSize).value() == 10);
+
+    static_assert(GetPacketClassCapacity(10) == PacketMaxClassCapacity);
+
+    static_assert(GetPacketBlockStride(0) >= sizeof(PacketBlock) + PacketMinClassCapacity);
+
+    static_assert(GetPacketBlockStride(10) % PacketBlockAlignment == 0);
+
+    static_assert(GetPacketBlockStride(0) < sizeof(PacketBlock) + PacketMinClassCapacity + PacketBlockAlignment);
+
+    static_assert(GetPacketBlockStride(10) < sizeof(PacketBlock) + PacketMaxClassCapacity + PacketBlockAlignment);
+
+    static_assert(GetPacketClassCapacity(static_cast<std::uint8_t>(PacketCacheSizeClassCount - 1)) == 4 * 1024);
+
+    static_assert(GetPacketCacheCapacity(7) == 0);
+
+    static_assert(GetPacketCacheCapacity(10) == 0);
+
+    static_assert([]() constexpr
+        {
+            for (std::size_t index = 0; index < PacketCacheSizeClassCount; ++index)
+            {
+                const auto sizeClassIndex = static_cast<std::uint8_t>(index);
+
+                const std::size_t capacity = GetPacketCacheCapacity(sizeClassIndex);
+
+                if (capacity == 0 || capacity > PacketCacheMaxBlocksPerClass)
+                {
+                    return false;
+                }
+
+                if (capacity * GetPacketBlockStride(sizeClassIndex) > PacketCacheMaxBytesPerClass)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }());
+
     void AddPacketReference(PacketBlock* block) noexcept
     {
         std::size_t count = block->referenceCount.load(std::memory_order_relaxed);
@@ -25,6 +79,7 @@ namespace IOCPNetwork::Detail
                 std::terminate();
             }
 
+            // CAS 를 통해 안전한 증가 시도
             if (block->referenceCount.compare_exchange_weak(
                 count,
                 count + 1,
@@ -38,7 +93,8 @@ namespace IOCPNetwork::Detail
 
     void ReleasePacketReference(PacketBlock* block) noexcept
     {
-        const std::size_t previousCount = block->referenceCount.fetch_sub(1, std::memory_order_acq_rel);
+        const std::size_t previousCount =
+            block->referenceCount.fetch_sub(1, std::memory_order_acq_rel);
 
         if (previousCount != 1)
         {

@@ -142,6 +142,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="Detail\PacketBlock.cpp" />
+    <ClCompile Include="Detail\PacketPool.cpp" />
     <ClCompile Include="IOCPNetwork.cpp" />
     <ClCompile Include="Packet.cpp" />
     <ClCompile Include="PacketWriter.cpp" />
