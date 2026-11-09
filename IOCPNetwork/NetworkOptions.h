@@ -51,7 +51,7 @@ namespace IOCPNetwork
     };
 
     // 클라이언트가 연결할 서버 주소를 지정한다.
-    struct  ClientOptions
+    struct ClientOptions
     {
         NetworkOptions network;
 

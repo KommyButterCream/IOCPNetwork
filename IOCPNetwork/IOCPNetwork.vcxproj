@@ -141,17 +141,27 @@
     </Manifest>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="Detail\PacketBlock.cpp" />
     <ClCompile Include="IOCPNetwork.cpp" />
+    <ClCompile Include="Packet.cpp" />
+    <ClCompile Include="PacketWriter.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ConnectionId.h" />
     <ClInclude Include="Detail\OptionsValidation.h" />
+    <ClInclude Include="Detail\PacketBlock.h" />
     <ClInclude Include="Detail\PacketHeader.h" />
+    <ClInclude Include="Detail\PacketPool.h" />
     <ClInclude Include="Export.h" />
     <ClInclude Include="IOCPNetwork.h" />
     <ClInclude Include="NetworkOptions.h" />
     <ClInclude Include="NetworkTypes.h" />
+    <ClInclude Include="Packet.h" />
+    <ClInclude Include="PacketError.h" />
+    <ClInclude Include="PacketResult.h" />
     <ClInclude Include="PacketTypes.h" />
+    <ClInclude Include="PacketView.h" />
+    <ClInclude Include="PacketWriter.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

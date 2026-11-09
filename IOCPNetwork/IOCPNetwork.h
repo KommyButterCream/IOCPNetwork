@@ -1,10 +1,16 @@
 #pragma once
 
 #include "Export.h"
+
 #include "ConnectionId.h"
 #include "NetworkOptions.h"
 #include "NetworkTypes.h"
+#include "Packet.h"
+#include "PacketError.h"
+#include "PacketResult.h"
 #include "PacketTypes.h"
+#include "PacketView.h"
+#include "PacketWriter.h"
 
 namespace IOCPNetwork
 {

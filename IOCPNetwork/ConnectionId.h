@@ -16,7 +16,7 @@ namespace IOCPNetwork
             return generation != 0;
         }
 
-        // 인덱스와 세대가 모두 같아야 같은 연결 ID 이다.
+        // 인덱스와 세대가 모두 같아야 같은 연결 ID이다.
         [[nodiscard]] constexpr bool operator==(const ConnectionId& other) const noexcept = default;
     };
 }

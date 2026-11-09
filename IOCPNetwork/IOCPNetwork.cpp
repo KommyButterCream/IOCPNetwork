@@ -2,6 +2,7 @@
 
 #include "Detail/OptionsValidation.h"
 #include "Detail/PacketHeader.h"
+#include "Detail/PacketBlock.h"
 
 namespace IOCPNetwork
 {

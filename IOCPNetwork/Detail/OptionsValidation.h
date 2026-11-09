@@ -35,7 +35,7 @@ namespace IOCPNetwork::Detail
             return OptionsError::InvalidPacketSize;
         }
 
-        // std::has_single_bit : 2의 제곱 수인지 (power of 2) 확인
+        // 수신 링은 2의 거듭제곱 크기이며 최대 수신 패킷의 두 배 이상이어야 한다.
         if (!std::has_single_bit(options.recvRingSize) ||
             options.recvRingSize < options.maxRecvPacketSize * 2)
         {
@@ -88,7 +88,6 @@ namespace IOCPNetwork::Detail
 
         return ValidateOptions(options.network);
     }
-
 
     // 클라이언트 전용 설정을 검사한 뒤 공통 설정을 검사한다.
     [[nodiscard]] inline OptionsError ValidateOptions(const ClientOptions& options) noexcept

@@ -13,7 +13,7 @@ namespace IOCPNetwork
     inline constexpr std::size_t MaxPacketSize = 65'535;
     inline constexpr std::size_t MaxPayloadSize = MaxPacketSize - PacketHeaderSize;
 
-    // ID 0 은 사용하지 않는다.
+    // ID 0은 사용하지 않는다.
     inline constexpr PacketId InvalidPacketId = 0;
 
     // 엔진 내부 시스템 패킷에 예약된 범위
