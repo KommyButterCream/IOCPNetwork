@@ -376,8 +376,7 @@ namespace IOCPNetwork::Detail
 
         for (std::size_t index = 0; index < m_sizeClasses.size(); ++index)
         {
-            FlushBlocks(
-                static_cast<std::uint8_t>(index),
+            FlushBlocks(static_cast<std::uint8_t>(index),
                 m_sizeClasses[index].count);
         }
 
@@ -459,8 +458,7 @@ namespace IOCPNetwork::Detail
         batch.count = 1;
 
         // 반환할 범위의 마지막 블록을 찾는다.
-        while (batch.count < maxCount &&
-            batch.last->next != nullptr)
+        while (batch.count < maxCount && batch.last->next != nullptr)
         {
             batch.last = batch.last->next;
 

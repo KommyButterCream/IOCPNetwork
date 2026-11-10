@@ -111,3 +111,18 @@ namespace IOCPNetwork
     {
     }
 }
+
+namespace IOCPNetwork::Detail
+{
+    std::span<const std::byte> GetPacketWireBytes(const Packet& packet) noexcept
+    {
+        if (packet.m_block == nullptr)
+        {
+            return {};
+        }
+
+        const PacketBlock& block = *packet.m_block;
+
+        return { block.GetWireData(), static_cast<std::size_t>(block.packetSize) };
+    }
+}

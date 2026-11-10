@@ -3,14 +3,22 @@
 #include "Export.h"
 #include "PacketView.h"
 
+#include <cstddef> // for std::byte
+#include <span>    // for std::span
+
 namespace IOCPNetwork
 {
+    class Packet;
+    class PacketWriter;
+
     namespace Detail
     {
         struct PacketBlock;
-    }
 
-    class PacketWriter;
+        // 헤더를 포함한 전송 바이트를 빌린다.
+        // 빈 Packet이면 빈 Span을 반환하며, 저장소의 수명을 연장하지 않는다.
+        [[nodiscard]] std::span<const std::byte> GetPacketWireBytes(const Packet& packet) noexcept;
+    }
 
     // 완성된 패킷 저장소를 공유 소유한다.
     // 복사는 저장소 공유, 이동은 소유권 이전이며 본문을 복사하지 않는다.
@@ -42,6 +50,7 @@ namespace IOCPNetwork
 
     private:
         friend class PacketWriter;
+        friend std::span<const std::byte> Detail::GetPacketWireBytes(const Packet& packet) noexcept;
 
         // Writer가 넘긴 기존 참조를 증가 없이 인수한다.
         explicit Packet(Detail::PacketBlock* block) noexcept;
