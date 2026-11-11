@@ -3,9 +3,10 @@
 #include "../ClientSession.h"
 #include "ConnectionGeneration.h"
 
-#include <exception> // for std::terminate
 #include <cstddef> // for std::size_t
+#include <exception> // for std::terminate
 #include <limits>  // for std::numeric_limits
+#include <mutex>   // for std::lock_guard, std::unique_lock
 #include <new>     // for std::bad_alloc
 #include <utility> // for std::move
 
@@ -13,10 +14,16 @@ namespace IOCPNetwork::Detail
 {
     std::unique_ptr<ClientSessionPool> ClientSessionPool::Create(
         std::uint32_t capacity,
+        std::size_t maxPendingJobs,
+        std::size_t maxPendingPacketBytes,
         FinalizationHandler finalizationHandler,
-        void* finalizationContext) noexcept
+        void* finalizationContext,
+        JobScheduler& scheduler) noexcept
     {
-        if (capacity == 0 || finalizationHandler == nullptr)
+        if (capacity == 0 ||
+            maxPendingJobs == 0 ||
+            maxPendingPacketBytes == 0 ||
+            finalizationHandler == nullptr)
         {
             return {};
         }
@@ -40,6 +47,16 @@ namespace IOCPNetwork::Detail
 
             // private 생성자에 접근할 수 있는 풀의 멤버 함수에서 직접 생성한다.
             auto sessions = std::unique_ptr<ClientSession[]>{ new ClientSession[capacity] };
+
+            // 풀이 공개되기 전에 모든 세션의 Job 저장소를 확보한다.
+            for (std::uint32_t index = 0; index < capacity; ++index)
+            {
+                if (!sessions[index].InitializeJobQueue(
+                    maxPendingJobs, maxPendingPacketBytes, scheduler))
+                {
+                    return {};
+                }
+            }
 
             // 처음에는 인덱스 0부터 대여하도록 역순으로 넣는다.
             for (std::uint32_t remaining = capacity; remaining != 0; --remaining)
@@ -175,6 +192,21 @@ namespace IOCPNetwork::Detail
         }
     }
 
+    bool ClientSessionPool::WaitUntilAllReturned(std::chrono::milliseconds timeout) noexcept
+    {
+        if (timeout.count() < 0)
+        {
+            return false;
+        }
+
+        std::unique_lock<std::mutex> lock{ m_mutex };
+
+        return m_returnedCondition.wait_for(lock, timeout, [this]
+        {
+            return m_freeIndices.size() == m_capacity;
+        });
+    }
+
     void ClientSessionPool::DispatchFinalization(SessionFinalization finalization) noexcept
     {
         m_finalizationHandler(m_finalizationContext, std::move(finalization));
@@ -214,9 +246,17 @@ namespace IOCPNetwork::Detail
         // 이전 연결의 ID를 무효화하고 새 연결을 대여할 수 있게 한다.
         session.m_connectionId = {};
 
+        session.m_connectedNotificationQueued = false;
+
         session.m_state = ClientSession::State::Free;
 
         // 생성 시 전체 용량을 확보했으므로 여기서는 추가 할당이 필요 없다.
         m_freeIndices.push_back(expectedId.index);
+
+        if (m_freeIndices.size() == m_capacity)
+        {
+            // 대기자가 반환 완료를 관찰하기 전에 통지를 끝내도록 풀 락 안에서 호출한다.
+            m_returnedCondition.notify_all();
+        }
     }
 }

@@ -60,8 +60,7 @@ namespace IOCPNetwork::Detail
 
         // 빈 Task 저장소가 들어 있는 준비 Job을 접수한다.
         // 성공할 때만 원본 Task를 인수하며, 포화 시 두 인자를 유지한다.
-        [[nodiscard]] JobEnqueueResult Enqueue(
-            Job&& preparedTaskJob, SessionTask& sourceTask) noexcept;
+        [[nodiscard]] JobEnqueueResult Enqueue(Job&& preparedTaskJob, SessionTask& sourceTask) noexcept;
 
         // FIFO 앞부분을 비어 있는 배치 슬롯으로 이동하고 인출 수를 반환한다.
         // 미완료 작업 예산과 실행 예약은 유지하며, 예약을 맡은 워커만 호출한다.

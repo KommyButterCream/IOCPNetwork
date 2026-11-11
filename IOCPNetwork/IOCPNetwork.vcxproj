@@ -145,6 +145,7 @@
     <ClCompile Include="Detail\ClientSessionPool.cpp" />
     <ClCompile Include="Detail\ConnectionGeneration.cpp" />
     <ClCompile Include="Detail\Job.cpp" />
+    <ClCompile Include="Detail\JobScheduler.cpp" />
     <ClCompile Include="Detail\PacketBlock.cpp" />
     <ClCompile Include="Detail\PacketPool.cpp" />
     <ClCompile Include="Detail\RecvPacketBuffer.cpp" />
@@ -163,6 +164,7 @@
     <ClInclude Include="Detail\ClientSessionPool.h" />
     <ClInclude Include="Detail\ConnectionGeneration.h" />
     <ClInclude Include="Detail\Job.h" />
+    <ClInclude Include="Detail\JobScheduler.h" />
     <ClInclude Include="Detail\OptionsValidation.h" />
     <ClInclude Include="Detail\PacketBlock.h" />
     <ClInclude Include="Detail\PacketHeader.h" />
