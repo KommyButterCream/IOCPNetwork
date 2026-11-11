@@ -12,6 +12,7 @@ namespace IOCPNetwork
     namespace Detail
     {
         class ClientSessionPool;
+        class SessionJobQueue;
     }
 
     // 연결 하나의 상태와 사용 수명을 관리한다.
@@ -38,6 +39,7 @@ namespace IOCPNetwork
     private:
         friend class Detail::ClientSessionPool;
         friend class Detail::SessionReference;
+        friend class Detail::SessionJobQueue;
 
         // 세션 저장소는 풀만 생성한다.
         ClientSession() noexcept;

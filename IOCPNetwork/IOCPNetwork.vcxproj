@@ -144,12 +144,14 @@
     <ClCompile Include="ClientSession.cpp" />
     <ClCompile Include="Detail\ClientSessionPool.cpp" />
     <ClCompile Include="Detail\ConnectionGeneration.cpp" />
+    <ClCompile Include="Detail\Job.cpp" />
     <ClCompile Include="Detail\PacketBlock.cpp" />
     <ClCompile Include="Detail\PacketPool.cpp" />
     <ClCompile Include="Detail\RecvPacketBuffer.cpp" />
     <ClCompile Include="Detail\SendPacketBatch.cpp" />
     <ClCompile Include="Detail\SendPacketQueue.cpp" />
     <ClCompile Include="Detail\SessionFinalization.cpp" />
+    <ClCompile Include="Detail\SessionJobQueue.cpp" />
     <ClCompile Include="Detail\SessionReference.cpp" />
     <ClCompile Include="IOCPNetwork.cpp" />
     <ClCompile Include="Packet.cpp" />
@@ -160,6 +162,7 @@
     <ClInclude Include="ConnectionId.h" />
     <ClInclude Include="Detail\ClientSessionPool.h" />
     <ClInclude Include="Detail\ConnectionGeneration.h" />
+    <ClInclude Include="Detail\Job.h" />
     <ClInclude Include="Detail\OptionsValidation.h" />
     <ClInclude Include="Detail\PacketBlock.h" />
     <ClInclude Include="Detail\PacketHeader.h" />
@@ -168,6 +171,7 @@
     <ClInclude Include="Detail\SendPacketBatch.h" />
     <ClInclude Include="Detail\SendPacketQueue.h" />
     <ClInclude Include="Detail\SessionFinalization.h" />
+    <ClInclude Include="Detail\SessionJobQueue.h" />
     <ClInclude Include="Detail\SessionReference.h" />
     <ClInclude Include="Export.h" />
     <ClInclude Include="IOCPNetwork.h" />
@@ -179,6 +183,7 @@
     <ClInclude Include="PacketTypes.h" />
     <ClInclude Include="PacketView.h" />
     <ClInclude Include="PacketWriter.h" />
+    <ClInclude Include="SessionTask.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

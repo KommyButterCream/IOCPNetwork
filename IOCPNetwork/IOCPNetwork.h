@@ -11,6 +11,7 @@
 #include "PacketTypes.h"
 #include "PacketView.h"
 #include "PacketWriter.h"
+#include "SessionTask.h"
 
 namespace IOCPNetwork
 {
