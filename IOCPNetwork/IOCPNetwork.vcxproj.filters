@@ -59,6 +59,9 @@
     <ClCompile Include="Detail\JobScheduler.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
+    <ClCompile Include="Detail\IOWorkerPool.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Export.h">
@@ -140,6 +143,12 @@
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="Detail\JobScheduler.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="Detail\IOOperation.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="Detail\IOWorkerPool.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
   </ItemGroup>

@@ -3,6 +3,8 @@
 #include "Detail/OptionsValidation.h"
 #include "Detail/PacketHeader.h"
 #include "Detail/PacketBlock.h"
+#include "Detail/IOOperation.h"
+#include "Detail/IOWorkerPool.h"
 
 namespace IOCPNetwork
 {
