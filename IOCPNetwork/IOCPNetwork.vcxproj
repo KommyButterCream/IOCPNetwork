@@ -79,6 +79,7 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
     </ClCompile>
     <Link>
+      <AdditionalDependencies>Ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
@@ -97,6 +98,7 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
     </ClCompile>
     <Link>
+      <AdditionalDependencies>Ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
@@ -114,6 +116,7 @@
       <AdditionalOptions>/utf-8 /Zc:__cplusplus %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
+      <AdditionalDependencies>Ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
@@ -133,6 +136,7 @@
       <AdditionalOptions>/utf-8 /Zc:__cplusplus %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
+      <AdditionalDependencies>Ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
@@ -149,6 +153,7 @@
     <ClCompile Include="Detail\JobScheduler.cpp" />
     <ClCompile Include="Detail\PacketBlock.cpp" />
     <ClCompile Include="Detail\PacketPool.cpp" />
+    <ClCompile Include="Detail\ReceiveProcessor.cpp" />
     <ClCompile Include="Detail\RecvPacketBuffer.cpp" />
     <ClCompile Include="Detail\SendPacketBatch.cpp" />
     <ClCompile Include="Detail\SendPacketQueue.cpp" />
@@ -172,6 +177,7 @@
     <ClInclude Include="Detail\PacketBlock.h" />
     <ClInclude Include="Detail\PacketHeader.h" />
     <ClInclude Include="Detail\PacketPool.h" />
+    <ClInclude Include="Detail\ReceiveProcessor.h" />
     <ClInclude Include="Detail\RecvPacketBuffer.h" />
     <ClInclude Include="Detail\SendPacketBatch.h" />
     <ClInclude Include="Detail\SendPacketQueue.h" />
@@ -189,6 +195,7 @@
     <ClInclude Include="PacketView.h" />
     <ClInclude Include="PacketWriter.h" />
     <ClInclude Include="SessionTask.h" />
+    <ClInclude Include="Detail\SocketHandle.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

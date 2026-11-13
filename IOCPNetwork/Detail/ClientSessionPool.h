@@ -15,6 +15,7 @@
 namespace IOCPNetwork
 {
     class ClientSession;
+    struct NetworkOptions;
 
     namespace Detail
     {
@@ -29,12 +30,11 @@ namespace IOCPNetwork
             // 예외를 던지거나 항목을 버리지 않으며, 이후 반드시 Finish까지 진행한다.
             using FinalizationHandler = void (*)(void* context, SessionFinalization finalization) noexcept;
 
-            // 세션 배열과 각 세션의 Job 큐를 확보하고 최종 마무리 경로를 설정한다.
+            // 세션 배열과 각 세션의 Job·송수신 저장소를 확보하고 최종 마무리 경로를 설정한다.
             // 설정이 잘못되었거나 메모리가 부족하면 nullptr를 반환한다.
             [[nodiscard]] static std::unique_ptr<ClientSessionPool> Create(
                 std::uint32_t capacity,
-                std::size_t maxPendingJobs,
-                std::size_t maxPendingPacketBytes,
+                const NetworkOptions& options,
                 FinalizationHandler finalizationHandler,
                 void* finalizationContext,
                 JobScheduler& scheduler) noexcept;

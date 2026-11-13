@@ -11,7 +11,7 @@ namespace IOCPNetwork
     // 원본 저장소의 수명을 연장하지 않는다.
     struct PacketView
     {
-        PacketId id = InvalidPacketId;
+        PacketId packetId = InvalidPacketId;
 
         std::span<const std::byte> payload;
     };

@@ -43,7 +43,7 @@ namespace IOCPNetwork::Detail
         }
 
         if (options.maxPendingJobs == 0 ||
-            options.maxPendingJobs == std::numeric_limits<std::size_t>::max() ||
+            options.maxPendingJobs == (std::numeric_limits<std::size_t>::max)() ||
             options.maxPendingPacketBytes < options.maxRecvPacketSize)
         {
             return OptionsError::InvalidJobLimit;
@@ -60,7 +60,7 @@ namespace IOCPNetwork::Detail
             options.maxSendBatchPackets == 0 ||
             options.maxSendBatchBytes < options.maxSendPacketSize ||
             options.maxSendBatchBytes >
-            std::numeric_limits<std::uint32_t>::max())
+            (std::numeric_limits<std::uint32_t>::max)())
         {
             return OptionsError::InvalidBatch;
         }

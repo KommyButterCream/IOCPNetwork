@@ -276,6 +276,16 @@ namespace IOCPNetwork::Detail
         return false;
     }
 
+    bool SessionJobQueue::IsIdle() const noexcept
+    {
+        std::lock_guard<std::mutex> lock{ m_mutex };
+
+        return m_queuedCount == 0 &&
+            m_pendingJobCount == 0 &&
+            m_pendingPacketBytes == 0 &&
+            !m_scheduled;
+    }
+
     JobEnqueueResult SessionJobQueue::EnqueueImpl(Job&& job, SessionTask* sourceTask) noexcept
     {
         ClientSession* const session = job.GetSession();

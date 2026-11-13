@@ -2,6 +2,7 @@
 
 #include "../ClientSession.h"
 #include "SessionJobQueue.h"
+#include "ReceiveProcessor.h"
 
 #include <chrono>       // for std::chrono::steady_clock, std::chrono::duration_cast, std::chrono::milliseconds
 #include <exception>    // for std::terminate
@@ -486,7 +487,20 @@ namespace IOCPNetwork::Detail
             }
         }
 
-        // 수신 재개와 정상 종료 진행 등 세션 후처리는 이후 이 위치에 연결한다.
+        ReceiveProcessor* receiveProcessor = nullptr;
+
+        {
+            std::lock_guard<std::mutex> lock{ session->m_mutex };
+
+            receiveProcessor = session->m_receiveProcessor;
+        }
+
+        // 현재 워커의 reference가 재개 처리 중에도 세션을 보호한다.
+        if (receiveProcessor != nullptr)
+        {
+            receiveProcessor->ResumeReceive(*session);
+        }
+
         // FinishBatch 이후에는 현재 워커가 세션의 직렬 후처리를 계속하지 않는다.
         if (queue.FinishBatch())
         {

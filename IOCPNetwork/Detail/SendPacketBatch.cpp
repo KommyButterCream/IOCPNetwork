@@ -137,14 +137,16 @@ namespace IOCPNetwork::Detail
         return { m_buffers.get() + m_firstPending, m_packetCount - m_firstPending };
     }
 
-    bool SendPacketBatch::CommitSentBytes(std::size_t bytesSent) noexcept
+    SendBatchCommitResult SendPacketBatch::CommitSentBytes(std::size_t bytesSent) noexcept
     {
         if (bytesSent == 0 || bytesSent > m_remainingBytes)
         {
-            return false;
+            return {};
         }
 
         std::size_t bytesToConsume = bytesSent;
+
+        std::size_t completedPackets = 0;
 
         while (bytesToConsume != 0)
         {
@@ -170,6 +172,8 @@ namespace IOCPNetwork::Detail
                 m_packets[m_firstPending].Reset();
 
                 ++m_firstPending;
+
+                ++completedPackets;
             }
         }
 
@@ -181,7 +185,7 @@ namespace IOCPNetwork::Detail
             Clear();
         }
 
-        return true;
+        return { true, completedPackets };
     }
 
     void SendPacketBatch::Clear() noexcept

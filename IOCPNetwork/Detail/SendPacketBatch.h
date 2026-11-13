@@ -21,6 +21,14 @@ namespace IOCPNetwork::Detail
         PacketTooLarge  // 첫 패킷 하나가 배치 전체 바이트 상한을 초과함
     };
 
+    // 송신 완료 반영 결과와 이번에 전체 전송이 끝난 패킷 수다.
+    struct SendBatchCommitResult
+    {
+        bool succeeded = false;
+
+        std::size_t completedPackets = 0;
+    };
+
     // 송신할 Packet의 소유권과 남은 전송 구간을 보관한다.
     // 세션이 동시 접근을 보호하고, I/O 완료 전에는 배치를 변경하거나 파괴하지 않는다.
 
@@ -50,8 +58,8 @@ namespace IOCPNetwork::Detail
         [[nodiscard]] std::span<WSABUF> GetBuffers() noexcept;
 
         // 성공한 송신 완료의 바이트 수를 반영하고 완료된 Packet을 반환한다.
-        // 0이거나 남은 바이트 수보다 크면 상태를 유지하고 실패한다.
-        [[nodiscard]] bool CommitSentBytes(std::size_t bytesSent) noexcept;
+        // 실패하면 상태를 유지하고 완료 패킷 수 0을 반환한다.
+        [[nodiscard]] SendBatchCommitResult CommitSentBytes(std::size_t bytesSent) noexcept;
 
         // 남은 Packet을 반환하고 배치를 비운다. 슬롯 배열은 유지한다.
         // 진행 중인 송신 I/O가 없거나 완료가 확인된 뒤에만 호출한다.

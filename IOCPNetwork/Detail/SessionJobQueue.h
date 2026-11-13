@@ -78,6 +78,10 @@ namespace IOCPNetwork::Detail
         // true이면 기존 워커 참조로 재예약하고, false이면 예약을 해제한다.
         [[nodiscard]] bool FinishBatch() noexcept;
 
+        // 대기 작업·미완료 예산·실행 예약이 모두 없는지 확인한다.
+        // 결과는 조회 시점의 상태이며 새 접수를 차단하지 않는다.
+        [[nodiscard]] bool IsIdle() const noexcept;
+
     private:
         SessionJobQueue(
             std::unique_ptr<Job[]> jobs,
@@ -100,7 +104,7 @@ namespace IOCPNetwork::Detail
         const std::size_t m_maxPendingPacketBytes;
 
         // 배열 위치, 미완료 예산, 실행 예약 상태를 보호한다.
-        std::mutex m_mutex;
+        mutable std::mutex m_mutex;
 
         // 다음 인출 위치와 다음 등록 위치다.
         std::size_t m_head = 0;

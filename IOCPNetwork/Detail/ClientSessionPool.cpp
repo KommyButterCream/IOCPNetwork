@@ -2,6 +2,8 @@
 
 #include "../ClientSession.h"
 #include "ConnectionGeneration.h"
+#include "../NetworkOptions.h"
+#include "OptionsValidation.h"
 
 #include <cstddef> // for std::size_t
 #include <exception> // for std::terminate
@@ -14,16 +16,18 @@ namespace IOCPNetwork::Detail
 {
     std::unique_ptr<ClientSessionPool> ClientSessionPool::Create(
         std::uint32_t capacity,
-        std::size_t maxPendingJobs,
-        std::size_t maxPendingPacketBytes,
+        const NetworkOptions& options,
         FinalizationHandler finalizationHandler,
         void* finalizationContext,
         JobScheduler& scheduler) noexcept
     {
-        if (capacity == 0 ||
-            maxPendingJobs == 0 ||
-            maxPendingPacketBytes == 0 ||
-            finalizationHandler == nullptr)
+        if (capacity == 0 || finalizationHandler == nullptr)
+        {
+            return {};
+        }
+
+        // 세션 배열을 확보하기 전에 공통 설정을 검사한다.
+        if (ValidateOptions(options) != OptionsError::None)
         {
             return {};
         }
@@ -48,11 +52,20 @@ namespace IOCPNetwork::Detail
             // private 생성자에 접근할 수 있는 풀의 멤버 함수에서 직접 생성한다.
             auto sessions = std::unique_ptr<ClientSession[]>{ new ClientSession[capacity] };
 
-            // 풀이 공개되기 전에 모든 세션의 Job 저장소를 확보한다.
+            // 풀이 공개되기 전에 모든 세션의 Job·송수신 저장소를 확보한다.
             for (std::uint32_t index = 0; index < capacity; ++index)
             {
-                if (!sessions[index].InitializeJobQueue(
-                    maxPendingJobs, maxPendingPacketBytes, scheduler))
+                ClientSession& session = sessions[index];
+
+                if (!session.InitializeJobQueue(
+                    options.maxPendingJobs,
+                    options.maxPendingPacketBytes,
+                    scheduler))
+                {
+                    return {};
+                }
+
+                if (!session.InitializeIOStorage(options))
                 {
                     return {};
                 }
@@ -243,10 +256,8 @@ namespace IOCPNetwork::Detail
             std::terminate();
         }
 
-        // 이전 연결의 ID를 무효화하고 새 연결을 대여할 수 있게 한다.
-        session.m_connectionId = {};
-
-        session.m_connectedNotificationQueued = false;
+        // 종료 통지가 끝난 세션의 연결별 상태를 초기화한다.
+        session.ResetForReuseLocked();
 
         session.m_state = ClientSession::State::Free;
 

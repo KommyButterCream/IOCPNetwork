@@ -151,31 +151,31 @@ namespace IOCPNetwork::Detail
 
         switch (frameStatus)
         {
-        case PacketFrameStatus::Complete:
-        {
-            break;
-        }
+            case PacketFrameStatus::Complete:
+            {
+                break;
+            }
 
-        case PacketFrameStatus::NeedMoreData:
-        {
-            return { PacketExtractStatus::NeedMoreData, {} };
-        }
+            case PacketFrameStatus::NeedMoreData:
+            {
+                return { PacketExtractStatus::NeedMoreData, {} };
+            }
 
-        case PacketFrameStatus::InvalidPacketId:
-        {
-            return { PacketExtractStatus::InvalidPacketId, {} };
-        }
+            case PacketFrameStatus::InvalidPacketId:
+            {
+                return { PacketExtractStatus::InvalidPacketId, {} };
+            }
 
-        case PacketFrameStatus::InvalidPacketSize:
-        {
-            return { PacketExtractStatus::InvalidPacketSize, {} };
-        }
+            case PacketFrameStatus::InvalidPacketSize:
+            {
+                return { PacketExtractStatus::InvalidPacketSize, {} };
+            }
 
-        case PacketFrameStatus::InvalidReceiveLimit:
-        default:
-        {
-            return { PacketExtractStatus::InternalError, {} };
-        }
+            case PacketFrameStatus::InvalidReceiveLimit:
+            default:
+            {
+                return { PacketExtractStatus::InternalError, {} };
+            }
         }
 
         // 헤더 검증을 통과했으므로 전체 길이에서 헤더 크기를 안전하게 뺄 수 있다.
@@ -213,9 +213,7 @@ namespace IOCPNetwork::Detail
         return { PacketExtractStatus::Complete, std::move(packetResult.packet) };
     }
 
-    void RecvPacketBuffer::CopyReadableBytes(
-        std::span<std::byte> destination,
-        std::size_t offset) const noexcept
+    void RecvPacketBuffer::CopyReadableBytes(std::span<std::byte> destination, std::size_t offset) const noexcept
     {
         assert(offset <= m_bufferedSize);
 
