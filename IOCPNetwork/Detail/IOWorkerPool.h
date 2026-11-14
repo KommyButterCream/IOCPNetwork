@@ -3,11 +3,13 @@
 #include "IOOperation.h"
 
 #include <cstddef> // for std::size_t
-#include <memory>  // for std::unique_ptr
+#include <memory>  // for std::shared_ptr, std::unique_ptr
 #include <thread>  // for std::thread
 
 namespace IOCPNetwork::Detail
 {
+    class PacketPool;
+
     // 완료된 I/O 하나의 정보다. 완료 처리 함수 안에서만 사용한다.
     // operation은 실제 발행한 작업을 참조하며 소유권을 갖지 않는다.
     struct IOCompletion final
@@ -37,7 +39,8 @@ namespace IOCPNetwork::Detail
         [[nodiscard]] static std::unique_ptr<IOWorkerPool> Create(
             std::size_t workerCount,
             CompletionHandler completionHandler,
-            void* completionContext) noexcept;
+            void* completionContext,
+            std::shared_ptr<PacketPool> packetPool) noexcept;
 
         // 모든 I/O 완료 처리를 끝낸 뒤 파괴한다.
         // 남은 워커를 정지하고 IOCP 핸들을 닫는다.
@@ -64,6 +67,7 @@ namespace IOCPNetwork::Detail
     private:
 #if defined(IOCPNETWORK_TESTING)
         friend struct IOWorkerTestAccess;
+        friend struct BaseImplTestAccess;
 #endif
 
         IOWorkerPool(
@@ -71,7 +75,8 @@ namespace IOCPNetwork::Detail
             std::unique_ptr<std::thread[]> workers,
             std::size_t workerCount,
             CompletionHandler completionHandler,
-            void* completionContext) noexcept;
+            void* completionContext,
+            std::shared_ptr<PacketPool> packetPool) noexcept;
 
         // 같은 IOCP에서 완료를 인출하여 엔진에 전달한다.
         // 종료용 완료 통지를 받으면 반환한다.
@@ -90,6 +95,9 @@ namespace IOCPNetwork::Detail
 
         // 대상 객체는 모든 워커가 종료할 때까지 살아 있어야 한다.
         void* const m_completionContext;
+
+        // 모든 I/O 워커가 캐시로 사용할 원래 풀을 유지한다.
+        const std::shared_ptr<PacketPool> m_packetPool;
 
         // 시작·정지를 담당하는 외부 제어 경로에서만 접근한다.
         // Start·Stop·파괴는 외부에서 직렬화하며 워커는 이 값을 읽지 않는다.

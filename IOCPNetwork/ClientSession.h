@@ -29,6 +29,7 @@ namespace IOCPNetwork
         class SendPacketBatch;
         class SendPacketQueue;
         class SessionJobQueue;
+        class IOCPBaseImpl;
 
         struct IOCompletion;
 
@@ -39,6 +40,7 @@ namespace IOCPNetwork
 #if defined(IOCPNETWORK_TESTING)
         struct SchedulerTestAccess;
         struct ReceiveTestAccess;
+        struct BaseImplTestAccess;
 #endif
     }
 
@@ -72,11 +74,13 @@ namespace IOCPNetwork
         friend void Detail::DispatchSessionCompletion(
             void* context,
             const Detail::IOCompletion& completion) noexcept;
+        friend class Detail::IOCPBaseImpl;
 
 #if defined(IOCPNETWORK_TESTING)
         // 공개 서비스 API가 연결되기 전 내부 접수 경로를 검증한다.
         friend struct Detail::SchedulerTestAccess;
         friend struct Detail::ReceiveTestAccess;
+        friend struct Detail::BaseImplTestAccess;
 #endif
 
         // 세션 저장소는 풀만 생성한다.

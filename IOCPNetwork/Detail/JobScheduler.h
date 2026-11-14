@@ -8,13 +8,15 @@
 #include <condition_variable> // for std::condition_variable
 #include <cstddef>            // for std::size_t
 #include <functional>         // for std::function
-#include <memory>             // for std::unique_ptr
+#include <memory>             // for std::shared_ptr, std::unique_ptr
 #include <mutex>              // for std::mutex
 #include <thread>             // for std::thread
 #include <variant>            // for std::variant
 
 namespace IOCPNetwork::Detail
 {
+    class PacketPool;
+
     // 일반 Job 실행 참조 또는 세션 최종 마무리 책임을 보관한다.
     // 준비 큐와 워커 사이에서 복사 없이 소유권을 이동한다.
     using ReadyItem = std::variant<SessionReference, SessionFinalization>;
@@ -45,7 +47,8 @@ namespace IOCPNetwork::Detail
             std::size_t workerCount,
             std::size_t maxJobsPerBatch,
             std::chrono::milliseconds jobBatchTime,
-            JobCallbacks callbacks) noexcept;
+            JobCallbacks callbacks,
+            std::shared_ptr<PacketPool> packetPool) noexcept;
 
         // 생산자와 세션 정리를 끝낸 상태에서 남은 워커를 정지하고 합류한다.
         ~JobScheduler();
@@ -99,7 +102,8 @@ namespace IOCPNetwork::Detail
             std::size_t workerCount,
             std::size_t maxJobsPerBatch,
             std::chrono::milliseconds jobBatchTime,
-            JobCallbacks callbacks) noexcept;
+            JobCallbacks callbacks,
+            std::shared_ptr<PacketPool> packetPool) noexcept;
 
         // 자신의 배치 저장소로 준비 항목을 반복 처리한다.
         // 정지 신호와 빈 큐를 확인하면 반환한다.
@@ -137,6 +141,9 @@ namespace IOCPNetwork::Detail
         // 연결·종료 통지와 패킷 처리 경로를 소유한다.
         // 여러 세션의 워커가 동시에 호출할 수 있다.
         const JobCallbacks m_callbacks;
+
+        // 모든 Job 워커가 캐시로 사용할 원래 풀을 유지한다.
+        const std::shared_ptr<PacketPool> m_packetPool;
 
         // 준비 큐와 실행 상태를 같은 락으로 보호한다.
         std::mutex m_mutex;

@@ -12,6 +12,7 @@
 #include "PacketView.h"
 #include "PacketWriter.h"
 #include "SessionTask.h"
+#include "IOCPBase.h"
 
 namespace IOCPNetwork
 {

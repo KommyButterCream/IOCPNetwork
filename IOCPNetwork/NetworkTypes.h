@@ -4,6 +4,43 @@
 
 namespace IOCPNetwork
 {
+    // 엔진 시작 요청이 실패한 원인을 구분한다.
+    enum class StartError
+    {
+        None,
+        InvalidOptions,                 // 설정값이 유효하지 않음
+        AlreadyRunning,                 // 이미 실행 중
+        Busy,                           // 시작 또는 종료가 진행 중
+        NoMemory,                       // 메모리 확보 실패
+        WinsockInitializationFailed,    // Winsock 초기화 실패
+        ResourceInitializationFailed,   // IOCP 등 공통 자원 생성 실패
+        WorkerStartFailed,              // 워커 시작 실패
+        TransportStartFailed            // 서버 리슨·수락 준비 또는 클라이언트 접속 발행 실패
+    };
+
+    // 시작 결과와 관련 운영체제 오류를 전달한다.
+    // 성공은 엔진 시작을 의미하며, 클라이언트의 연결·핸드셰이크 완료와는 별개다.
+    struct [[nodiscard]] StartResult
+    {
+        StartError error = StartError::None;
+
+        // 관련 운영체제 오류를 확보한 경우에만 설정한다.
+        std::uint32_t nativeError = 0;
+
+        [[nodiscard]] explicit operator bool() const noexcept
+        {
+            return error == StartError::None;
+        }
+    };
+
+    // 동기식 종료 결과다. 거절된 호출은 종료를 예약하지 않는다.
+    enum class StopResult
+    {
+        Stopped,           // 이번 호출이 종료 책임을 인수하여 종료를 완료했다.
+        AlreadyStopped,    // 정지된 상태를 확인했다.
+        InvalidCallContext // 엔진 내부 실행 중이어서 동기식 종료를 거절했다.
+    };
+
     // 송신 접수 결과다. Queued는 상대의 수신이나 처리 완료를 의미하지 않는다.
     enum class SendResult
     {

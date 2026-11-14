@@ -3,6 +3,8 @@
 #include "../ClientSession.h"
 #include "SessionJobQueue.h"
 #include "ReceiveProcessor.h"
+#include "PacketPool.h"
+#include "EngineExecutionScope.h"
 
 #include <chrono>       // for std::chrono::steady_clock, std::chrono::duration_cast, std::chrono::milliseconds
 #include <exception>    // for std::terminate
@@ -67,13 +69,15 @@ namespace IOCPNetwork::Detail
         std::size_t workerCount,
         std::size_t maxJobsPerBatch,
         std::chrono::milliseconds jobBatchTime,
-        JobCallbacks callbacks) noexcept
+        JobCallbacks callbacks,
+        std::shared_ptr<PacketPool> packetPool) noexcept
     {
         if (maxSessions == 0 ||
             workerCount == 0 ||
             maxJobsPerBatch == 0 ||
             jobBatchTime.count() <= 0 ||
-            !callbacks.received)
+            !callbacks.received ||
+            !packetPool)
         {
             return {};
         }
@@ -115,7 +119,8 @@ namespace IOCPNetwork::Detail
                     workerCount,
                     maxJobsPerBatch,
                     jobBatchTime,
-                    std::move(callbacks))
+                    std::move(callbacks),
+                    std::move(packetPool))
             };
         }
         catch (const std::bad_alloc&)
@@ -131,7 +136,8 @@ namespace IOCPNetwork::Detail
         std::size_t workerCount,
         std::size_t maxJobsPerBatch,
         std::chrono::milliseconds jobBatchTime,
-        JobCallbacks callbacks) noexcept
+        JobCallbacks callbacks,
+        std::shared_ptr<PacketPool> packetPool) noexcept
         : m_readyItems(std::move(readyItems))
         , m_workers(std::move(workers))
         , m_readyCapacity(readyCapacity)
@@ -139,6 +145,7 @@ namespace IOCPNetwork::Detail
         , m_maxJobsPerBatch(maxJobsPerBatch)
         , m_jobBatchTime(jobBatchTime)
         , m_callbacks(std::move(callbacks))
+        , m_packetPool(std::move(packetPool))
     {
     }
 
@@ -353,6 +360,12 @@ namespace IOCPNetwork::Detail
         {
             std::terminate();
         }
+
+        // 패킷·Task·연결·종료 콜백 실행 전체를 내부 실행으로 표시한다.
+        EngineExecutionScope executionScope;
+
+        // 서비스 처리 중 패킷 생성·반환에도 같은 엔진의 TLS 캐시를 사용한다.
+        PacketPoolCache packetCache{ m_packetPool };
 
         WorkerStorage& worker = m_workers[workerIndex];
 

@@ -1,5 +1,8 @@
 #include "IOWorkerPool.h"
 
+#include "PacketPool.h"
+#include "EngineExecutionScope.h"
+
 #include <Windows.h> // for CreateIoCompletionPort, CloseHandle,
                      // GetQueuedCompletionStatus, GetLastError
                      // PostQueuedCompletionStatus
@@ -24,10 +27,13 @@ namespace IOCPNetwork::Detail
     std::unique_ptr<IOWorkerPool> IOWorkerPool::Create(
         std::size_t workerCount,
         CompletionHandler completionHandler,
-        void* completionContext) noexcept
+        void* completionContext,
+        std::shared_ptr<PacketPool> packetPool) noexcept
     {
-        // 워커와 완료 처리 함수는 반드시 있어야 한다.
-        if (workerCount == 0 || completionHandler == nullptr)
+        // 워커·완료 처리 함수·캐시가 사용할 풀은 반드시 있어야 한다.
+        if (workerCount == 0 ||
+            completionHandler == nullptr ||
+            !packetPool)
         {
             return {};
         }
@@ -68,7 +74,8 @@ namespace IOCPNetwork::Detail
                     std::move(workers),
                     workerCount,
                     completionHandler,
-                    completionContext)
+                    completionContext,
+                    std::move(packetPool))
             };
         }
         catch (const std::bad_alloc&)
@@ -239,17 +246,26 @@ namespace IOCPNetwork::Detail
         std::unique_ptr<std::thread[]> workers,
         std::size_t workerCount,
         CompletionHandler completionHandler,
-        void* completionContext) noexcept
+        void* completionContext,
+        std::shared_ptr<PacketPool> packetPool) noexcept
         : m_completionPort(completionPort)
         , m_workers(std::move(workers))
         , m_workerCount(workerCount)
         , m_completionHandler(completionHandler)
         , m_completionContext(completionContext)
+        , m_packetPool(std::move(packetPool))
     {
     }
 
     void IOWorkerPool::WorkerLoop() noexcept
     {
+        // 완료 처리와 콜백 실행 중 동기식 종료 호출을 판별한다.
+        EngineExecutionScope executionScope;
+
+        // 이 워커에서 생성·반환하는 패킷에 사용할 TLS 캐시다.
+        // 종료 통지를 받고 반환하면 같은 스레드에서 자동 정리된다.
+        PacketPoolCache packetCache{ m_packetPool };
+
         for (;;)
         {
             DWORD transferredBytes = 0;
