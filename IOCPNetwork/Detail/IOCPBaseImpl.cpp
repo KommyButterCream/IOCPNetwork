@@ -162,6 +162,33 @@ namespace IOCPNetwork::Detail
         return StopResult::Stopped;
     }
 
+    void IOCPBaseImpl::CloseSessionsAndWait() noexcept
+    {
+        ClientSessionPool* pool = nullptr;
+
+        {
+            std::lock_guard<std::mutex> lock{ m_stateMutex };
+
+            // 정상 종료 또는 역할별 시작 실패 복구의 책임자만 호출한다.
+            if (m_state != State::Stopping)
+            {
+                std::terminate();
+            }
+
+            pool = m_sessionPool.get();
+        }
+
+        if (pool == nullptr)
+        {
+            return;
+        }
+
+        // 종료 책임자가 공통 자원 해제 전까지 풀의 수명을 유지한다.
+        // 상태 락을 보유하지 않고 종료 요청과 반환 대기를 수행한다.
+        pool->RequestCloseAll();
+        pool->WaitUntilAllReturned();
+    }
+
     bool IOCPBaseImpl::AssociateTransportSocket(SOCKET socket, ULONG_PTR completionKey) noexcept
     {
         std::lock_guard<std::mutex> lock{ m_stateMutex };
@@ -235,6 +262,23 @@ namespace IOCPNetwork::Detail
         }
 
         return session;
+    }
+
+    bool IOCPBaseImpl::StartSessionReceive(ClientSession& session) noexcept
+    {
+        // 첫 수신 전용
+        const auto result = session.PostReceive();
+
+        if (result == ClientSession::ReceivePostResult::Posted)
+        {
+            return true;
+        }
+
+        // 새 연결의 첫 수신은 실제 발행되어야 한다.
+        // 즉시 실패 경로가 먼저 종료했더라도 중복 종료 요청은 안전하다.
+        session.BeginClose();
+
+        return false;
     }
 
     SessionReference IOCPBaseImpl::TryAcquireSession(ConnectionId id) noexcept

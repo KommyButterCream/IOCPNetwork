@@ -55,9 +55,17 @@ namespace IOCPNetwork
             // 일치하는 연결이 없거나 참조 획득이 허용되지 않으면 빈 핸들을 반환한다.
             [[nodiscard]] SessionReference TryAcquireSession(ConnectionId id) noexcept;
 
+            // 새 대여를 차단한 호출자가 모든 연결에 종료를 요청한다.
+            // 세션별 차용 참조를 확보하고 풀·세션 락 밖에서 종료한다.
+            void RequestCloseAll() noexcept;
+
             // 모든 세션의 최종 마무리와 풀 반환을 기다린다. 새 대여 차단은 호출자가 담당한다.
             // 시간 초과는 false이며, 세션을 강제로 반환하거나 스케줄러를 정지하지 않는다.
             [[nodiscard]] bool WaitUntilAllReturned(std::chrono::milliseconds timeout) noexcept;
+
+            // 모든 세션의 최종 바놯ㄴ까지 기다린다.
+            // 호출자는 새대여를 차단하고 I/O·Job 워커를 유지해야 한다.
+            void WaitUntilAllReturned() noexcept;
 
         private:
             friend class SessionFinalization;

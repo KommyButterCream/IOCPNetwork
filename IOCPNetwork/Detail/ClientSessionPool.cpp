@@ -205,6 +205,47 @@ namespace IOCPNetwork::Detail
         }
     }
 
+    void ClientSessionPool::RequestCloseAll() noexcept
+    {
+        for (std::uint32_t index = 0; index < m_capacity; ++index)
+        {
+            SessionReference reference;
+
+            {
+                std::lock_guard<std::mutex> poolLock{ m_mutex };
+
+                auto& session = m_sessions[index];
+
+                std::lock_guard<std::mutex> sessionLock{ session.m_mutex };
+
+                switch (session.m_state)
+                {
+                case ClientSession::State::Preparing:
+                case ClientSession::State::Ready:
+                case ClientSession::State::Draining:
+                {
+                    // 연결 유지용 참조가 남아 있는 상태에서 사용 참조를 확보한다.
+                    reference = session.AcquireReference();
+
+                    break;
+                }
+
+                default:
+                {
+                    // Free는 종료 대상이 아니며 Closing·Finalizing은 이미 종료 중이다.
+                    break;
+                }
+                }
+            }
+
+            if (reference)
+            {
+                // 내부에서 세션 락을 사용하므로 위의 락을 해제한 뒤 호출한다.
+                reference.Get()->BeginClose();
+            }
+        }
+    }
+
     bool ClientSessionPool::WaitUntilAllReturned(std::chrono::milliseconds timeout) noexcept
     {
         if (timeout.count() < 0)
@@ -218,6 +259,18 @@ namespace IOCPNetwork::Detail
         {
             return m_freeIndices.size() == m_capacity;
         });
+    }
+
+    void ClientSessionPool::WaitUntilAllReturned() noexcept
+    {
+        std::unique_lock<std::mutex> lock{ m_mutex };
+
+        m_returnedCondition.wait(
+            lock,
+            [this]
+            {
+                return m_freeIndices.size() == m_capacity;
+            });
     }
 
     void ClientSessionPool::DispatchFinalization(SessionFinalization finalization) noexcept
