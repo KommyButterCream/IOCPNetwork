@@ -8,6 +8,8 @@
 #include "SocketHandle.h"
 #include "../ConnectionId.h"
 
+#include <MSWSock.h> // for LPFN_CONNECTEX
+#include <cstdint>  // for std::uint32_t
 #include <WinSock2.h> // for SOCKET, ULONG_PTR
 #include <cstddef> // for std::size_t
 #include <memory> // for std::shared_ptr, std::unique_ptr
@@ -23,6 +25,7 @@ namespace IOCPNetwork::Detail
 
     struct IOCompletion;
     struct JobCallbacks;
+    struct IOOperation;
 
     // 서버·클라이언트 Impl이 공유하는 자원과 실행 흐름의 기반이다.
     // DLL 내부 구현이며 공개 헤더에는 정의를 노출하지 않는다.
@@ -61,7 +64,7 @@ namespace IOCPNetwork::Detail
         [[nodiscard]] StopResult StopCommon() noexcept;
 
         // Stopping 상태에서 모든 연결을 종료하고 최종 반환까지 기다린다.
-        // 역할별 연결 생산 경롤,ㄹ 먼ㄴ저 중단하고 완료 후처리까지 회수해야 한다.
+        // 역할별 연결 생산 경로를 먼저 중단하고 완료 후처리까지 회수해야 한다.
         void CloseSessionsAndWait() noexcept;
 
         // 역할별 소켓을 공통 IOCP에 등록하며 소켓 소유권은 가져오지 않는다.
@@ -71,6 +74,16 @@ namespace IOCPNetwork::Detail
         // 세션을 대여하고 소켓·수신 처리 경로를 연결한다.
         // 성공할 때만 소켓을 인수하며, 실패하면 빈 참조를 반환한다.
         [[nodiscard]] SessionReference PrepareSession(SocketHandle&& socket) noexcept;
+
+        // 세션 락으로 소켓 닫기를 막은 상태에서 ConnectEx를 발행한다.
+        //  0 은 접수 성공이며, 그 괴의 값은 완료 통지가 없는 즉시 실패다.
+        [[nodiscard]] std::uint32_t PostSessionConnect(
+            ClientSession& session, LPFN_CONNECTEX connectEx,
+            const sockaddr_in& remoteAddress, IOOperation& operation) noexcept;
+
+        // Connect 성공 후 소켓의 연결 문맥을 갱신한다.
+        // 종료와 경합하거나 옵션 적용에 실패하면 false를 반환한다.
+        [[nodiscard]] bool UpdateSessionConnectContext(ClientSession& session) noexcept;
 
         // 소켓 연결을 마친 세션에 첫 수신을 발행한다.
         // 호출자는 사용 참조를 보유하며, 발행하지 못하면 연결을 종료한다.
@@ -97,6 +110,9 @@ namespace IOCPNetwork::Detail
         [[nodiscard]] virtual bool HandleSystemPacket(ClientSession& session, Packet packet) = 0;
 
     private:
+#if defined(IOCPNETWORK_TESTING)
+        friend struct ClientLifecycleTestAccess;
+#endif
 #if defined(IOCPNETWORK_TESTING)
         friend struct BaseImplTestAccess;
 #endif

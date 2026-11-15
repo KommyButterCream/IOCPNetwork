@@ -264,6 +264,68 @@ namespace IOCPNetwork::Detail
         return session;
     }
 
+    std::uint32_t IOCPBaseImpl::PostSessionConnect(
+        ClientSession& session,
+        LPFN_CONNECTEX connectEx,
+        const sockaddr_in& remoteAddress,
+        IOOperation& operation) noexcept
+    {
+        if (connectEx == nullptr ||
+            operation.type != IOOperationType::Connect)
+        {
+            std::terminate();
+        }
+
+        std::lock_guard<std::mutex> lock{ session.m_mutex };
+
+        if (session.m_state != ClientSession::State::Preparing ||
+            !session.m_socket)
+        {
+            return static_cast<std::uint32_t>(WSA_OPERATION_ABORTED);
+        }
+
+        DWORD bytesSent = 0;
+
+        const BOOL connected = connectEx(
+            session.m_socket.Get(),
+            reinterpret_cast<const sockaddr*>(&remoteAddress),
+            static_cast<int>(sizeof(remoteAddress)),
+            nullptr,
+            0,
+            &bytesSent,
+            &operation.overlapped);
+
+        if (connected == FALSE)
+        {
+            const int error = ::WSAGetLastError();
+
+            if (error != WSA_IO_PENDING)
+            {
+                return static_cast<std::uint32_t>(error);
+            }
+        }
+
+        return 0;
+    }
+
+    bool IOCPBaseImpl::UpdateSessionConnectContext(ClientSession& session) noexcept
+    {
+        std::lock_guard<std::mutex> lock{ session.m_mutex };
+
+        if (session.m_state != ClientSession::State::Preparing ||
+            !session.m_socket)
+        {
+            return false;
+        }
+
+        return ::setsockopt(
+            session.m_socket.Get(),
+            SOL_SOCKET,
+            SO_UPDATE_CONNECT_CONTEXT,
+            nullptr,
+            0) != SOCKET_ERROR;
+    }
+
     bool IOCPBaseImpl::StartSessionReceive(ClientSession& session) noexcept
     {
         // 첫 수신 전용

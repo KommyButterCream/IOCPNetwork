@@ -33,3 +33,6 @@ ARM64/
 /IOCPNetwork.PacketTest/
 /IOCPNetwork.SmokeTest/
 /IOCPNetwork.Local.slnx
+
+# Local documentation
+/docs/

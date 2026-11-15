@@ -30,6 +30,9 @@ namespace IOCPNetwork::Detail
         AcceptSession& operator=(AcceptSession&&) = delete;
 
     private:
+#if defined(IOCPNETWORK_TESTING)
+        friend struct AcceptTestAccess;
+#endif
         friend class IOCPServerImpl;
 
         // 서버의 m_acceptMutex로 보호한다.

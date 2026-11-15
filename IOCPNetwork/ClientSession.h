@@ -97,7 +97,7 @@ namespace IOCPNetwork
         // 실패하면 멤버를 변경하지 않아 같은 세션에서 다시 시도할 수 있다.
         [[nodiscard]] bool InitializeIOStorage(const NetworkOptions& options) noexcept;
 
-        // 연결된 소켓을 IOCP에 등록하고 닫기 책임을 인수한다.
+        // 통신에 사용할 소켓을 IOCP에 등록하고 닫기 책임을 인수한다.
         // 실패하면 인자의 소유권을 유지하며, 호출자는 별도 세션 참조를 보유한다.
         [[nodiscard]] bool AttachSocket(
             Detail::SocketHandle&& socket,

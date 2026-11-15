@@ -149,6 +149,7 @@
     <ClCompile Include="Detail\ClientSessionPool.cpp" />
     <ClCompile Include="Detail\ConnectionGeneration.cpp" />
     <ClCompile Include="Detail\IOCPBaseImpl.cpp" />
+    <ClCompile Include="Detail\IOCPClientImpl.cpp" />
     <ClCompile Include="Detail\IOCPServerImpl.cpp" />
     <ClCompile Include="Detail\IOWorkerPool.cpp" />
     <ClCompile Include="Detail\Job.cpp" />
@@ -164,6 +165,7 @@
     <ClCompile Include="Detail\SessionReference.cpp" />
     <ClCompile Include="Detail\WinsockRuntime.cpp" />
     <ClCompile Include="IOCPBase.cpp" />
+    <ClCompile Include="IOCPClient.cpp" />
     <ClCompile Include="IOCPNetwork.cpp" />
     <ClCompile Include="IOCPServer.cpp" />
     <ClCompile Include="Packet.cpp" />
@@ -177,6 +179,7 @@
     <ClInclude Include="Detail\ConnectionGeneration.h" />
     <ClInclude Include="Detail\EngineExecutionScope.h" />
     <ClInclude Include="Detail\IOCPBaseImpl.h" />
+    <ClInclude Include="Detail\IOCPClientImpl.h" />
     <ClInclude Include="Detail\IOCPServerImpl.h" />
     <ClInclude Include="Detail\IOOperation.h" />
     <ClInclude Include="Detail\IOWorkerPool.h" />
@@ -196,6 +199,7 @@
     <ClInclude Include="Detail\WinsockRuntime.h" />
     <ClInclude Include="Export.h" />
     <ClInclude Include="IOCPBase.h" />
+    <ClInclude Include="IOCPClient.h" />
     <ClInclude Include="IOCPNetwork.h" />
     <ClInclude Include="IOCPServer.h" />
     <ClInclude Include="NetworkOptions.h" />

@@ -32,6 +32,9 @@ namespace IOCPNetwork::Detail
         [[nodiscard]] StopResult Stop() noexcept;
 
     private:
+#if defined(IOCPNETWORK_TESTING)
+        friend struct AcceptTestAccess;
+#endif
         // 공통 자원이 준비된 뒤 서버의 리슨·Accept·재시도를 시작한다.
         // 실패하면 호출자가 공통 시작 실패 복구를 수행한다.
         [[nodiscard]] StartResult StartAccepting(const ServerOptions& options) noexcept;

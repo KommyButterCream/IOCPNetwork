@@ -20,6 +20,13 @@
 
 namespace IOCPNetwork::Detail
 {
+#if defined(IOCPNETWORK_TESTING)
+    namespace AcceptTestHooks
+    {
+        bool FailAccept() noexcept;
+        bool FailRetryWorker() noexcept;
+    }
+#endif
     IOCPServerImpl::~IOCPServerImpl()
     {
         const auto result = Stop();
@@ -207,6 +214,8 @@ namespace IOCPNetwork::Detail
         // 다른 소켓과 같은 주소·포트를 공유하지 않도록 bind 전에 설정한다.
         const BOOL exclusiveAddressUse = TRUE;
 
+        // 이 소켓 외에는 그 어떤 다른 소켓이나 프로세스도 이 포트를 중복해서 bind 못하게
+        // 절대 공유할 수 없는 독점 서버 소켓임을 보장하기 위해 설정.
         if (::setsockopt(
             listener.Get(),
             SOL_SOCKET,
@@ -245,10 +254,7 @@ namespace IOCPNetwork::Detail
             nullptr,
             nullptr) == SOCKET_ERROR)
         {
-            return {
-                StartError::TransportStartFailed,
-                static_cast<std::uint32_t>(::WSAGetLastError())
-            };
+            return { StartError::TransportStartFailed, static_cast<std::uint32_t>(::WSAGetLastError()) };
         }
 
         if (acceptEx == nullptr || bytesReturned != sizeof(acceptEx))
@@ -375,6 +381,12 @@ namespace IOCPNetwork::Detail
             std::terminate();
         }
 
+#if defined(IOCPNETWORK_TESTING)
+        if (AcceptTestHooks::FailRetryWorker())
+        {
+            return { StartError::WorkerStartFailed, 0 };
+        }
+#endif
         try
         {
             m_acceptRetryThread = std::thread(&IOCPServerImpl::AcceptRetryLoop, this);
@@ -511,7 +523,11 @@ namespace IOCPNetwork::Detail
 
         DWORD bytesReceived = 0;
 
-        const BOOL accepted = m_acceptEx(
+        const BOOL accepted =
+#if defined(IOCPNETWORK_TESTING)
+            AcceptTestHooks::FailAccept() ? FALSE :
+#endif
+            m_acceptEx(
             m_listenSocket.Get(),
             session.m_acceptSocket.Get(),
             session.m_addressBuffer.data(),
