@@ -80,12 +80,15 @@ namespace IOCPNetwork
         HeartbeatTimeout     // 하트비트 응답 제한 시간을 초과했다.
     };
 
-    // 서비스에 전달할 종료 사유와 운영체제 오류 정보를 보관한다.
+    // 최초 종료 사유와 관련 오류, 정상 종료 기한 초과 여부를 전달한다.
     struct DisconnectInfo
     {
         DisconnectReason reason = DisconnectReason::LocalRequest;
 
         // 관련 운영체제 오류가 없으면 0이다.
         std::uint32_t nativeError = 0;
+
+        // 정상 종료를 기다리다가 전체 기한 초과로 정리에 전환했는지 나타낸다.
+        bool shutdownTimedOut = false;
     };
 }

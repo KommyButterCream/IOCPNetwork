@@ -14,6 +14,7 @@
 #include "Detail/SessionReference.h"
 #include "NetworkOptions.h"
 #include "PacketTypes.h"
+#include "Detail/JobExecutionScope.h"
 
 #include <algorithm> // for std::min
 #include <exception> // for std::terminate
@@ -21,8 +22,8 @@
 #include <new>       // for std::bad_alloc
 #include <mutex>     // for std::lock_guard, std::unique_lock
 #include <utility>   // for std::move, std::in_place_type
-#include <variant>   // for std::holds_alternative, std::get
 #include <optional> // for std::optional, std::nullopt
+#include <variant> // for std::holds_alternative, std::get, std::get_if
 
 namespace IOCPNetwork
 {
@@ -56,6 +57,229 @@ namespace IOCPNetwork
         BeginCloseImpl(info, nullptr);
     }
 
+    void ClientSession::BeginDrain(DisconnectInfo info, std::chrono::steady_clock::time_point deadline) noexcept
+    {
+        Detail::ReceiveProcessor* receiveProcessor = nullptr;
+        DWORD cancelError = ERROR_SUCCESS;
+
+        {
+            std::lock_guard<std::mutex> lock{ m_mutex };
+
+            switch (m_state)
+            {
+            case State::Ready:
+            {
+                // 정상 종료 중에도 연결을 유지하며 기존 작업을 처리해야 한다.
+                if (!m_connectionReference || m_receiveProcessor == nullptr)
+                {
+                    std::terminate();
+                }
+
+                // 종료를 처음 시작하는 경로가 사유와 전체 기한을 확정한다.
+                m_disconnectInfo = info;
+
+                m_shutdownDeadline = deadline;
+
+                // 고정된 수신 범위의 소진 여부는 후처리에서 확인한다.
+                m_receiveDrained = false;
+
+                // 수신 완료의 바이트 반영과 같은 락 안에서 종료 기준을 확정한다.
+                // 이후 완료된 수신 바이트는 버퍼의 읽기 가능 범위에 추가하지 않는다.
+                m_state = State::Draining;
+
+                // I/O 참조가 멤버에 있으면 아직 완료를 인수하지 않은 수신이다.
+                // 후처리 중인 수신은 참조가 지역 변수에 있으므로 취소 대상이 아니다.
+                if (m_receiveReference)
+                {
+                    if (!m_receiveActive || !m_socket)
+                    {
+                        std::terminate();
+                    }
+
+                    m_receiveCancellationRequested = true;
+
+                    // 송신에는 영향을 주지 않고 현재 수신 작업 하나만 취소한다.
+                    if (!::CancelIoEx(
+                        reinterpret_cast<HANDLE>(m_socket.Get()),
+                        &m_receiveOperation.overlapped))
+                    {
+                        const DWORD errorCode = ::GetLastError();
+
+                        m_receiveCancellationRequested = false;
+
+                        // 이미 완료되어 취소 대상이 없을 수 있다.
+                        // 이 경우에도 기존 완료 통지가 참조를 반환하도록 기다린다.
+                        if (errorCode != ERROR_NOT_FOUND)
+                        {
+                            cancelError = errorCode;
+                        }
+                    }
+                }
+
+                receiveProcessor = m_receiveProcessor;
+
+                break;
+            }
+
+            case State::Draining:
+            {
+                // 기존 종료 사유는 유지하고, 더 이른 기한만 반영한다.
+                if (deadline < m_shutdownDeadline)
+                {
+                    m_shutdownDeadline = deadline;
+                }
+
+                if (!m_connectionReference || m_receiveProcessor == nullptr)
+                {
+                    std::terminate();
+                }
+
+                // 중복 요청도 기존 재개 경로에서 안전하게 합쳐진다.
+                receiveProcessor = m_receiveProcessor;
+
+                break;
+            }
+
+            case State::Preparing:
+            {
+                // 서비스 준비 전의 연결은 정상 배출을 기다리지 않는다.
+                // BeginClose가 같은 락을 사용하므로 락 밖에서 호출한다.
+                break;
+            }
+
+            case State::Free:
+            case State::Closing:
+            case State::Finalizing:
+            {
+                // 이미 끝났거나 종료 중인 연결을 다시 시작하지 않는다.
+                return;
+            }
+
+            default:
+            {
+                std::terminate();
+            }
+            }
+        }
+
+        if (cancelError != ERROR_SUCCESS)
+        {
+            // 취소 요청 자체가 실패하면 기존 즉시 종료 경로로 정리한다.
+            BeginClose(DisconnectInfo{ DisconnectReason::TransportError, static_cast<std::uint32_t>(cancelError) });
+
+            return;
+        }
+
+        if (receiveProcessor != nullptr)
+        {
+            // 재개 함수가 세션 락을 사용하므로 반드시 락 밖에서 호출한다.
+            // 호출자가 보유한 세션 참조가 이 호출 동안 수명을 보호한다.
+            receiveProcessor->ResumeReceive(*this);
+
+            return;
+        }
+
+        BeginClose(info);
+    }
+
+    bool ClientSession::IsDrainWorkCompleteLocked() const noexcept
+    {
+        if (m_state != State::Draining)
+        {
+            return false;
+        }
+
+        // 고정된 수신 범위를 모두 처리하고 후처리까지 끝나야 한다.
+        // 큐 포화로 보관한 Packet도 남아 있으면 안 된다.
+        if (!m_receiveDrained ||
+            m_receiveActive ||
+            m_pendingReceivePacket)
+        {
+            return false;
+        }
+
+        if (!m_jobQueue)
+        {
+            std::terminate();
+        }
+
+        // 배열이 비어 있어도 워커가 인출한 Job을 실행 중일 수 있다.
+        // 미완료 예산과 실행 예약까지 모두 해제되어야 한다.
+        if (!m_jobQueue->IsIdle())
+        {
+            return false;
+        }
+
+        // Job이 접수한 응답의 부분 송신과 완료 후처리까지 기다린다.
+        if (m_pendingSendPackets != 0 ||
+            m_pendingSendBytes != 0 ||
+            m_sendActive)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    void ClientSession::TryShutdownSend() noexcept
+    {
+        int errorCode = 0;
+
+        bool peerSendClosed = false;
+
+        {
+            std::lock_guard<std::mutex> lock{ m_mutex };
+
+            if (m_sendShutdownStarted)
+            {
+                return;
+            }
+
+            if (!IsDrainWorkCompleteLocked())
+            {
+                return;
+            }
+
+            // Draining 연결은 아직 소켓을 소유하고 있어야 한다.
+            if (!m_socket)
+            {
+                std::terminate();
+            }
+
+            // 실패 후 락 밖에서 종료를 요청하는 동안에도 재시도를 막는다.
+            m_sendShutdownStarted = true;
+
+            // 상태 확인과 송신 종료를 같은 락 안에서 수행한다.
+            // 다른 경로가 소켓을 닫거나 이전하는 것과 경합하지 않게 한다.
+            if (::shutdown(m_socket.Get(), SD_SEND) == SOCKET_ERROR)
+            {
+                errorCode = ::WSAGetLastError();
+            }
+            else
+            {
+                peerSendClosed = m_peerSendClosed;
+            }
+        }
+
+        if (errorCode != 0)
+        {
+            // BeginClose가 같은 락을 사용하므로 락 밖에서 호출한다.
+            // Draining 진입 때 확정한 최초 종료 사유는 기존 정책대로 유지된다.
+            BeginClose(DisconnectInfo{ DisconnectReason::TransportError, static_cast<std::uint32_t>(errorCode) });
+
+            return;
+        }
+
+        if (peerSendClosed)
+        {
+            BeginClose();
+
+            return;
+        }
+
+        static_cast<void>(PostReceive());
+    }
+
     void ClientSession::CloseIfTimedOut(const NetworkOptions& options) noexcept
     {
         BeginCloseImpl({}, &options);
@@ -85,7 +309,7 @@ namespace IOCPNetwork
                 }
 
                 // 자체 기한 초과이므로 운영체제 오류 코드는 없다.
-                info = DisconnectInfo{ *timeoutReason, 0 };
+                info = DisconnectInfo{ *timeoutReason, 0, *timeoutReason == DisconnectReason::ShutdownTimeout };
             }
 
             switch (m_state)
@@ -109,8 +333,19 @@ namespace IOCPNetwork
                 std::terminate();
             }
 
-            // 중복 종료 검사 이후, 최초 Closing 전환에서만 사유를 확정한다.
-            m_disconnectInfo = info;
+            if (m_state == State::Draining)
+            {
+                // 정상 종료를 시작할 때 확정한 사유와 오류 코드는 유지한다.
+                // 기한 초과 여부만 추가로 반영한다.
+                m_disconnectInfo.shutdownTimedOut =
+                    m_disconnectInfo.shutdownTimedOut ||
+                    info.shutdownTimedOut;
+            }
+            else
+            {
+                // 정상 종료를 거치지 않은 즉시 종료는 여기서 사유를 확정한다.
+                m_disconnectInfo = info;
+            }
 
             m_state = State::Closing;
 
@@ -207,10 +442,21 @@ namespace IOCPNetwork
             return std::nullopt;
         }
 
+        case State::Draining:
+        {
+            // Job 배출·응답 송신·상대 FIN 대기에 하나의 전체 기한을 적용한다.
+            // 수신 데이터나 작업 진행 여부에 따라 기한을 연장하지 않는다.
+            if (now >= m_shutdownDeadline)
+            {
+                return DisconnectReason::ShutdownTimeout;
+            }
+
+            return std::nullopt;
+        }
+
         default:
         {
-            // Draining은 정상 종료 기한에서 관리한다.
-            // Free·Closing·Finalizing에는 통신 시간 초과를 적용하지 않는다.
+            // Free·Closing·Finalizing에는 새 시간 초과 종료를 적용하지 않는다.
             return std::nullopt;
         }
         }
@@ -399,8 +645,21 @@ namespace IOCPNetwork
 
         std::unique_lock<std::mutex> lock{ m_mutex };
 
-        // 핸드셰이크 준비 중이거나 서비스 통신 중인 연결만 새 수신을 허용한다.
-        if ((m_state != State::Preparing && m_state != State::Ready) || !m_socket)
+        // 정상 통신 또는 송신 종료 후 FIN 대기 수신을 허용한다.
+        const bool waitingForPeerClose =
+            m_state == State::Draining &&
+            m_sendShutdownStarted &&
+            m_receiveDrained;
+
+        if ((m_state != State::Preparing &&
+            m_state != State::Ready &&
+            !waitingForPeerClose) || !m_socket)
+        {
+            return ReceivePostResult::NotReady;
+        }
+
+        // 상대 FIN을 확인한 연결에는 새 수신을 발행하지 않는다.
+        if (m_peerSendClosed)
         {
             return ReceivePostResult::NotReady;
         }
@@ -524,6 +783,10 @@ namespace IOCPNetwork
             // 참조 수는 바꾸지 않고 완료 후처리로 반환 책임을 넘긴다.
             reference = std::move(m_receiveReference);
 
+            const bool cancellationRequested = m_receiveCancellationRequested;
+
+            m_receiveCancellationRequested = false;
+
             if (m_state == State::Closing)
             {
                 // 종료 중 도착한 완료는 데이터를 처리하지 않고 참조를 정리한다.
@@ -541,32 +804,55 @@ namespace IOCPNetwork
                     std::terminate();
                 }
 
-                if (completion.errorCode != ERROR_SUCCESS ||
-                    completion.transferredBytes == 0)
+                if (m_state == State::Draining &&
+                    cancellationRequested &&
+                    completion.errorCode == ERROR_OPERATION_ABORTED)
                 {
-                    // 오류 없는 0바이트 수신만 상대의 정상 종료로 해석한다.
-                    closeInfo = DisconnectInfo{
-                        completion.errorCode == ERROR_SUCCESS
-                            ? DisconnectReason::PeerClosed
-                            : DisconnectReason::TransportError,
-                        static_cast<std::uint32_t>(completion.errorCode)
-                    };
+                    // 정상 종료를 위해 요청한 수신 취소가 완료됐다.
+                    // 새 바이트를 반영하지 않고 기존 버퍼의 후처리를 이어간다.
+                    return reference;
+                }
+
+                if (completion.errorCode != ERROR_SUCCESS)
+                {
+                    // 오류 완료는 FIN이 아니다. 정상 배출을 중단하고 정리한다.
+                    closeInfo = DisconnectInfo{ DisconnectReason::TransportError, static_cast<std::uint32_t>(completion.errorCode) };
 
                     m_receiveResumeRequested = false;
 
                     closeRequired = true;
                 }
-                else if (!m_recvPacketBuffer->CommitReceivedBytes(completion.transferredBytes))
+                else if (completion.transferredBytes == 0)
                 {
-                    // 완료 바이트 수가 버퍼의 수신 가능 범위와 맞지 않는다.
+                    // 상대가 송신 방향을 정상 종료했다.
+                    m_peerSendClosed = true;
+
+                    m_receiveResumeRequested = false;
+
+                    if (m_state == State::Draining)
+                    {
+                        // 상대 FIN만으로 기존 Job과 응답 송신을 취소하지 않는다.
+                        // 버퍼에 이미 반영된 데이터의 후처리를 이어간다.
+                        return reference;
+                    }
+
+                    // Preparing·Ready의 상대 FIN 정책은 현재 동작을 유지한다.
+                    closeInfo = DisconnectInfo{ DisconnectReason::PeerClosed, 0 };
+
+                    closeRequired = true;
+                }
+                else if (m_state != State::Draining &&
+                    !m_recvPacketBuffer->CommitReceivedBytes(completion.transferredBytes))
+                {
+                    // 정상 수신의 완료량이 버퍼의 수신 가능 범위와 맞지 않는다.
                     m_receiveResumeRequested = false;
 
                     closeRequired = true;
                 }
                 else
                 {
-                    // 패킷 추출 후처리가 끝날 때까지 Active는 유지한다.
-                    // 반환한 참조가 이후 후처리 전체의 세션 수명을 보호한다.
+                    // Draining이면 이번 완료 바이트를 반영하지 않고 기존 데이터만 처리한다.
+                    // 후처리가 끝날 때까지 Active와 반환할 세션 참조를 유지한다.
 
                     m_receiveResumeRequested = false;
 
@@ -622,6 +908,12 @@ namespace IOCPNetwork
                 std::terminate();
             }
 
+            if (m_state == State::Draining && m_receiveDrained)
+            {
+                // FIN 대기 중 받은 데이터는 서비스 패킷으로 추출하지 않는다.
+                return { ReceivePacketStatus::Drained, {} };
+            }
+
             // 앞선 패킷을 건너뛰고 다음 패킷을 추출하지 않는다.
             if (m_pendingReceivePacket)
             {
@@ -645,6 +937,17 @@ namespace IOCPNetwork
 
             case Detail::PacketExtractStatus::NeedMoreData:
             {
+                if (m_state == State::Draining)
+                {
+                    // 종료 기준 이후 바이트로 남은 조각을 완성하지 않는다.
+                    // 현재는 수신 I/O가 끝난 독점 후처리 구간이므로 위치를 초기화할 수 있다.
+                    m_recvPacketBuffer->Clear();
+
+                    m_receiveDrained = true;
+
+                    return { ReceivePacketStatus::Drained, {} };
+                }
+
                 return { ReceivePacketStatus::NeedMoreData, {} };
             }
 
@@ -714,7 +1017,7 @@ namespace IOCPNetwork
         // 완료 후처리용 참조와 별도로 Job이 사용할 참조를 확보한다.
         Detail::Job job{ AcquireReference(), std::move(packet) };
 
-        const auto result = EnqueueJob(std::move(job));
+        const auto result = EnqueueJob(std::move(job), nullptr, JobEnqueueSource::ReceivedPacket);
 
         switch (result)
         {
@@ -741,6 +1044,11 @@ namespace IOCPNetwork
 
                 m_receivePausedAt.reset();
             }
+            else if (m_state == State::Draining)
+            {
+                // 일반 통신의 중지 표시는 해제하되 전체 종료 기한은 유지한다.
+                m_receivePausedAt.reset();
+            }
 
             return ReceivedPacketEnqueueResult::Queued;
         }
@@ -749,8 +1057,8 @@ namespace IOCPNetwork
         {
             std::lock_guard<std::mutex> lock{ m_mutex };
 
-            // 접수 실패 이후 종료가 시작됐다면 보관하지 않고 폐기한다.
-            if (m_state != State::Ready)
+            // Draining에서는 보관을 유지하고, 즉시 종료로 전환됐다면 폐기한다.
+            if (m_state != State::Ready && m_state != State::Draining)
             {
                 return ReceivedPacketEnqueueResult::Stopped;
             }
@@ -766,7 +1074,7 @@ namespace IOCPNetwork
             m_pendingReceivePacket = std::move(std::get<Packet>(job.GetData()));
 
             // 재접수 실패가 반복돼도 최초 중지 시각을 유지한다.
-            if (!m_receivePausedAt.has_value())
+            if (m_state == State::Ready && !m_receivePausedAt.has_value())
             {
                 m_receivePausedAt = std::chrono::steady_clock::now();
             }
@@ -795,7 +1103,12 @@ namespace IOCPNetwork
     {
         std::lock_guard<std::mutex> lock{ m_mutex };
 
-        if (m_state != State::Ready)
+        if (m_state != State::Ready && m_state != State::Draining)
+        {
+            return {};
+        }
+
+        if (m_state == State::Draining && m_receiveDrained)
         {
             return {};
         }
@@ -808,7 +1121,7 @@ namespace IOCPNetwork
             return {};
         }
 
-        if (!m_pendingReceivePacket)
+        if (m_state == State::Ready && !m_pendingReceivePacket)
         {
             return {};
         }
@@ -830,7 +1143,7 @@ namespace IOCPNetwork
         return reference;
     }
 
-    ClientSession::ReceivedPacketEnqueueResult ClientSession::RetryPendingReceivePacket() noexcept
+    bool ClientSession::RetryPendingReceivePacket() noexcept
     {
         // 함수가 끝날 때 패킷이 남아 있어도 세션 락 밖에서 반환한다.
         Packet packet;
@@ -845,14 +1158,14 @@ namespace IOCPNetwork
             }
 
             // 독점 상태를 확보한 이후에도 다른 경로에서 종료를 요청할 수 있다.
-            if (m_state != State::Ready)
+            if (m_state != State::Ready && m_state != State::Draining)
             {
-                return ReceivedPacketEnqueueResult::Stopped;
+                return false;
             }
 
             if (!m_pendingReceivePacket)
             {
-                std::terminate();
+                return true;
             }
 
             // 기존 접수 함수는 보관 슬롯이 빈 상태에서 패킷을 받는다.
@@ -860,12 +1173,14 @@ namespace IOCPNetwork
         }
 
         // 내부에서 세션 락을 사용하므로 락 밖에서 호출한다.
-        return EnqueueReceivedPacket(std::move(packet));
+        return EnqueueReceivedPacket(std::move(packet)) == ReceivedPacketEnqueueResult::Queued;
     }
 
     bool ClientSession::FinishReceiveCompletion(bool resumeReceive) noexcept
     {
-        bool retryPending = false;
+        bool retryProcessing = false;
+
+        bool closeAfterReceive = false;
 
         {
             std::lock_guard<std::mutex> lock{ m_mutex };
@@ -876,18 +1191,44 @@ namespace IOCPNetwork
                 std::terminate();
             }
 
-            // 후처리 중 들어온 재개 요청을 상태 해제와 같은 락에서 소비한다.
-            retryPending =
-                m_state == State::Ready &&
-                static_cast<bool>(m_pendingReceivePacket) &&
-                m_receiveResumeRequested;
+            if (m_state == State::Ready)
+            {
+                // 후처리 중 들어온 재개 요청을 상태 해제와 같은 락에서 소비한다.
+                retryProcessing =
+                    static_cast<bool>(m_pendingReceivePacket) &&
+                    m_receiveResumeRequested;
+            }
+            else if (m_state == State::Draining)
+            {
+                if (m_receiveDrained && m_sendShutdownStarted)
+                {
+                    // 송신 종료 이후에는 새 데이터를 소비하며 FIN만 기다린다.
+                    closeAfterReceive = m_peerSendClosed;
+                    resumeReceive = !m_peerSendClosed;
+                }
+                else
+                {
+                    // 고정된 수신 범위가 남았다면 기존 후처리를 재개한다.
+                    retryProcessing =
+                        !m_receiveDrained &&
+                        (m_receiveResumeRequested || resumeReceive);
+                }
+            }
 
             m_receiveResumeRequested = false;
 
             m_receiveActive = false;
         }
 
-        if (retryPending)
+        if (closeAfterReceive)
+        {
+            // 수신 후처리 참조가 살아 있고 세션 락은 해제된 상태다.
+            BeginClose();
+
+            return false;
+        }
+
+        if (retryProcessing)
         {
             // 보관 패킷을 먼저 처리해야 하므로 새 수신부터 발행하지 않는다.
             return true;
@@ -938,6 +1279,18 @@ namespace IOCPNetwork
 
         case State::Ready:
         {
+            break;
+        }
+
+        case State::Draining:
+        {
+            // 정상 종료 중에는 현재 세션의 Job이 보내는 서비스 응답만 허용한다.
+            // 외부 스레드·다른 세션의 Job·시스템 패킷 송신은 접수하지 않는다.
+            if (isSystemPacket || !Detail::JobExecutionScope::IsExecuting(*this))
+            {
+                return SendResult::Closed;
+            }
+
             break;
         }
 
@@ -1222,6 +1575,9 @@ namespace IOCPNetwork
         // 부분 송신이면 기존 배치부터, 모두 완료됐으면 다음 배치를 발행한다.
         // 즉시 발행 실패의 종료·정리는 PostSend가 담당한다.
         static_cast<void>(PostSend());
+
+        // 완료 후처리 참조가 살아 있는 동안 배출 완료를 확인한다.
+        TryShutdownSend();
     }
 
     void ClientSession::ClearPendingSendLocked() noexcept
@@ -1245,7 +1601,10 @@ namespace IOCPNetwork
         m_pendingSendBytes = 0;
     }
 
-    ClientSession::EnqueueJobResult ClientSession::EnqueueJob(Detail::Job&& job, SessionTask* sourceTask) noexcept
+    ClientSession::EnqueueJobResult ClientSession::EnqueueJob(
+        Detail::Job&& job,
+        SessionTask* sourceTask,
+        JobEnqueueSource source) noexcept
     {
         // 다른 세션의 Job이나 빈 참조를 이 세션에 등록하지 않는다.
         if (job.GetSession() != this)
@@ -1254,6 +1613,20 @@ namespace IOCPNetwork
         }
 
         const bool isConnectNotify = std::holds_alternative<Detail::ConnectedNotification>(job.GetData());
+
+        if (source == JobEnqueueSource::ReceivedPacket)
+        {
+            const auto* packet = std::get_if<Packet>(&job.GetData());
+
+            // 수신 접수 경로에 Task나 연결 통지를 전달하면 내부 호출 오류다.
+            if (sourceTask != nullptr ||
+                packet == nullptr ||
+                !*packet ||
+                !IsServicePacketId(packet->View().packetId))
+            {
+                std::terminate();
+            }
+        }
 
         Detail::JobEnqueueResult result;
 
@@ -1296,6 +1669,26 @@ namespace IOCPNetwork
                 if (isConnectNotify)
                 {
                     return EnqueueJobResult::NotReady;
+                }
+
+                break;
+            }
+
+            case State::Draining:
+            {
+                // 정상 종료 기준에 포함되지 않은 새 작업은 접수하지 않는다.
+                if (source != JobEnqueueSource::ReceivedPacket)
+                {
+                    return EnqueueJobResult::Closed;
+                }
+
+                // 고정 수신 범위를 처리하는 독점 후처리에서만 접수할 수 있다.
+                if (!m_receiveActive ||
+                    m_receiveReference ||
+                    m_pendingReceivePacket ||
+                    m_receiveDrained)
+                {
+                    std::terminate();
                 }
 
                 break;
@@ -1470,7 +1863,7 @@ namespace IOCPNetwork
 
     void ClientSession::ResetForReuseLocked() noexcept
     {
-        // 살아 있는 참조나 I/O를 초기화로 숨기지 않는다.
+        // 살아 있는 참조나 I/O, 미정리된 취소 상태를 초기화로 숨기지 않는다.
         if (m_state != State::Finalizing ||
             m_referenceCount.load(std::memory_order_relaxed) != 0 ||
             m_connectionReference ||
@@ -1479,6 +1872,7 @@ namespace IOCPNetwork
             m_sendReference ||
             m_receiveActive ||
             m_sendActive ||
+            m_receiveCancellationRequested ||
             m_receiveResumeRequested ||
             m_pendingReceivePacket)
         {
@@ -1521,6 +1915,10 @@ namespace IOCPNetwork
 
         m_disconnectInfo = {};
 
+        m_shutdownDeadline = {};
+
+        m_sendShutdownStarted = false;
+
         m_handshake = {};
 
         m_heartbeat = {};
@@ -1528,6 +1926,12 @@ namespace IOCPNetwork
         m_receiveDeadline = {};
 
         m_receivePausedAt.reset();
+
+        m_peerSendClosed = false;
+
+        m_receiveDrained = false;
+
+        m_receiveCancellationRequested = false;
 
         m_connectedNotificationQueued = false;
 

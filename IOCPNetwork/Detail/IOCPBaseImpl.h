@@ -68,7 +68,7 @@ namespace IOCPNetwork::Detail
         // 엔진 내부 실행 중이면 상태를 변경하지 않고 호출을 거절한다.
         [[nodiscard]] StopResult StopCommon() noexcept;
 
-        // Stopping 상태에서 모든 연결을 종료하고 최종 반환까지 기다린다.
+        // Stopping 상태에서 공통 기한으로 배출하고, 초과 시 강제 종료 후 최종 반환까지 기다린다.
         // 역할별 연결 생산 경로를 먼저 중단하고 완료 후처리까지 회수해야 한다.
         void CloseSessionsAndWait() noexcept;
 

@@ -184,6 +184,7 @@
     <ClInclude Include="Detail\IOOperation.h" />
     <ClInclude Include="Detail\IOWorkerPool.h" />
     <ClInclude Include="Detail\Job.h" />
+    <ClInclude Include="Detail\JobExecutionScope.h" />
     <ClInclude Include="Detail\JobScheduler.h" />
     <ClInclude Include="Detail\OptionsValidation.h" />
     <ClInclude Include="Detail\PacketBlock.h" />

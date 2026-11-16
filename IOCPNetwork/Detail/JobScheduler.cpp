@@ -5,6 +5,7 @@
 #include "ReceiveProcessor.h"
 #include "PacketPool.h"
 #include "EngineExecutionScope.h"
+#include "JobExecutionScope.h"
 
 #include <chrono>       // for std::chrono::steady_clock, std::chrono::duration_cast, std::chrono::milliseconds
 #include <exception>    // for std::terminate
@@ -523,7 +524,14 @@ namespace IOCPNetwork::Detail
             };
 
             Enqueue(std::move(item));
+
+            // 참조를 다음 실행에 넘겼으므로 여기서 세션에 다시 접근하지 않는다.
+            return;
         }
+
+        // 실행 예약이 해제된 뒤 배출 완료를 확인한다.
+        // 아직 보유한 reference가 송신 종료 처리 동안 세션을 보호한다.
+        session->TryShutdownSend();
 
         // 재예약하지 않았으면 지역 reference 소멸 시 사용 참조를 반환한다.
     }
@@ -542,6 +550,9 @@ namespace IOCPNetwork::Detail
         {
             return;
         }
+
+        // 실제로 실행하는 Job에 대해서만 현재 세션을 표시한다.
+        JobExecutionScope execution{ session };
 
         try
         {

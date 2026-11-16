@@ -9,6 +9,7 @@
 #include "EngineExecutionScope.h"
 #include "Job.h"
 
+#include <algorithm> // for std::min
 #include <array> // for std::array
 #include <exception> // for std::terminate
 #include <memory>    // for std::make_unique
@@ -17,7 +18,7 @@
 #include <cstdint> // for std::uint32_t
 #include <limits>  // for std::numeric_limits
 #include <mutex>   // for std::mutex, std::lock_guard, std::unique_lock
-#include <chrono> // for std::chrono::milliseconds, std::chrono::seconds, std::chrono::steady_clock
+#include <chrono> // for std::chrono::milliseconds, std::chrono::seconds, std::chrono::steady_clock, std::chrono::ceil
 #include <system_error> // for std::system_error
 
 namespace IOCPNetwork::Detail
@@ -208,9 +209,79 @@ namespace IOCPNetwork::Detail
             return;
         }
 
-        // 종료 책임자가 공통 자원 해제 전까지 풀의 수명을 유지한다.
-        // 상태 락을 보유하지 않고 종료 요청과 반환 대기를 수행한다.
-        pool->RequestCloseAll(DisconnectInfo{ DisconnectReason::EngineStopping, 0 });
+        // 모든 세션에 같은 마감 시각을 적용한다.
+        // 순회와 배출 요청에 걸리는 시간도 이 기한에 포함한다.
+        const auto deadline = std::chrono::steady_clock::now() + m_options.shutdownTimeout;
+
+        const auto capacity = pool->GetCapacity();
+
+        for (std::uint32_t index = 0; index < capacity; ++index)
+        {
+            auto reference = pool->TryAcquireSessionAt(index);
+
+            if (!reference)
+            {
+                continue;
+            }
+
+            // Ready는 정상 배출을 시작하고 Preparing은 즉시 종료한다.
+            // 이미 Draining이면 기존 기한을 연장하지 않는다.
+            reference.Get()->BeginDrain(
+                DisconnectInfo{ DisconnectReason::EngineStopping, 0 }, deadline);
+        }
+
+        for (;;)
+        {
+            // 이미 최종 반환까지 끝났으면 추가 대기 없이 종료한다.
+            if (pool->WaitUntilAllReturned(std::chrono::milliseconds{ 0 }))
+            {
+                return;
+            }
+
+            const auto now = std::chrono::steady_clock::now();
+
+            if (now >= deadline)
+            {
+                break;
+            }
+
+            // 유지보수 스레드는 정지했으므로 종료 책임자가 검사한다.
+            // 공통 기한보다 먼저 시작된 세션의 짧은 기한도 유지한다.
+            for (std::uint32_t index = 0; index < capacity; ++index)
+            {
+                auto reference = pool->TryAcquireSessionAt(index);
+
+                if (!reference)
+                {
+                    continue;
+                }
+
+                reference.Get()->CloseIfTimedOut(m_options);
+            }
+
+            // 순회에 걸린 시간을 반영해 남은 시간을 다시 계산한다.
+            const auto afterCheck = std::chrono::steady_clock::now();
+
+            if (afterCheck >= deadline)
+            {
+                break;
+            }
+
+            const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(deadline - afterCheck);
+
+            const auto waitTime = (std::min)(remaining, m_options.maintenanceInterval);
+
+            // 반환 통지가 오면 기한을 다 채우지 않고 깨어난다.
+            // 풀 락을 잡고 잠드는 것이 아니라 조건 변수로 대기한다.
+            if (pool->WaitUntilAllReturned(waitTime))
+            {
+                return;
+            }
+        }
+
+        // 공통 기한이 끝났으므로 남은 연결을 즉시 종료한다.
+        // 워커를 유지한 채 I/O 완료와 최종 풀 반환을 기다린다.
+        pool->RequestCloseAll(DisconnectInfo{ DisconnectReason::EngineStopping, 0, true });
         pool->WaitUntilAllReturned();
     }
 
@@ -520,8 +591,21 @@ namespace IOCPNetwork::Detail
             return false;
         }
 
+        if (packet.packetId != ToPacketId(SystemPacketId::HeartbeatRequest) &&
+            packet.packetId != ToPacketId(SystemPacketId::HeartbeatResponse))
+        {
+            return false;
+        }
+
         {
             std::unique_lock<std::mutex> lock{ session.m_mutex };
+
+            if (session.m_state == ClientSession::State::Draining)
+            {
+                // 종료 기준 안에 남은 정상 형식의 하트비트는 소비만 한다.
+                // 응답 송신이나 하트비트 대기 상태 갱신은 하지 않는다.
+                return true;
+            }
 
             // 핸드셰이크 완료 전이나 종료 중에는 하트비트를 처리하지 않는다.
             if (session.m_state != ClientSession::State::Ready)
@@ -554,7 +638,9 @@ namespace IOCPNetwork::Detail
 
                     session.CloseIfTimedOut(m_options);
 
-                    return false;
+                    // 종료 여부는 최신 상태와 기한을 확인하는 종료 경로가 결정한다.
+                    // 검사 이후 Draining으로 바뀌어도 프로토콜 오류로 재종료하지 않는다.
+                    return true;
                 }
 
                 // 번호는 유지하고 이번 요청의 응답 대기만 해제한다.
@@ -585,7 +671,9 @@ namespace IOCPNetwork::Detail
             CloseOnSystemSendFailure(session, result);
         }
 
-        return result == SendResult::Queued;
+        // 정상 요청의 처리는 끝났다.
+        // 송신 실패에 따른 종료 여부는 위의 실패 처리 경로가 담당한다.
+        return true;
     }
 
     bool IOCPBaseImpl::HandleHandshakePacket(ClientSession& session, PacketView packet) noexcept
@@ -711,9 +799,6 @@ namespace IOCPNetwork::Detail
 
         case SendResult::Closed:
         {
-            // 엔진 종료로 접수가 막혔거나 세션이 이미 Closing인 경우다.
-            session.BeginClose(DisconnectInfo{ DisconnectReason::EngineStopping, 0 });
-
             return;
         }
 

@@ -67,9 +67,7 @@ namespace IOCPNetwork::Detail
 
             if (retryPending)
             {
-                const auto result = session.RetryPendingReceivePacket();
-
-                readPackets = result == ClientSession::ReceivedPacketEnqueueResult::Queued;
+                readPackets = session.RetryPendingReceivePacket();
             }
 
             bool resumeReceive = false;
@@ -81,6 +79,8 @@ namespace IOCPNetwork::Detail
 
             // 성공·포화·종료·예외 결과 모두 같은 후처리 종료 지점을 통과한다.
             const bool retryRequested = session.FinishReceiveCompletion(resumeReceive);
+
+            session.TryShutdownSend();
 
             if (!retryRequested)
             {
@@ -115,6 +115,13 @@ namespace IOCPNetwork::Detail
                 case ClientSession::ReceivePacketStatus::NeedMoreData:
                 {
                     return true;
+                }
+
+                case ClientSession::ReceivePacketStatus::Drained:
+                {
+                    // 정상 종료 기준의 수신 처리는 끝났다.
+                    // 기존 Job·응답 송신은 유지하고 새 서비스 수신은 요청하지 않는다.
+                    return false;
                 }
 
                 case ClientSession::ReceivePacketStatus::Paused:

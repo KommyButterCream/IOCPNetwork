@@ -95,6 +95,20 @@ namespace IOCPNetwork
         // 세션 저장소는 풀만 생성한다.
         ClientSession() noexcept;
 
+        // Ready 연결의 정상 종료를 시작하며, 중복 요청은 기한을 연장하지 않는다.
+        // Preparing은 즉시 종료하고, 호출자는 별도의 세션 사용 참조를 보유한다.
+        void BeginDrain(
+            DisconnectInfo info,
+            std::chrono::steady_clock::time_point deadline) noexcept;
+
+        // 고정된 수신 범위·접수 Job·응답 송신의 처리가 모두 끝났는지 확인한다.
+        // 호출자는 m_mutex를 보유해야 하며, 상대 FIN 수신 여부는 별도로 판단한다.
+        [[nodiscard]] bool IsDrainWorkCompleteLocked() const noexcept;
+
+        // 기존 작업의 배출이 끝나면 송신 종료를 한 번만 시도한다.
+        // 호출자는 사용 참조를 보유하고, m_mutex를 잡지 않은 상태여야 한다.
+        void TryShutdownSend() noexcept;
+
         // 현재 상태의 시간 초과 사유를 반환한다. 해당 없으면 nullopt다.
         // 호출자는 m_mutex를 보유하고, 락 획득 후의 현재 시각을 전달한다.
         [[nodiscard]] std::optional<DisconnectReason> GetTimeoutReasonLocked(
@@ -141,8 +155,8 @@ namespace IOCPNetwork
         // 즉시 발행 실패이면 연결 종료를 요청하고 Failed를 반환한다.
         [[nodiscard]] ReceivePostResult PostReceive() noexcept;
 
-        // 수신 완료를 확인하고 I/O 참조를 인수하여 수신량을 반영한다.
-        // 성공하면 후처리용 참조를 반환하고, 실패·종료이면 정리 후 빈 참조를 반환한다.
+        // 수신 완료의 I/O 참조를 인수한다. Draining에서는 새 수신량을 반영하지 않는다.
+        // 후처리가 필요하면 참조를 반환하며, Draining의 정상 FIN도 후처리를 유지한다.
         [[nodiscard]] Detail::SessionReference BeginReceiveCompletion(const Detail::IOCompletion& completion) noexcept;
 
         // 수신 후처리 중 패킷 하나를 꺼낸 결과다.
@@ -150,6 +164,7 @@ namespace IOCPNetwork
         {
             Complete,     // 완성된 Packet을 반환함
             NeedMoreData, // 추가 수신이 필요함
+            Drained,      // 정상 종료 기준의 수신 범위를 모두 처리함
             Paused,       // 앞선 Packet의 Job 접수를 기다림
             Stopped,      // 연결 종료로 추출을 중단함
             Failed        // 패킷 검증 또는 저장소 확보 실패
@@ -179,16 +194,16 @@ namespace IOCPNetwork
         // 수신 후처리 중에만 호출하며, 모든 결과에서 인자 소유권을 소비한다.
         [[nodiscard]] ReceivedPacketEnqueueResult EnqueueReceivedPacket(Packet&& packet) noexcept;
 
-        // 보관 패킷이 있고 다른 수신 처리가 없으면 재개 처리용 참조를 확보한다.
+        // 보관 Packet 또는 Draining의 미완료 수신 범위를 처리할 독점 참조를 확보한다.
         // 호출자는 별도 세션 참조를 보유하며, 재개할 수 없으면 빈 참조를 반환한다.
         [[nodiscard]] Detail::SessionReference TryBeginReceiveResume() noexcept;
 
-        // 재개 처리의 독점 상태에서 보관 패킷을 다시 Job에 접수한다.
-        // 재차 포화되면 같은 패킷을 다시 보관하고 Paused를 반환한다.
-        [[nodiscard]] ReceivedPacketEnqueueResult RetryPendingReceivePacket() noexcept;
+        // 보관 Packet이 있으면 먼저 재접수한다.
+        // 보관 Packet이 없거나 접수에 성공하면 true, 포화·종료·실패이면 false다.
+        [[nodiscard]] bool RetryPendingReceivePacket() noexcept;
 
         // 수신 후처리를 끝내고 필요하면 다음 수신을 발행한다.
-        // true이면 보관 패킷 재개를 다시 시도하며, 호출자는 참조를 계속 유지한다.
+        // true이면 보관 Packet 또는 고정 수신 범위의 후처리 재개를 시도한다.
         [[nodiscard]] bool FinishReceiveCompletion(bool resumeReceive) noexcept;
 
         // 상태와 송신 한도를 확인하고 Packet을 송신 큐에 접수한다.
@@ -270,9 +285,19 @@ namespace IOCPNetwork
             QueueFull
         };
 
+        // 종료 중 접수 허용 범위를 판단하기 위한 내부 호출 경로다.
+        enum class JobEnqueueSource
+        {
+            General,       // 연결 통지·외부 Task 등 일반 접수
+            ReceivedPacket // 수신 후처리에서 추출하거나 보관했던 Packet
+        };
+
         // 세션 상태 확인·Job 접수·최초 실행 예약을 연결한다.
         // Task는 원본 함수를 함께 전달하며, 접수 실패 시 인자 소유권을 유지한다.
-        [[nodiscard]] EnqueueJobResult EnqueueJob(Detail::Job&& job, SessionTask* sourceTask = nullptr) noexcept;
+        [[nodiscard]] EnqueueJobResult EnqueueJob(
+            Detail::Job&& job,
+            SessionTask* sourceTask = nullptr,
+            JobEnqueueSource source = JobEnqueueSource::General) noexcept;
 
         // 접수된 Job의 실행 시작 여부를 종료 전환과 같은 락으로 판단한다.
         // false이면 사용자 함수를 호출하지 않고 작업 자원만 정리한다.
@@ -326,9 +351,17 @@ namespace IOCPNetwork
 
         ConnectionId m_connectionId{};
 
-        // 최초 Closing 전환에서 확정하고 최종 종료 통지까지 유지한다.
+        // 최초 Draining 또는 Closing 진입에서 확정하고 최종 종료 통지까지 유지한다.
         // 접근은 m_mutex로 보호하며, 풀 반환 시 초기화한다.
         DisconnectInfo m_disconnectInfo{};
+
+        // Draining의 전체 마감 시각이다. 중복 요청에서는 앞당길 수만 있다.
+        // 접근은 m_mutex로 보호하며, 풀 반환 시 초기화한다.
+        std::chrono::steady_clock::time_point m_shutdownDeadline{};
+
+        // 정상 종료에서 Shutdown(SD_SEND)을 이미 시도했는지 기록한다.
+        // 실패 후 즉시 종료로 넘어가는 동아느이 중복 호출도 막으며, m_mutex로 보호한다.
+        bool m_sendShutdownStarted = false;
 
         // 현재 연결의 연결 통지가 접수되었는지 기록한다.
         // 최종 종료 통지 여부를 판단하며, 풀 반환 시 초기화한다.
@@ -358,6 +391,18 @@ namespace IOCPNetwork
         // 수신 발행부터 완료 후처리까지 새 수신 시작을 막는다.
         // m_mutex로 보호하며, 풀 반환 여부를 판정하는 카운터는 아니다.
         bool m_receiveActive = false;
+
+        // Draining 전환 시 기존 수신 I/O에 취소를 요청했는지 기록한다.
+        // 오나료를 인수할 때 해제하며, 취소 완료를 통신 오류와 구분한다.
+        bool m_receiveCancellationRequested = false;
+
+        // 오류 없는 0바이트 수신으로 상대의 송신 종료를 확인했는지 나타낸다.
+        // m_mutex로 보호하며, 송신 완료까지 연결을 유지할 수 있다.
+        bool m_peerSendClosed = false;
+
+        // Draining 진입 전 반영한 수신 범위를 소진하고 미완성 꼬리까지 정리했는지 나타낸다.
+        // m_mutex로 보호하며, Job 실행과 송신 완료 여부는 별도로 판단한다.
+        bool m_receiveDrained = false;
 
         // 수신 후처리 중 Job 워커가 요청한 재개 시도를 기억한다.
         // m_mutex로 보호하며, 후처리 종료 때 소비한다.

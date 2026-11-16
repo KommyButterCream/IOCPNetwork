@@ -54,6 +54,10 @@ namespace IOCPNetwork
 
         // Job 큐 포화로 수신이 중지된 상태를 허용하는 시간이다.
         std::chrono::milliseconds backpressureTimeout{ 30'000 };
+
+        // 정상 종료 시 기존 작업·응답 송신·상대 FIN을 기다리는 전체 시간이다.
+        // 기한 초과 후에도 실행 중 콜백과 취소 I/O의 안전한 회수는 기다린다.
+        std::chrono::milliseconds shutdownTimeout{ 10'000 };
     };
 
     // 서버의 수신 주소와 최대 연결 수를 지정한다.

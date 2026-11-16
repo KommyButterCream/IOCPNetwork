@@ -79,7 +79,8 @@ namespace IOCPNetwork::Detail
             !isValidDuration(options.heartbeatInterval) ||
             !isValidDuration(options.heartbeatTimeout) ||
             !isValidDuration(options.receiveTimeout) ||
-            !isValidDuration(options.backpressureTimeout))
+            !isValidDuration(options.backpressureTimeout) ||
+            !isValidDuration(options.shutdownTimeout))
         {
             return OptionsError::InvalidTimeout;
         }
