@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Job.h"
+#include "../NetworkTypes.h"
 #include "SessionFinalization.h"
 #include "SessionReference.h"
 
@@ -31,8 +32,8 @@ namespace IOCPNetwork::Detail
         // 수신 완료 I/O가 아니라 Packet Job의 엔진 디스패치 경로다.
         std::function<void(ClientSession&, Packet)> received;
 
-        // 연결 통지를 확정했던 세션의 최종 마무리에서 호출한다.
-        std::function<void(ClientSession&)> disconnected;
+        // 연결 통지를 확정했던 세션의 최종 마무리에서 최초 종료 사유를 값으로 전달한다.
+        std::function<void(ClientSession&, DisconnectInfo)> disconnected;
     };
 
     // 준비된 세션을 여러 워커에 배분하고 세션별 Job을 순차 처리한다.

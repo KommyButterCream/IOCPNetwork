@@ -5,6 +5,7 @@
 #include "IOWorkerPool.h"
 #include "PacketPool.h"
 
+#include <new>       // for std::bad_alloc
 #include <exception> // for std::terminate
 #include <utility>   // for std::move
 
@@ -141,7 +142,7 @@ namespace IOCPNetwork::Detail
                     // 세션 락을 잡지 않은 상태에서 엔진 시스템 처리를 호출한다.
                     if (!m_systemPacketHandler(m_systemContext, session, std::move(result.packet)))
                     {
-                        session.BeginClose();
+                        session.BeginClose(DisconnectInfo{ DisconnectReason::ProtocolError, 0 });
 
                         return false;
                     }
@@ -157,10 +158,16 @@ namespace IOCPNetwork::Detail
                 }
             }
         }
+        catch (const std::bad_alloc&)
+        {
+            session.BeginClose(DisconnectInfo{ DisconnectReason::ResourceExhausted, 0 });
+
+            return false;
+        }
         catch (...)
         {
-            // 시스템 처리 예외도 연결 종료로 바꾸고 공통 후처리로 돌아간다.
-            session.BeginClose();
+            // 엔진 시스템 처리 예외는 상대의 잘못된 패킷과 구분한다.
+            session.BeginClose(DisconnectInfo{ DisconnectReason::TransportError, 0 });
 
             return false;
         }

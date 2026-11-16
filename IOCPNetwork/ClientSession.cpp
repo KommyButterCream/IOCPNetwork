@@ -18,9 +18,11 @@
 #include <algorithm> // for std::min
 #include <exception> // for std::terminate
 #include <limits>    // for std::numeric_limits
+#include <new>       // for std::bad_alloc
 #include <mutex>     // for std::lock_guard, std::unique_lock
 #include <utility>   // for std::move, std::in_place_type
 #include <variant>   // for std::holds_alternative, std::get
+#include <optional> // for std::optional, std::nullopt
 
 namespace IOCPNetwork
 {
@@ -49,7 +51,17 @@ namespace IOCPNetwork
         return m_connectionId;
     }
 
-    void ClientSession::BeginClose() noexcept
+    void ClientSession::BeginClose(DisconnectInfo info) noexcept
+    {
+        BeginCloseImpl(info, nullptr);
+    }
+
+    void ClientSession::CloseIfTimedOut(const NetworkOptions& options) noexcept
+    {
+        BeginCloseImpl({}, &options);
+    }
+
+    void ClientSession::BeginCloseImpl(DisconnectInfo info, const NetworkOptions* timeoutOptions) noexcept
     {
         Detail::SessionReference connectionReference;
 
@@ -59,6 +71,22 @@ namespace IOCPNetwork
 
         {
             std::lock_guard<std::mutex> lock{ m_mutex };
+
+            // 상태와 기한을 보호하는 락을 획득한 뒤 현재 시각을 구한다.
+            if (timeoutOptions != nullptr)
+            {
+                const auto now = std::chrono::steady_clock::now();
+
+                const auto timeoutReason = GetTimeoutReasonLocked(*timeoutOptions, now);
+
+                if (!timeoutReason.has_value())
+                {
+                    return;
+                }
+
+                // 자체 기한 초과이므로 운영체제 오류 코드는 없다.
+                info = DisconnectInfo{ *timeoutReason, 0 };
+            }
 
             switch (m_state)
             {
@@ -81,7 +109,19 @@ namespace IOCPNetwork
                 std::terminate();
             }
 
+            // 중복 종료 검사 이후, 최초 Closing 전환에서만 사유를 확정한다.
+            m_disconnectInfo = info;
+
             m_state = State::Closing;
+
+            // 종료된 연결에서는 핸드셰이크 응답을 기다리지 않는다.
+            m_handshake = {};
+
+            m_heartbeat = {};
+
+            m_receiveDeadline = {};
+
+            m_receivePausedAt.reset();
 
             // Job에 접수하지 못한 완성 패킷을 종료 경로가 인수한다.
             pendingReceivePacket = std::move(m_pendingReceivePacket);
@@ -115,6 +155,65 @@ namespace IOCPNetwork
 
         // 마지막 참조 반환 경로가 세션 락을 사용할 수 있으므로 락 밖에서 반환한다.
         connectionReference.Reset();
+    }
+
+    std::optional<DisconnectReason> ClientSession::GetTimeoutReasonLocked(
+        const NetworkOptions& options,
+        std::chrono::steady_clock::time_point now) const noexcept
+    {
+        switch (m_state)
+        {
+        case State::Preparing:
+        {
+            // 아직 TCP 연결 준비 중이면 핸드셰이크 기한을 적용하지 않는다.
+            if (m_handshake.phase == HandshakePhase::None)
+            {
+                return std::nullopt;
+            }
+
+            if (now >= m_handshake.deadline)
+            {
+                return DisconnectReason::HandshakeTimeout;
+            }
+
+            return std::nullopt;
+        }
+
+        case State::Ready:
+        {
+            // 자체 수신 중지 중에는 일반 무수신·하트비트 검사를 유예한다.
+            // 대신 연속된 수신 중지 시간에 별도 상한을 적용한다.
+            if (m_receivePausedAt.has_value())
+            {
+                if (now - *m_receivePausedAt >= options.backpressureTimeout)
+                {
+                    return DisconnectReason::BackpressureTimeout;
+                }
+
+                return std::nullopt;
+            }
+
+            if (m_heartbeat.responseDeadline.has_value() &&
+                now >= *m_heartbeat.responseDeadline)
+            {
+                return DisconnectReason::HeartbeatTimeout;
+            }
+
+            if (now >= m_receiveDeadline)
+            {
+                return DisconnectReason::ReceiveTimeout;
+            }
+
+            return std::nullopt;
+        }
+
+        default:
+        {
+            // Draining은 정상 종료 기한에서 관리한다.
+            // Free·Closing·Finalizing에는 통신 시간 초과를 적용하지 않는다.
+            return std::nullopt;
+        }
+        }
     }
 
     bool ClientSession::InitializeJobQueue(
@@ -219,6 +318,8 @@ namespace IOCPNetwork
 
         m_maxPendingSendBytes = options.maxPendingSendBytes;
 
+        m_receiveTimeout = options.receiveTimeout;
+
         return true;
     }
 
@@ -258,6 +359,35 @@ namespace IOCPNetwork
         m_socket = std::move(socket);
 
         m_receiveProcessor = &receiveProcessor;
+
+        return true;
+    }
+
+    bool ClientSession::BeginHandshake(
+        HandshakePhase phase,
+        std::chrono::steady_clock::time_point deadline) noexcept
+    {
+        if (phase != HandshakePhase::WaitingRequest &&
+            phase != HandshakePhase::WaitingResponse)
+        {
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock{ m_mutex };
+
+        if (m_state != State::Preparing ||
+            !m_socket ||
+            m_handshake.phase != HandshakePhase::None)
+        {
+            return false;
+        }
+
+        if (deadline <= std::chrono::steady_clock::now())
+        {
+            return false;
+        }
+
+        m_handshake = HandshakeProgress{ phase, deadline };
 
         return true;
     }
@@ -351,7 +481,7 @@ namespace IOCPNetwork
 
         lock.unlock();
 
-        BeginClose();
+        BeginClose(DisconnectInfo{ DisconnectReason::TransportError, static_cast<std::uint32_t>(errorCode) });
 
         lock.lock();
 
@@ -369,6 +499,8 @@ namespace IOCPNetwork
         Detail::SessionReference reference;
 
         bool closeRequired = false;
+
+        DisconnectInfo closeInfo{ DisconnectReason::TransportError, 0 };
 
         {
             std::lock_guard<std::mutex> lock{ m_mutex };
@@ -412,8 +544,14 @@ namespace IOCPNetwork
                 if (completion.errorCode != ERROR_SUCCESS ||
                     completion.transferredBytes == 0)
                 {
-                    // 수신 실패 또는 상대의 정상적인 송신 종료다.
-                    // 바이트 수를 버퍼에 반영하지 않고 연결 종료를 요청한다.
+                    // 오류 없는 0바이트 수신만 상대의 정상 종료로 해석한다.
+                    closeInfo = DisconnectInfo{
+                        completion.errorCode == ERROR_SUCCESS
+                            ? DisconnectReason::PeerClosed
+                            : DisconnectReason::TransportError,
+                        static_cast<std::uint32_t>(completion.errorCode)
+                    };
+
                     m_receiveResumeRequested = false;
 
                     closeRequired = true;
@@ -440,7 +578,7 @@ namespace IOCPNetwork
         // BeginClose와 마지막 참조 반환은 세션 락 밖에서 수행한다.
         if (closeRequired)
         {
-            BeginClose();
+            BeginClose(closeInfo);
 
             {
                 std::lock_guard<std::mutex> lock{ m_mutex };
@@ -460,6 +598,8 @@ namespace IOCPNetwork
 
     ClientSession::ReceivePacketResult ClientSession::ReadReceivedPacket(Detail::PacketPool& packetPool) noexcept
     {
+        DisconnectInfo closeInfo{ DisconnectReason::TransportError, 0 };
+
         try
         {
             std::lock_guard<std::mutex> lock{ m_mutex };
@@ -494,6 +634,12 @@ namespace IOCPNetwork
             {
             case Detail::PacketExtractStatus::Complete:
             {
+                // 완성된 프레임을 추출했으므로 다음 패킷의 수신 기한을 갱신한다.
+                if (m_state == State::Ready)
+                {
+                    m_receiveDeadline = std::chrono::steady_clock::now() + m_receiveTimeout;
+                }
+
                 return { ReceivePacketStatus::Complete, std::move(result.packet) };
             }
 
@@ -502,12 +648,36 @@ namespace IOCPNetwork
                 return { ReceivePacketStatus::NeedMoreData, {} };
             }
 
-            default:
+            case Detail::PacketExtractStatus::InvalidPacketId:
+            case Detail::PacketExtractStatus::InvalidPacketSize:
             {
-                // 잘못된 헤더나 메모리 부족이면 연결을 종료한다.
+                closeInfo.reason = DisconnectReason::ProtocolError;
+
                 break;
             }
+
+            case Detail::PacketExtractStatus::NoMemory:
+            {
+                closeInfo.reason = DisconnectReason::ResourceExhausted;
+
+                break;
             }
+
+            case Detail::PacketExtractStatus::InternalError:
+            {
+                // 내부 생성 계약의 불일치는 상대의 프로토콜 오류로 기록하지 않는다.
+                break;
+            }
+
+            default:
+            {
+                std::terminate();
+            }
+            }
+        }
+        catch (const std::bad_alloc&)
+        {
+            closeInfo.reason = DisconnectReason::ResourceExhausted;
         }
         catch (...)
         {
@@ -516,7 +686,7 @@ namespace IOCPNetwork
         }
 
         // BeginClose는 내부에서 세션 락을 사용하므로 락 밖에서 호출한다.
-        BeginClose();
+        BeginClose(closeInfo);
 
         return { ReceivePacketStatus::Failed, {} };
     }
@@ -550,6 +720,28 @@ namespace IOCPNetwork
         {
         case EnqueueJobResult::Queued:
         {
+            std::lock_guard<std::mutex> lock{ m_mutex };
+
+            // 접수 이후 종료가 시작됐다면 종료 경로의 초기화 상태를 유지한다.
+            if (m_state == State::Ready && m_receivePausedAt.has_value())
+            {
+                const auto now = std::chrono::steady_clock::now();
+
+                const auto pausedDuration = now - *m_receivePausedAt;
+
+                // 자체 수신 중지 때문에 응답을 처리하지 못한 시간은 제외한다.
+                if (m_heartbeat.responseDeadline.has_value())
+                {
+                    *m_heartbeat.responseDeadline += pausedDuration;
+                }
+
+                // 수신 재개 후 다음 패킷을 기다릴 기한과 하트비트 간격을 새로 부여한다.
+                m_receiveDeadline = now + m_receiveTimeout;
+                m_heartbeat.lastRequestAt = now;
+
+                m_receivePausedAt.reset();
+            }
+
             return ReceivedPacketEnqueueResult::Queued;
         }
 
@@ -573,13 +765,19 @@ namespace IOCPNetwork
             // 접수에 실패한 Job은 원본 패킷을 그대로 소유하고 있다.
             m_pendingReceivePacket = std::move(std::get<Packet>(job.GetData()));
 
+            // 재접수 실패가 반복돼도 최초 중지 시각을 유지한다.
+            if (!m_receivePausedAt.has_value())
+            {
+                m_receivePausedAt = std::chrono::steady_clock::now();
+            }
+
             return ReceivedPacketEnqueueResult::Paused;
         }
 
         case EnqueueJobResult::NotReady:
         {
             // 서비스 통신 준비 전에 받은 서비스 패킷은 허용하지 않는다.
-            BeginClose();
+            BeginClose(DisconnectInfo{ DisconnectReason::ProtocolError, 0 });
 
             return ReceivedPacketEnqueueResult::Failed;
         }
@@ -902,7 +1100,7 @@ namespace IOCPNetwork
 
         lock.unlock();
 
-        BeginClose();
+        BeginClose(DisconnectInfo{ DisconnectReason::TransportError, static_cast<std::uint32_t>(errorCode) });
 
         lock.lock();
 
@@ -920,6 +1118,8 @@ namespace IOCPNetwork
         Detail::SessionReference reference;
 
         bool closeRequired = false;
+
+        DisconnectInfo closeInfo{ DisconnectReason::TransportError, 0 };
 
         {
             std::lock_guard<std::mutex> lock{ m_mutex };
@@ -962,6 +1162,8 @@ namespace IOCPNetwork
             if (completion.errorCode != ERROR_SUCCESS ||
                 completion.transferredBytes == 0)
             {
+                closeInfo.nativeError = static_cast<std::uint32_t>(completion.errorCode);
+
                 closeRequired = true;
             }
             else
@@ -1003,7 +1205,7 @@ namespace IOCPNetwork
         if (closeRequired)
         {
             // 세션 락 밖에서 종료한다. 지역 참조가 세션의 수명을 보호한다.
-            BeginClose();
+            BeginClose(closeInfo);
 
             {
                 std::lock_guard<std::mutex> lock{ m_mutex };
@@ -1073,15 +1275,27 @@ namespace IOCPNetwork
                     return EnqueueJobResult::NotReady;
                 }
 
+                // 핸드셰이크가 시작되지 않았다면 준비 완료를 확정할 수 없다.
+                if (m_handshake.phase == HandshakePhase::None)
+                {
+                    return EnqueueJobResult::NotReady;
+                }
+
+                // 응답 송신 준비 중 기한이 지났을 수 있으므로 다시 검사한다.
+                if (std::chrono::steady_clock::now() >= m_handshake.deadline)
+                {
+                    return EnqueueJobResult::NotReady;
+                }
+
                 break;
             }
 
             case State::Ready:
             {
-                // 같은 연결의 준비 완료 통지를 두 번 등록하는 것은 내부 오류다.
+                // 이미 준비 완료된 연결에는 연결 통지를 다시 접수하지 않는다.
                 if (isConnectNotify)
                 {
-                    std::terminate();
+                    return EnqueueJobResult::NotReady;
                 }
 
                 break;
@@ -1120,6 +1334,19 @@ namespace IOCPNetwork
 
                 // 통지가 FIFO에 들어간 뒤에만 일반 작업 접수를 허용한다.
                 m_state = State::Ready;
+
+                // 서비스 준비가 끝났으므로 핸드셰이크 대기를 해제한다.
+                m_handshake = {};
+
+                const auto now = std::chrono::steady_clock::now();
+
+                m_heartbeat = {};
+
+                m_heartbeat.lastRequestAt = now;
+
+                m_receiveDeadline = now + m_receiveTimeout;
+
+                m_receivePausedAt.reset();
             }
         }
 
@@ -1291,6 +1518,16 @@ namespace IOCPNetwork
 
         // 종료 통지가 끝났으므로 이전 연결 정보를 초기화한다.
         m_connectionId = {};
+
+        m_disconnectInfo = {};
+
+        m_handshake = {};
+
+        m_heartbeat = {};
+
+        m_receiveDeadline = {};
+
+        m_receivePausedAt.reset();
 
         m_connectedNotificationQueued = false;
 

@@ -6,15 +6,20 @@
 #include "WinsockRuntime.h"
 #include "SessionReference.h"
 #include "SocketHandle.h"
+#include "SystemPacket.h"
 #include "../ConnectionId.h"
+#include "../PacketView.h"
 
 #include <MSWSock.h> // for LPFN_CONNECTEX
 #include <cstdint>  // for std::uint32_t
 #include <WinSock2.h> // for SOCKET, ULONG_PTR
-#include <cstddef> // for std::size_t
+#include <cstddef> // for std::byte, std::size_t
+#include <span> // for std::span
 #include <memory> // for std::shared_ptr, std::unique_ptr
 #include <mutex>  // for std::mutex
-#include <condition_variable> // for std::condition_variable
+#include <condition_variable> // for std::condition_variable_any
+#include <thread> // for std::jthread
+#include <stop_token> // for std::stop_token
 
 namespace IOCPNetwork::Detail
 {
@@ -76,18 +81,41 @@ namespace IOCPNetwork::Detail
         [[nodiscard]] SessionReference PrepareSession(SocketHandle&& socket) noexcept;
 
         // 세션 락으로 소켓 닫기를 막은 상태에서 ConnectEx를 발행한다.
-        //  0 은 접수 성공이며, 그 괴의 값은 완료 통지가 없는 즉시 실패다.
+        // 0은 접수 성공이며, 그 외의 값은 완료 통지가 없는 즉시 실패다.
         [[nodiscard]] std::uint32_t PostSessionConnect(
             ClientSession& session, LPFN_CONNECTEX connectEx,
             const sockaddr_in& remoteAddress, IOOperation& operation) noexcept;
 
         // Connect 성공 후 소켓의 연결 문맥을 갱신한다.
-        // 종료와 경합하거나 옵션 적용에 실패하면 false를 반환한다.
-        [[nodiscard]] bool UpdateSessionConnectContext(ClientSession& session) noexcept;
+        // 성공은 0, 종료 경합·옵션 적용 실패는 해당 오류 코드를 반환한다.
+        [[nodiscard]] std::uint32_t UpdateSessionConnectContext(ClientSession& session) noexcept;
 
         // 소켓 연결을 마친 세션에 첫 수신을 발행한다.
         // 호출자는 사용 참조를 보유하며, 발행하지 못하면 연결을 종료한다.
         [[nodiscard]] bool StartSessionReceive(ClientSession& session) noexcept;
+
+        // 대기 상태를 먼저 설정하고 필요한 요청 송신과 첫 수신을 시작한다.
+        // expectedPacket은 서버의 요청 대기 또는 클라이언트의 응답 대기다.
+        [[nodiscard]] bool StartSessionHandshake(ClientSession& session, SystemPacketId expectedPacket) noexcept;
+
+        // 수신 후처리에서 핸드셰이크를 검사하고 연결 통지 Job을 접수한다.
+        // false면 호출자가 연결을 종료하며, 세션 참조를 유지해야 한다.
+        [[nodiscard]] bool HandleHandshakePacket(ClientSession& session, PacketView packet) noexcept;
+
+        // Ready이며 수신 중지·응답 대기가 없고 송신 간격이 지났을 때 요청한다.
+        // 생성·접수 실패 시 종료하며, 호출자는 세션 사용 참조를 보유한다.
+        void SendHeartbeatRequest(ClientSession& session) noexcept;
+
+        // 하트비트 요청에는 응답하고, 응답은 현재 대기 번호와 기한을 검사한다.
+        // 수신 후처리에서 호출하며, false이면 ReceiveProcessor가 연결을 종료한다.
+        [[nodiscard]] bool HandleHeartbeatPacket(ClientSession& session, PacketView packet) noexcept;
+
+        // 시스템 본문을 검증하고 새 Packet을 만들어 송신 큐에 접수한다.
+        // 호출자는 같은 엔진에 속한 세션의 사용 참조를 보유해야 한다.
+        [[nodiscard]] SendResult SendSystemPacket(
+            ClientSession& session,
+            SystemPacketId packetId,
+            std::span<const std::byte> payload) noexcept;
 
         // 실행 중인 엔진에서 ID가 일치하는 연결의 사용 참조를 확보한다.
         // 연결 상태와 세대를 확인하며, 조회 실패 시 빈 참조를 반환한다.
@@ -110,6 +138,12 @@ namespace IOCPNetwork::Detail
         [[nodiscard]] virtual bool HandleSystemPacket(ClientSession& session, Packet packet) = 0;
 
     private:
+        // 필수 시스템 송신 실패의 사유를 기록한다. 먼저 확정된 종료 사유는 유지한다.
+        static void CloseOnSystemSendFailure(ClientSession& session, SendResult result) noexcept;
+
+#if defined(IOCPNETWORK_HEARTBEAT_TESTING)
+        friend struct HeartbeatTestAccess;
+#endif
 #if defined(IOCPNETWORK_TESTING)
         friend struct ClientLifecycleTestAccess;
 #endif
@@ -147,6 +181,20 @@ namespace IOCPNetwork::Detail
         // 일부 시작에 실패하면 이미 시작한 워커도 정지한다.
         [[nodiscard]] StartResult StartWorkers() noexcept;
 
+        // 주기 스레드를 생성한다. Starting에서는 실제 검사 없이 기다린다.
+        [[nodiscard]] bool StartMaintenance() noexcept;
+
+        // 대기를 깨워 종료를 요청하고 실행 중인 검사까지 합류한다.
+        // 시작·종료 책임자만 호출하며, 엔진 상태 락을 잡지 않아야 한다.
+        void StopMaintenance() noexcept;
+
+        // 시작 완료를 기다린 뒤 중단 요청까지 주기 검사를 반복한다.
+        void RunMaintenance(std::stop_token stopToken) noexcept;
+
+        // 실행 중인 연결을 순회하여 시간 초과 종료와 하트비트 송신을 수행한다.
+        // 전용 주기 작업에서만 호출하며, 풀 해제 전에 해당 작업을 합류시켜야 한다.
+        void CheckSessions() noexcept;
+
         // 새 작업 생산과 역할별 I/O, 모든 세션의 반환이 끝난 뒤 호출한다.
         // 워커를 합류시키고 공통 자원을 해제하며 실행 상태는 변경하지 않는다.
         void ReleaseProcessingResources() noexcept;
@@ -170,7 +218,7 @@ namespace IOCPNetwork::Detail
         std::mutex m_stateMutex;
 
         // 시작 완료·실패 또는 종료 완료를 기다리는 호출을 깨운다.
-        std::condition_variable m_stateChanged;
+        std::condition_variable_any m_stateChanged;
 
         State m_state = State::Stopped;
 
@@ -201,5 +249,8 @@ namespace IOCPNetwork::Detail
         // 엔진당 하나의 IOCP와 그 완료를 기다리는 워커들을 소유한다.
         // 실제 종료에서는 모든 세션 완료를 회수한 뒤 워커를 정지한다.
         std::unique_ptr<IOWorkerPool> m_ioWorkers;
+
+        // 공통 자원을 사용하는 주기 작업이다. 자원 해제 전에 명시적으로 합류한다.
+        std::jthread m_maintenanceThread;
     };
 }

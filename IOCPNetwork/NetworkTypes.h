@@ -76,7 +76,8 @@ namespace IOCPNetwork
         BackpressureTimeout, // 수신 일시정지 유예 시간을 초과했다.
         ShutdownTimeout,     // 정상 종료의 전체 처리 기한을 초과했다.
         ResourceExhausted,   // 연결 유지에 필요한 메모리 등 자원이 부족하다.
-        ServiceException     // 패킷 핸들러·Task·연결 통지에서 예외가 발생했다.
+        ServiceException,    // 패킷 핸들러·Task·연결 통지에서 예외가 발생했다.
+        HeartbeatTimeout     // 하트비트 응답 제한 시간을 초과했다.
     };
 
     // 서비스에 전달할 종료 사유와 운영체제 오류 정보를 보관한다.

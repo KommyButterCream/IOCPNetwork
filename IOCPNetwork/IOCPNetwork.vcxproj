@@ -196,6 +196,7 @@
     <ClInclude Include="Detail\SessionFinalization.h" />
     <ClInclude Include="Detail\SessionJobQueue.h" />
     <ClInclude Include="Detail\SessionReference.h" />
+    <ClInclude Include="Detail\SystemPacket.h" />
     <ClInclude Include="Detail\WinsockRuntime.h" />
     <ClInclude Include="Export.h" />
     <ClInclude Include="IOCPBase.h" />

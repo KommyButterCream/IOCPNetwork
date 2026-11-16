@@ -5,6 +5,7 @@
 #include "EngineExecutionScope.h"
 #include "OptionsValidation.h"
 #include "JobScheduler.h"
+#include "SystemPacket.h"
 
 #include <WS2tcpip.h> // for InetPtonA
 
@@ -586,7 +587,9 @@ namespace IOCPNetwork::Detail
             {
                 // 실패 시 공통 함수가 연결 종료까지 처리한다.
                 // 성공 시 첫 수신 I/O가 별도의 세션 참조를 소유한다.
-                if (!StartSessionReceive(*session.Get()))
+                if (!StartSessionHandshake(
+                    *session.Get(),
+                    SystemPacketId::HandshakeRequest))
                 {
                     session.Reset();
                 }
@@ -613,21 +616,38 @@ namespace IOCPNetwork::Detail
     {
         JobCallbacks callbacks;
 
-        // 서비스 디스패치 구현 전의 임시 거절 경로다.
-        // 정상 연결은 아직 Preparing이므로 서비스 Packet Job을 접수하지 않는다.
+        // 서비스 디스패치 구현 전에는 수신한 서비스 패킷을 거절한다.
         callbacks.received = [](ClientSession& session, Packet)
             {
-                session.BeginClose();
+                session.BeginClose(DisconnectInfo{ DisconnectReason::ProtocolError, 0 });
             };
 
         return callbacks;
     }
 
-    bool IOCPServerImpl::HandleSystemPacket(ClientSession&, Packet)
+    bool IOCPServerImpl::HandleSystemPacket(ClientSession& session, Packet packet)
     {
-        // 핸드셰이크·하트비트 구현 전에는 시스템 패킷을 수락하지 않는다.
-        // false를 받은 ReceiveProcessor가 연결 종료를 요청한다.
-        return false;
+        const auto view = packet.View();
+
+        switch (view.packetId)
+        {
+        case ToPacketId(SystemPacketId::HandshakeRequest):
+        {
+            return HandleHandshakePacket(session, view);
+        }
+
+        case ToPacketId(SystemPacketId::HeartbeatRequest):
+        case ToPacketId(SystemPacketId::HeartbeatResponse):
+        {
+            return HandleHeartbeatPacket(session, view);
+        }
+
+        default:
+        {
+            // 지원하지 않거나 서버가 받을 방향이 아닌 패킷이다.
+            return false;
+        }
+        }
     }
 
     AcceptSession& IOCPServerImpl::FindAcceptSession(const IOOperation& operation) noexcept

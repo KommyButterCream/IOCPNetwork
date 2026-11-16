@@ -578,7 +578,7 @@ namespace IOCPNetwork::Detail
         {
             // 서비스 예외가 워커 실행 루프 밖으로 전파되지 않게 한다.
             // 현재 Job을 정리한 뒤 남은 일반 작업은 Closing 정책으로 취소한다.
-            session.BeginClose();
+            session.BeginClose(DisconnectInfo{ DisconnectReason::ServiceException, 0 });
         }
     }
 
@@ -593,6 +593,8 @@ namespace IOCPNetwork::Detail
 
         bool notifyDisconnected = false;
 
+        DisconnectInfo disconnectInfo{};
+
         {
             std::lock_guard<std::mutex> lock{ session->m_mutex };
 
@@ -603,6 +605,8 @@ namespace IOCPNetwork::Detail
             }
 
             notifyDisconnected = session->m_connectedNotificationQueued;
+
+            disconnectInfo = session->m_disconnectInfo;
         }
 
         try
@@ -610,7 +614,7 @@ namespace IOCPNetwork::Detail
             // 서비스 코드는 세션 락을 놓은 상태에서 호출한다.
             if (notifyDisconnected && m_callbacks.disconnected)
             {
-                m_callbacks.disconnected(*session);
+                m_callbacks.disconnected(*session, disconnectInfo);
             }
         }
         catch (...)

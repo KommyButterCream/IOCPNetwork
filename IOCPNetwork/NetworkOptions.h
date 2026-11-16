@@ -36,6 +36,24 @@ namespace IOCPNetwork
         // 한 번의 WSASend에 묶을 패킷 수와 바이트 상한이다.
         std::uint32_t maxSendBatchPackets = 32;
         std::size_t maxSendBatchBytes = 256 * 1024;
+
+        // 연결 상태와 시간 초과를 확인하는 주기다.
+        std::chrono::milliseconds maintenanceInterval{ 250 };
+
+        // TCP 연결 완료 후 핸드셰이크를 마칠 때까지 허용하는 시간이다.
+        std::chrono::milliseconds handshakeTimeout{ 10'000 };
+
+        // 정상 상태에서 하트비트 요청을 보내는 간격이다.
+        std::chrono::milliseconds heartbeatInterval{ 5'000 };
+
+        // 하트비트 요청의 응답을 기다리는 제한 시간이다.
+        std::chrono::milliseconds heartbeatTimeout{ 10'000 };
+
+        // 유효한 완성 패킷을 받지 못한 상태를 허용하는 시간이다.
+        std::chrono::milliseconds receiveTimeout{ 30'000 };
+
+        // Job 큐 포화로 수신이 중지된 상태를 허용하는 시간이다.
+        std::chrono::milliseconds backpressureTimeout{ 30'000 };
     };
 
     // 서버의 수신 주소와 최대 연결 수를 지정한다.

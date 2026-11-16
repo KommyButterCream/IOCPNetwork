@@ -205,44 +205,57 @@ namespace IOCPNetwork::Detail
         }
     }
 
-    void ClientSessionPool::RequestCloseAll() noexcept
+    std::uint32_t ClientSessionPool::GetCapacity() const noexcept
+    {
+        return m_capacity;
+    }
+
+    SessionReference ClientSessionPool::TryAcquireSessionAt(std::uint32_t index) noexcept
+    {
+        if (index >= m_capacity)
+        {
+            return {};
+        }
+
+        std::lock_guard<std::mutex> poolLock{ m_mutex };
+
+        ClientSession& session = m_sessions[index];
+
+        std::lock_guard<std::mutex> sessionLock{ session.m_mutex };
+
+        switch (session.m_state)
+        {
+        case ClientSession::State::Preparing:
+        case ClientSession::State::Ready:
+        case ClientSession::State::Draining:
+        {
+            // 연결 유지용 참조가 남아 있는 동안 사용 참조를 추가한다.
+            return session.AcquireReference();
+        }
+
+        default:
+        {
+            // Free·Closing·Finalizing은 새 순회 참조를 발급하지 않는다.
+            return {};
+        }
+        }
+    }
+
+    void ClientSessionPool::RequestCloseAll(DisconnectInfo info) noexcept
     {
         for (std::uint32_t index = 0; index < m_capacity; ++index)
         {
-            SessionReference reference;
+            auto reference = TryAcquireSessionAt(index);
 
+            if (!reference)
             {
-                std::lock_guard<std::mutex> poolLock{ m_mutex };
-
-                auto& session = m_sessions[index];
-
-                std::lock_guard<std::mutex> sessionLock{ session.m_mutex };
-
-                switch (session.m_state)
-                {
-                case ClientSession::State::Preparing:
-                case ClientSession::State::Ready:
-                case ClientSession::State::Draining:
-                {
-                    // 연결 유지용 참조가 남아 있는 상태에서 사용 참조를 확보한다.
-                    reference = session.AcquireReference();
-
-                    break;
-                }
-
-                default:
-                {
-                    // Free는 종료 대상이 아니며 Closing·Finalizing은 이미 종료 중이다.
-                    break;
-                }
-                }
+                continue;
             }
 
-            if (reference)
-            {
-                // 내부에서 세션 락을 사용하므로 위의 락을 해제한 뒤 호출한다.
-                reference.Get()->BeginClose();
-            }
+            // 참조 확보 함수의 풀·세션 락은 이미 해제된 상태다.
+            reference.Get()->BeginClose(info);
+
+            // 반복 끝에서 참조가 반환되며, 그전까지 재대여되지 않는다.
         }
     }
 

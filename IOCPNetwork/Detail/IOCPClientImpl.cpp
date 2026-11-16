@@ -4,6 +4,7 @@
 #include "EngineExecutionScope.h"
 #include "JobScheduler.h"
 #include "OptionsValidation.h"
+#include "SystemPacket.h"
 
 #include <WS2tcpip.h> // for InetPtonA
 #include <cstdint>   // for std::uint32_t
@@ -265,7 +266,7 @@ namespace IOCPNetwork::Detail
         }
 
         // 연결 유지용 참조와 Connect용 참조를 락 밖에서 정리한다.
-        failedReference.Get()->BeginClose();
+        failedReference.Get()->BeginClose(DisconnectInfo{ DisconnectReason::TransportError, error });
 
         failedReference.Reset();
 
@@ -310,19 +311,22 @@ namespace IOCPNetwork::Detail
 
         if (completion.errorCode != ERROR_SUCCESS)
         {
-            // 접속 거절·통신 실패·취소 모두 연결 종료로 정리한다.
-            session.BeginClose();
+            // 완료 오류 코드를 보존하며, 먼저 확정된 종료 사유는 유지한다.
+            session.BeginClose(DisconnectInfo{ DisconnectReason::TransportError,
+                static_cast<std::uint32_t>(completion.errorCode) });
         }
-        else if (!UpdateSessionConnectContext(session))
+        else if (const auto error = UpdateSessionConnectContext(session); error != 0)
         {
             // 완료 성공과 종료 요청이 경합했거나 문맥 적용에 실패했다.
-            session.BeginClose();
+            session.BeginClose(DisconnectInfo{ DisconnectReason::TransportError, error });
         }
         else
         {
             // 실패하면 공통 함수가 BeginClose까지 수행한다.
             // 성공하면 수신 I/O가 별도의 세션 참조를 보유한다.
-            static_cast<void>(StartSessionReceive(session));
+            static_cast<void>(StartSessionHandshake(
+                session,
+                SystemPacketId::HandshakeResponse));
         }
 
         // 마지막 참조일 수 있으므로 Connect·세션 락 밖에서 반환한다.
@@ -355,7 +359,7 @@ namespace IOCPNetwork::Detail
 
         if (preparedReference)
         {
-            preparedReference.Get()->BeginClose();
+            preparedReference.Get()->BeginClose(DisconnectInfo{ DisconnectReason::EngineStopping, 0 });
 
             // 전체 반환 대기를 시작하기 전에 준비 참조부터 반환한다.
             preparedReference.Reset();
@@ -396,15 +400,34 @@ namespace IOCPNetwork::Detail
         // 서비스 디스패치 구현 전의 임시 거절 경로다.
         callbacks.received = [](ClientSession& session, Packet)
             {
-                session.BeginClose();
+                session.BeginClose(DisconnectInfo{ DisconnectReason::ProtocolError, 0 });
             };
 
         return callbacks;
     }
 
-    bool IOCPClientImpl::HandleSystemPacket(ClientSession&, Packet)
+    bool IOCPClientImpl::HandleSystemPacket(ClientSession& session, Packet packet)
     {
-        // 핸드셰이크·하트비트는 이후 서버와 함께 구현한다.
-        return false;
+        const auto view = packet.View();
+
+        switch (view.packetId)
+        {
+        case ToPacketId(SystemPacketId::HandshakeResponse):
+        {
+            return HandleHandshakePacket(session, view);
+        }
+
+        case ToPacketId(SystemPacketId::HeartbeatRequest):
+        case ToPacketId(SystemPacketId::HeartbeatResponse):
+        {
+            return HandleHeartbeatPacket(session, view);
+        }
+
+        default:
+        {
+            // 지원하지 않거나 클라이언트가 받을 방향이 아닌 패킷이다.
+            return false;
+        }
+        }
     }
 }

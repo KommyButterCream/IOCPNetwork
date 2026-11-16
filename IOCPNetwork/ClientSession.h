@@ -12,6 +12,9 @@
 #include <cstddef> // for std::size_t
 #include <memory>  // for std::unique_ptr
 #include <mutex>   // for std::mutex
+#include <chrono> // for std::chrono::milliseconds, std::chrono::steady_clock
+#include <cstdint> // for std::uint64_t
+#include <optional> // for std::optional
 
 namespace IOCPNetwork
 {
@@ -32,6 +35,9 @@ namespace IOCPNetwork
         class IOCPBaseImpl;
 
         struct IOCompletion;
+#if defined(IOCPNETWORK_HEARTBEAT_TESTING)
+        struct HeartbeatTestAccess;
+#endif
 
         // ClientSession을 completion key로 사용하는 송수신 완료를 분기한다.
         // IOWorkerPool 콜백 형식에 맞추며 context는 사용하지 않는다.
@@ -63,7 +69,7 @@ namespace IOCPNetwork
 
         // Closing으로 전환하고 소켓·보관 패킷을 정리한 뒤 연결 유지용 참조를 반환한다.
         // 호출자는 별도의 사용 참조를 보유해야 하며, 중복 호출은 무시한다.
-        void BeginClose() noexcept;
+        void BeginClose(DisconnectInfo info = {}) noexcept;
 
     private:
         friend class Detail::ClientSessionPool;
@@ -75,6 +81,9 @@ namespace IOCPNetwork
             void* context,
             const Detail::IOCompletion& completion) noexcept;
         friend class Detail::IOCPBaseImpl;
+#if defined(IOCPNETWORK_HEARTBEAT_TESTING)
+        friend struct Detail::HeartbeatTestAccess;
+#endif
 
 #if defined(IOCPNETWORK_TESTING)
         // 공개 서비스 API가 연결되기 전 내부 접수 경로를 검증한다.
@@ -85,6 +94,20 @@ namespace IOCPNetwork
 
         // 세션 저장소는 풀만 생성한다.
         ClientSession() noexcept;
+
+        // 현재 상태의 시간 초과 사유를 반환한다. 해당 없으면 nullopt다.
+        // 호출자는 m_mutex를 보유하고, 락 획득 후의 현재 시각을 전달한다.
+        [[nodiscard]] std::optional<DisconnectReason> GetTimeoutReasonLocked(
+            const NetworkOptions& options,
+            std::chrono::steady_clock::time_point now) const noexcept;
+
+        // 시간 초과 확인과 Closing 전환을 같은 락 안에서 수행한다.
+        // 호출자는 별도의 세션 사용 참조를 보유해야 한다.
+        void CloseIfTimedOut(const NetworkOptions& options) noexcept;
+
+        // nullptr이면 일반 종료, 설정이 있으면 시간 초과일 때만 종료한다.
+        // 설정은 호출 동안만 빌려 사용하며 저장하지 않는다.
+        void BeginCloseImpl(DisconnectInfo info, const NetworkOptions* timeoutOptions) noexcept;
 
         // 풀이 외부에 공개되기 전에 세션의 Job 저장소를 한 번 확보한다.
         // 잘못된 용량이나 메모리 부족이면 false를 반환한다.
@@ -205,6 +228,39 @@ namespace IOCPNetwork
             Finalizing  // 사용 참조 0, 최종 통지·정리 후 풀 반환 대기
         };
 
+        // Preparing 안에서 현재 기다리는 시스템 패킷을 구분한다.
+        enum class HandshakePhase
+        {
+            None,            // 아직 시작하지 않았거나 대기를 끝냄
+            WaitingRequest,  // 서버: 클라이언트의 요청을 기다림
+            WaitingResponse  // 클라이언트: 서버의 응답을 기다림
+        };
+
+        // 핸드셰이크 대기 정보. 모든 접근은 m_mutex로 보호한다.
+        struct HandshakeProgress
+        {
+            HandshakePhase phase = HandshakePhase::None;
+
+            std::chrono::steady_clock::time_point deadline{};
+        };
+
+        // 현재 연결에서 보낸 마지막 요청 번호와 응답 대기 기한이다.
+        // 모든 접근은 m_mutex로 보호한다.
+        struct HeartbeatProgress
+        {
+            std::uint64_t sequence = 0;
+
+            // 새 요청의 송신 간격을 계산하는 기준 시각이다.
+            std::chrono::steady_clock::time_point lastRequestAt{};
+
+            // 값이 있으면 응답 대기 중이며, 없으면 새 요청을 시작할 수 있다.
+            std::optional<std::chrono::steady_clock::time_point> responseDeadline;
+        };
+
+        // TCP 연결 후 첫 수신·핸드셰이크 송신 전에 대기 상태를 설정한다.
+        [[nodiscard]] bool BeginHandshake(
+            HandshakePhase phase, std::chrono::steady_clock::time_point deadline) noexcept;
+
         // 세션 상태와 큐 접수를 함께 판단한 내부 결과다.
         enum class EnqueueJobResult
         {
@@ -251,7 +307,28 @@ namespace IOCPNetwork
 
         State m_state = State::Free;
 
+        // 현재 연결의 핸드셰이크 대기 단계와 종료 시각이다.
+        HandshakeProgress m_handshake;
+
+        // 현재 연결의 하트비트 요청 번호와 응답 대기 정보다.
+        HeartbeatProgress m_heartbeat;
+
+        // 풀 초기화 시 확정되는 무수신 제한 시간이다. 재대여 때도 유지한다.
+        std::chrono::milliseconds m_receiveTimeout{};
+
+        // Ready 상태에서 다음 완성 패킷을 기다릴 기한이다.
+        // 수신 중지 중에는 검사를 유예하며, 접근은 m_mutex로 보호한다.
+        std::chrono::steady_clock::time_point m_receiveDeadline{};
+
+        // Job 큐 포화로 처음 수신을 중지한 시각이다.
+        // 재접수 실패가 반복돼도 갱신하지 않으며, m_mutex로 보호한다.
+        std::optional<std::chrono::steady_clock::time_point> m_receivePausedAt;
+
         ConnectionId m_connectionId{};
+
+        // 최초 Closing 전환에서 확정하고 최종 종료 통지까지 유지한다.
+        // 접근은 m_mutex로 보호하며, 풀 반환 시 초기화한다.
+        DisconnectInfo m_disconnectInfo{};
 
         // 현재 연결의 연결 통지가 접수되었는지 기록한다.
         // 최종 종료 통지 여부를 판단하며, 풀 반환 시 초기화한다.

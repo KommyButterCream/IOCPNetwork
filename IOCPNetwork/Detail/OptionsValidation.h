@@ -3,7 +3,7 @@
 #include "../NetworkOptions.h"
 
 #include <bit> // for std::has_single_bit
-#include <chrono> // for std::chrono::milliseconds
+#include <chrono> // for std::chrono::milliseconds, std::chrono::hours
 #include <cstddef> // for std::size_t
 #include <cstdint> // for std::uint32_t
 #include <limits> // for std::numeric_limits
@@ -21,7 +21,8 @@ namespace IOCPNetwork::Detail
         InvalidRecvRing,
         InvalidJobLimit,
         InvalidSendLimit,
-        InvalidBatch
+        InvalidBatch,
+        InvalidTimeout
     };
 
     // 공통 설정의 범위와 항목 사이의 제약을 검사한다.
@@ -63,6 +64,40 @@ namespace IOCPNetwork::Detail
             (std::numeric_limits<std::uint32_t>::max)())
         {
             return OptionsError::InvalidBatch;
+        }
+
+        // 이번 시간 설정은 0으로 비활성화하지 않으며, 최대 하루까지 허용한다.
+        const auto isValidDuration =
+            [](std::chrono::milliseconds duration) noexcept
+            {
+                return duration > std::chrono::milliseconds::zero() &&
+                    duration <= std::chrono::hours{ 24 };
+            };
+
+        if (!isValidDuration(options.maintenanceInterval) ||
+            !isValidDuration(options.handshakeTimeout) ||
+            !isValidDuration(options.heartbeatInterval) ||
+            !isValidDuration(options.heartbeatTimeout) ||
+            !isValidDuration(options.receiveTimeout) ||
+            !isValidDuration(options.backpressureTimeout))
+        {
+            return OptionsError::InvalidTimeout;
+        }
+
+        // 검사 주기가 관리 대상의 간격이나 제한 시간보다 길면 안 된다.
+        if (options.maintenanceInterval > options.handshakeTimeout ||
+            options.maintenanceInterval > options.heartbeatInterval ||
+            options.maintenanceInterval > options.heartbeatTimeout ||
+            options.maintenanceInterval > options.receiveTimeout ||
+            options.maintenanceInterval > options.backpressureTimeout)
+        {
+            return OptionsError::InvalidTimeout;
+        }
+
+        // 정상적인 하트비트 요청·응답을 기다릴 시간은 확보한다.
+        if (options.receiveTimeout < options.heartbeatInterval + options.heartbeatTimeout)
+        {
+            return OptionsError::InvalidTimeout;
         }
 
         return OptionsError::None;
