@@ -2,6 +2,7 @@
 
 #include "Detail/IOCPClientImpl.h"
 
+#include <cstddef> // for std::size_t
 #include <memory> // for std::make_unique
 
 namespace IOCPNetwork

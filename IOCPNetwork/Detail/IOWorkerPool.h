@@ -2,6 +2,8 @@
 
 #include "IOOperation.h"
 
+#include <WinSock2.h> // for SOCKET, HANDLE, DWORD, ULONG_PTR
+
 #include <cstddef> // for std::size_t
 #include <memory>  // for std::shared_ptr, std::unique_ptr
 #include <thread>  // for std::thread

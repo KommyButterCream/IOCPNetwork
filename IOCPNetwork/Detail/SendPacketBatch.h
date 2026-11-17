@@ -1,8 +1,8 @@
 #pragma once
 
-#include <WinSock2.h> // for WSABUF
-
 #include "../Packet.h"
+
+#include <WinSock2.h> // for WSABUF
 
 #include <cstddef> // for std::size_t
 #include <memory>  // for std::unique_ptr

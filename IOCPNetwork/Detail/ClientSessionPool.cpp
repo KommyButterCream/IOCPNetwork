@@ -1,16 +1,21 @@
 #include "ClientSessionPool.h"
 
 #include "../ClientSession.h"
-#include "ConnectionGeneration.h"
 #include "../NetworkOptions.h"
+#include "ConnectionGeneration.h"
 #include "OptionsValidation.h"
 
+#include <atomic> // for std::memory_order_relaxed
+#include <chrono> // for std::chrono
 #include <cstddef> // for std::size_t
+#include <cstdint> // for std::uint32_t, std::uint64_t
 #include <exception> // for std::terminate
 #include <limits>  // for std::numeric_limits
+#include <memory> // for std::unique_ptr
 #include <mutex>   // for std::lock_guard, std::unique_lock
 #include <new>     // for std::bad_alloc
 #include <utility> // for std::move
+#include <vector> // for std::vector
 
 namespace IOCPNetwork::Detail
 {

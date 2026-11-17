@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Job.h"
 #include "../NetworkTypes.h"
+#include "Job.h"
 #include "SessionFinalization.h"
 #include "SessionReference.h"
 

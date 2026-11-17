@@ -1,7 +1,7 @@
 #pragma once
 
-#include "../Packet.h"
 #include "../NetworkTypes.h"
+#include "../Packet.h"
 
 #include <cstddef> // for std::size_t
 #include <memory>  // for std::unique_ptr

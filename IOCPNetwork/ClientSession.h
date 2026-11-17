@@ -4,17 +4,19 @@
 #include "Detail/IOOperation.h"
 #include "Detail/SessionReference.h"
 #include "Detail/SocketHandle.h"
+#include "Export.h"
+#include "NetworkTypes.h"
 #include "Packet.h"
 #include "SessionTask.h"
-#include "NetworkTypes.h"
-#include "Export.h"
+
+#include <WinSock2.h> // for DWORD
 
 #include <atomic>  // for std::atomic
+#include <chrono> // for std::chrono::milliseconds, std::chrono::steady_clock
 #include <cstddef> // for std::size_t
+#include <cstdint> // for std::uint64_t
 #include <memory>  // for std::unique_ptr
 #include <mutex>   // for std::mutex
-#include <chrono> // for std::chrono::milliseconds, std::chrono::steady_clock
-#include <cstdint> // for std::uint64_t
 #include <optional> // for std::optional
 
 namespace IOCPNetwork

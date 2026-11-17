@@ -1,6 +1,7 @@
 #include "Job.h"
 
 #include <cassert> // for assert
+#include <memory> // for std::unique_ptr
 #include <utility> // for std::move, std::in_place_type
 #include <variant> // for std::variant, std::monostate, std::get
 

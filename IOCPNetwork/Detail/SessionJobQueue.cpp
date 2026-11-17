@@ -4,10 +4,13 @@
 
 #include <algorithm> // for std::min
 #include <cassert> // for assert
+#include <cstddef> // for std::size_t
 #include <exception> // for std::terminate
 #include <limits> // for std::numeric_limits
+#include <memory> // for std::unique_ptr, std::make_unique
 #include <mutex> // for std::lock_guard
 #include <new> // for std::bad_alloc
+#include <span> // for std::span
 #include <utility> // for std::move
 #include <variant> // for std::get_if, std::holds_alternative
 

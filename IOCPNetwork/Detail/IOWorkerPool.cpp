@@ -1,18 +1,21 @@
 #include "IOWorkerPool.h"
 
-#include "PacketPool.h"
 #include "EngineExecutionScope.h"
+#include "PacketPool.h"
 
+#include <WinSock2.h> // for SOCKET
 #include <Windows.h> // for CreateIoCompletionPort, CloseHandle,
                      // GetQueuedCompletionStatus, GetLastError
                      // PostQueuedCompletionStatus
+
+#include <cstddef> // for std::size_t
 #include <exception> // for std::terminate
 #include <limits>  // for std::numeric_limits
 #include <memory>  // for std::make_unique, std::unique_ptr
 #include <new>     // for std::bad_alloc
-#include <utility> // for std::move
 #include <system_error> // for std::system_error
 #include <thread> // for std::thread, std::this_thread::get_id
+#include <utility> // for std::move
 
 namespace IOCPNetwork::Detail
 {

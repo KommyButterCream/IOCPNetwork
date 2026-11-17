@@ -1,16 +1,20 @@
 #include "IOCPClientImpl.h"
+
 #include "../ClientSession.h"
-#include "IOWorkerPool.h"
 #include "EngineExecutionScope.h"
+#include "IOWorkerPool.h"
 #include "JobScheduler.h"
 #include "OptionsValidation.h"
 #include "SystemPacket.h"
 
+#include <WinSock2.h> // for WSASocketW, bind, WSAIoctl, WSAGetLastError
 #include <WS2tcpip.h> // for InetPtonA
+
+#include <cstddef> // for std::size_t
 #include <cstdint>   // for std::uint32_t
 #include <exception> // for std::terminate
-#include <utility>   // for std::move
 #include <mutex> // for std::lock_guard, std::unique_lock
+#include <utility>   // for std::move
 
 namespace IOCPNetwork::Detail
 {

@@ -1,6 +1,7 @@
 #include "ConnectionGeneration.h"
 
 #include <atomic> // for std::atomic
+#include <cstdint> // for std::uint64_t
 #include <limits> // for std::numeric_limits
 
 namespace IOCPNetwork::Detail

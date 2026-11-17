@@ -1,8 +1,8 @@
 #pragma once
 
-#include "Export.h"
-
 #include "ConnectionId.h"
+#include "Export.h"
+#include "IOCPBase.h"
 #include "NetworkOptions.h"
 #include "NetworkTypes.h"
 #include "Packet.h"
@@ -12,7 +12,6 @@
 #include "PacketView.h"
 #include "PacketWriter.h"
 #include "SessionTask.h"
-#include "IOCPBase.h"
 
 namespace IOCPNetwork
 {

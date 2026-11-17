@@ -1,6 +1,8 @@
 #include "SendPacketQueue.h"
 
+#include <cstddef> // for std::size_t
 #include <limits>  // for std::numeric_limits
+#include <memory> // for std::unique_ptr, std::make_unique
 #include <new>     // for std::bad_alloc
 #include <utility> // for std::move
 

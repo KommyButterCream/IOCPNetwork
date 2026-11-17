@@ -3,6 +3,7 @@
 #include "Detail/ClientSessionPool.h"
 #include "Detail/IOWorkerPool.h"
 #include "Detail/Job.h"
+#include "Detail/JobExecutionScope.h"
 #include "Detail/JobScheduler.h"
 #include "Detail/OptionsValidation.h"
 #include "Detail/ReceiveProcessor.h"
@@ -14,15 +15,21 @@
 #include "Detail/SessionReference.h"
 #include "NetworkOptions.h"
 #include "PacketTypes.h"
-#include "Detail/JobExecutionScope.h"
+
+#include <WinSock2.h> // for WSARecv, WSASend, shutdown, WSABUF
+#include <Windows.h> // for CancelIoEx, GetLastError
 
 #include <algorithm> // for std::min
+#include <atomic> // for std::memory_order_relaxed, std::memory_order_acq_rel
+#include <chrono> // for std::chrono
+#include <cstddef> // for std::size_t
+#include <cstdint> // for std::uint32_t
 #include <exception> // for std::terminate
 #include <limits>    // for std::numeric_limits
-#include <new>       // for std::bad_alloc
 #include <mutex>     // for std::lock_guard, std::unique_lock
-#include <utility>   // for std::move, std::in_place_type
+#include <new>       // for std::bad_alloc
 #include <optional> // for std::optional, std::nullopt
+#include <utility>   // for std::move, std::in_place_type
 #include <variant> // for std::holds_alternative, std::get, std::get_if
 
 namespace IOCPNetwork

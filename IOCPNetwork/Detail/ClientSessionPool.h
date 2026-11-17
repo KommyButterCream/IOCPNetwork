@@ -1,13 +1,12 @@
 #pragma once
 
-#include "SessionReference.h"
-#include "../NetworkTypes.h"
 #include "../ConnectionId.h"
+#include "../NetworkTypes.h"
 #include "SessionFinalization.h"
+#include "SessionReference.h"
 
 #include <chrono> // for std::chrono::milliseconds
 #include <condition_variable> // for std::condition_variable
-#include <cstddef> // for std::size_t
 #include <cstdint> // for std::uint32_t
 #include <memory>  // for std::unique_ptr
 #include <mutex>   // for std::mutex

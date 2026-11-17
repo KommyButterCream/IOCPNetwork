@@ -5,8 +5,9 @@
 #include "IOWorkerPool.h"
 #include "PacketPool.h"
 
-#include <new>       // for std::bad_alloc
 #include <exception> // for std::terminate
+#include <memory> // for std::shared_ptr
+#include <new>       // for std::bad_alloc
 #include <utility>   // for std::move
 
 namespace IOCPNetwork::Detail

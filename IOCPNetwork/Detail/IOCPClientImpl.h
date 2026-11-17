@@ -4,10 +4,12 @@
 #include "IOOperation.h"
 #include "SessionReference.h"
 #include "SocketHandle.h"
+
 #include <WinSock2.h> // for sockaddr_in
 #include <MSWSock.h>  // for LPFN_CONNECTEX
 
 #include <condition_variable> // for std::condition_variable
+#include <cstddef> // for std::size_t
 #include <mutex>              // for std::mutex
 
 namespace IOCPNetwork::Detail

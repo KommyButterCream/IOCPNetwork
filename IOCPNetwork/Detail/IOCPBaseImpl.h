@@ -1,30 +1,31 @@
 #pragma once
 
+#include "../ConnectionId.h"
 #include "../NetworkOptions.h"
 #include "../NetworkTypes.h"
+#include "../PacketResult.h"
+#include "../PacketTypes.h"
+#include "../PacketView.h"
+#include "../ServiceCallbacks.h"
+#include "../SessionTask.h"
 #include "ReceiveProcessor.h"
-#include "WinsockRuntime.h"
 #include "SessionReference.h"
 #include "SocketHandle.h"
 #include "SystemPacket.h"
-#include "../ConnectionId.h"
-#include "../PacketView.h"
-#include "../PacketTypes.h"
-#include "../ServiceCallbacks.h"
-#include "../PacketResult.h"
-#include "../SessionTask.h"
+#include "WinsockRuntime.h"
 
-#include <unordered_map> // for std::unordered_map
-#include <MSWSock.h> // for LPFN_CONNECTEX
-#include <cstdint>  // for std::uint32_t
 #include <WinSock2.h> // for SOCKET, ULONG_PTR
+#include <MSWSock.h> // for LPFN_CONNECTEX
+
+#include <condition_variable> // for std::condition_variable_any
 #include <cstddef> // for std::byte, std::size_t
-#include <span> // for std::span
+#include <cstdint>  // for std::uint32_t
 #include <memory> // for std::shared_ptr, std::unique_ptr
 #include <mutex>  // for std::mutex
-#include <condition_variable> // for std::condition_variable_any
-#include <thread> // for std::jthread
+#include <span> // for std::span
 #include <stop_token> // for std::stop_token
+#include <thread> // for std::jthread
+#include <unordered_map> // for std::unordered_map
 
 namespace IOCPNetwork::Detail
 {

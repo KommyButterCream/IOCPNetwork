@@ -2,7 +2,10 @@
 
 #include "Detail/IOCPBaseImpl.h"
 
+#include <cstddef> // for std::byte, std::size_t
 #include <exception> // for std::terminate
+#include <memory> // for std::unique_ptr
+#include <span> // for std::span
 #include <utility>   // for std::move
 
 namespace IOCPNetwork

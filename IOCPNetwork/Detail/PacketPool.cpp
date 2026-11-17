@@ -3,14 +3,14 @@
 #include <algorithm> // for std::min
 #include <cstddef> // for std::byte, std::size_t
 #include <cstdint> // for std::uint8_t
+#include <cstring> // for std::memcpy
+#include <exception> // for std::terminate
 #include <memory> // for std::shared_ptr, std::construct_at, std::destroy_at
 #include <mutex> // for std::lock_guard
 #include <new> // for std::align_val_t, std::nothrow, std::bad_alloc, operator new/delete
-#include <cstring> // for std::memcpy
 #include <span> // for std::span
-#include <utility> // for std::move
-#include <exception> // for std::terminate
 #include <stdexcept> // for std::invalid_argument, std::logic_error
+#include <utility> // for std::move
 
 namespace IOCPNetwork::Detail
 {

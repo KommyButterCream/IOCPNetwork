@@ -1,15 +1,15 @@
 #pragma once
 
+#include "ConnectionId.h"
 #include "Export.h"
+#include "PacketResult.h"
 #include "PacketTypes.h"
 #include "ServiceCallbacks.h"
-#include "PacketResult.h"
-#include "ConnectionId.h"
 #include "SessionTask.h"
 
 #include <cstddef> // for std::byte, std::size_t
-#include <span>    // for std::span
 #include <memory> // for std::unique_ptr
+#include <span>    // for std::span
 
 namespace IOCPNetwork
 {

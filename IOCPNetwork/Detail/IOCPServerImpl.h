@@ -1,14 +1,15 @@
 #pragma once
 
+#include "AcceptSession.h"
 #include "IOCPBaseImpl.h"
 #include "SocketHandle.h"
-#include "AcceptSession.h"
 
 #include <WinSock2.h> // for SOCKET
 #include <MSWSock.h>  // for LPFN_ACCEPTEX, LPFN_GETACCEPTEXSOCKADDRS
+
+#include <condition_variable> // for std::condition_variable
 #include <cstddef>  // for std::size_t
 #include <memory>  // for std::unique_ptr
-#include <condition_variable> // for std::condition_variable
 #include <mutex>              // for std::mutex
 #include <thread> // for std::thread
 

@@ -1,26 +1,32 @@
 #include "IOCPBaseImpl.h"
 
+#include "../ClientSession.h"
+#include "ClientSessionPool.h"
+#include "EngineExecutionScope.h"
+#include "IOWorkerPool.h"
+#include "Job.h"
 #include "JobScheduler.h"
 #include "OptionsValidation.h"
 #include "PacketPool.h"
-#include "ClientSessionPool.h"
-#include "../ClientSession.h"
-#include "IOWorkerPool.h"
-#include "EngineExecutionScope.h"
-#include "Job.h"
 
-#include <cstring> // for std::memcpy
+#include <WinSock2.h> // for SOCKET, setsockopt, WSAGetLastError
+
 #include <algorithm> // for std::min
 #include <array> // for std::array
-#include <exception> // for std::terminate
-#include <memory>    // for std::make_unique
-#include <new>       // for std::bad_alloc
-#include <utility>   // for std::move
-#include <cstdint> // for std::uint32_t
-#include <limits>  // for std::numeric_limits
-#include <mutex>   // for std::mutex, std::lock_guard, std::unique_lock
 #include <chrono> // for std::chrono::milliseconds, std::chrono::seconds, std::chrono::steady_clock, std::chrono::ceil
+#include <cstddef> // for std::byte, std::size_t
+#include <cstdint> // for std::uint32_t
+#include <cstring> // for std::memcpy
+#include <exception> // for std::terminate
+#include <limits>  // for std::numeric_limits
+#include <memory>    // for std::make_unique
+#include <mutex>   // for std::mutex, std::lock_guard, std::unique_lock
+#include <new>       // for std::bad_alloc
+#include <span> // for std::span
+#include <stop_token> // for std::stop_token
 #include <system_error> // for std::system_error
+#include <thread> // for std::jthread
+#include <utility>   // for std::move
 
 namespace IOCPNetwork::Detail
 {

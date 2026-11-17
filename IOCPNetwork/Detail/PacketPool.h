@@ -1,16 +1,15 @@
 #pragma once
 
 #include "../PacketResult.h"
-
 #include "PacketBlock.h"
 
 #include <array> // for std::array
 #include <bit> // for std::bit_ceil, std::countr_zero
 #include <cstddef> // for std::byte, std::size_t
 #include <cstdint> // for std::uint8_t
+#include <memory> // for std::shared_ptr, std::enable_shared_from_this
 #include <mutex> // for std::mutex
 #include <optional> // for std::optional, std::nullopt
-#include <memory> // for std::shared_ptr, std::enable_shared_from_this
 #include <span> // for std::span
 
 namespace IOCPNetwork::Detail

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "PacketHeader.h"
 #include "../Packet.h"
+#include "PacketHeader.h"
 
 #include <cstddef>  // for std::byte, std::size_t
 #include <memory>   // for std::unique_ptr

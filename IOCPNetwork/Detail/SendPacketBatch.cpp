@@ -1,10 +1,13 @@
 #include "SendPacketBatch.h"
 
-#include "SendPacketQueue.h"
 #include "../PacketTypes.h"
+#include "SendPacketQueue.h"
 
+#include <cstddef> // for std::byte, std::size_t
 #include <limits>  // for std::numeric_limits
+#include <memory> // for std::unique_ptr, std::make_unique
 #include <new>     // for std::bad_alloc
+#include <span> // for std::span
 #include <utility> // for std::move
 
 namespace IOCPNetwork::Detail

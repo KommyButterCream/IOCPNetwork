@@ -1,9 +1,8 @@
 #include "PacketWriter.h"
 
-#include "PacketResult.h"
-
 #include "Detail/PacketBlock.h"
 #include "Detail/PacketHeader.h"
+#include "PacketResult.h"
 
 #include <cstddef> // for std::byte, std::size_t
 #include <cstdint> // for std::uint16_t
