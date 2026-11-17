@@ -19,6 +19,41 @@ namespace IOCPNetwork
 
     IOCPBase::~IOCPBase() = default;
 
+    HandlerRegistrationResult IOCPBase::RegisterPacketHandler(PacketId packetId, PacketHandler handler) noexcept
+    {
+        return m_impl->RegisterPacketHandler(packetId, std::move(handler));
+    }
+
+    bool IOCPBase::SetConnectionEvents(ConnectionEvents events) noexcept
+    {
+        return m_impl->SetConnectionEvents(std::move(events));
+    }
+
+    PacketResult IOCPBase::CreatePacket(PacketId packetId, std::span<const std::byte> payload) noexcept
+    {
+        return m_impl->CreatePacket(packetId, payload);
+    }
+
+    PacketWriterResult IOCPBase::CreatePacketWriter(PacketId packetId, std::size_t payloadCapacity) noexcept
+    {
+        return m_impl->CreatePacketWriter(packetId, payloadCapacity);
+    }
+
+    SendResult IOCPBase::Send(ConnectionId id, Packet&& packet) noexcept
+    {
+        return m_impl->Send(id, std::move(packet));
+    }
+
+    PostResult IOCPBase::Post(ConnectionId id, SessionTask&& task) noexcept
+    {
+        return m_impl->Post(id, std::move(task));
+    }
+
+    bool IOCPBase::Disconnect(ConnectionId id) noexcept
+    {
+        return m_impl->Disconnect(id);
+    }
+
     Detail::IOCPBaseImpl& IOCPBase::GetImpl() noexcept
     {
         return *m_impl;

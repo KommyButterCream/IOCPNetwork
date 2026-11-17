@@ -34,6 +34,10 @@ namespace IOCPNetwork::Detail
 
         // 연결 통지를 확정했던 세션의 최종 마무리에서 최초 종료 사유를 값으로 전달한다.
         std::function<void(ClientSession&, DisconnectInfo)> disconnected;
+
+        // 연결 통지가 확정되지 않은 세션의 최종 정리를 알린다.
+        // 공개 실패 통지 여부는 역할별 Impl이 판단한다.
+        std::function<void(DisconnectInfo)> connectionFailed;
     };
 
     // 준비된 세션을 여러 워커에 배분하고 세션별 Job을 순차 처리한다.

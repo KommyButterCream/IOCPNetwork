@@ -623,9 +623,19 @@ namespace IOCPNetwork::Detail
         try
         {
             // 서비스 코드는 세션 락을 놓은 상태에서 호출한다.
-            if (notifyDisconnected && m_callbacks.disconnected)
+            if (notifyDisconnected)
             {
-                m_callbacks.disconnected(*session, disconnectInfo);
+                if (m_callbacks.disconnected)
+                {
+                    m_callbacks.disconnected(*session, disconnectInfo);
+                }
+            }
+            else
+            {
+                if (m_callbacks.connectionFailed)
+                {
+                    m_callbacks.connectionFailed(disconnectInfo);
+                }
             }
         }
         catch (...)

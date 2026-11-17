@@ -19,7 +19,7 @@ namespace IOCPNetwork::Detail
     public:
         IOCPClientImpl() noexcept = default;
 
-        // 현재는 선언 단계다. 실제 사용 전 종료 구현을 연결한다.
+        // 소멸 전에 연결과 워커의 종료를 완료한다.
         ~IOCPClientImpl() override;
 
         // 공통 자원을 준비하고 비동기 연결 요청을 접수한다.
@@ -55,10 +55,10 @@ namespace IOCPNetwork::Detail
         // Connect 완료 후처리까지 끝난 뒤 연결별 저장소를 초기화한다.
         void StopTransportAndSessions() noexcept override;
 
-        // 서비스 처리 구현 전에는 Packet Job을 거절한다.
+        // 공통 서비스 핸들러와 연결 이벤트를 JobScheduler에 연결한다.
         [[nodiscard]] JobCallbacks CreateJobCallbacks() override;
 
-        // 시스템 프로토콜 구현 전에는 시스템 패킷을 거절한다.
+        // 클라이언트가 받을 핸드셰이크·하트비트 패킷을 처리한다.
         [[nodiscard]] bool HandleSystemPacket(ClientSession& session, Packet packet) override;
 
     private:
@@ -82,5 +82,9 @@ namespace IOCPNetwork::Detail
 
         // Connect 발행부터 완료 후처리까지 true이며 mutex로 보호한다.
         bool m_connectActive = false;
+
+        // ConnectEx 접수 성공 여부이며, 즉시 발행 실패에서는 false다.
+        // m_connectMutex로 보호하고 모든 세션 반환 후 초기화한다.
+        bool m_connectAccepted = false;
     };
 }

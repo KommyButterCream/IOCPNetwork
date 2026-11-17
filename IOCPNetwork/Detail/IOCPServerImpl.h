@@ -83,7 +83,7 @@ namespace IOCPNetwork::Detail
         // JobScheduler 에 서비스 작업의 처리 경로를 제공하낟.
         [[nodiscard]] JobCallbacks CreateJobCallbacks() override;
 
-        // 시스템 프로토콜 구현 전에는 수신한 시스템 패킷을 거절한다.
+        // 서버가 받을 핸드셰이크·하트비트 패킷을 처리한다.
         [[nodiscard]] bool HandleSystemPacket(ClientSession& session, Packet packet) override;
 
         // 완료 작업의 주소가 일치하는 AcceptSession을 찾는다.

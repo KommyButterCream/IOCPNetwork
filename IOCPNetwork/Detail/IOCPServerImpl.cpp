@@ -614,15 +614,7 @@ namespace IOCPNetwork::Detail
 
     JobCallbacks IOCPServerImpl::CreateJobCallbacks()
     {
-        JobCallbacks callbacks;
-
-        // 서비스 디스패치 구현 전에는 수신한 서비스 패킷을 거절한다.
-        callbacks.received = [](ClientSession& session, Packet)
-            {
-                session.BeginClose(DisconnectInfo{ DisconnectReason::ProtocolError, 0 });
-            };
-
-        return callbacks;
+        return CreateServiceJobCallbacks();
     }
 
     bool IOCPServerImpl::HandleSystemPacket(ClientSession& session, Packet packet)

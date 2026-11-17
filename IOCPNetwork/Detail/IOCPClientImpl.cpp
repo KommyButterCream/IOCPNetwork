@@ -256,7 +256,10 @@ namespace IOCPNetwork::Detail
 
             if (error == 0)
             {
-                // 즉시 성공과 IO_PENDING 모두 완료 경로에서 참조를 반환한다.
+                // 즉시 성공과 IO_PENDING은 모두 접수 성공이다.
+                // 이후 실패는 StartResult가 아니라 최종 정리에서 통지한다.
+                m_connectAccepted = true;
+
                 return {};
             }
 
@@ -389,18 +392,33 @@ namespace IOCPNetwork::Detail
             m_connectOperation.overlapped = {};
             m_remoteAddress = {};
             m_connectEx = nullptr;
+
+            // 최종 통지와 세션 반환이 끝난 뒤 다음 시작을 준비한다.
+            m_connectAccepted = false;
         }
     }
 
 
     JobCallbacks IOCPClientImpl::CreateJobCallbacks()
     {
-        JobCallbacks callbacks;
+        auto callbacks = CreateServiceJobCallbacks();
 
-        // 서비스 디스패치 구현 전의 임시 거절 경로다.
-        callbacks.received = [](ClientSession& session, Packet)
+        callbacks.connectionFailed = [this](DisconnectInfo info)
             {
-                session.BeginClose(DisconnectInfo{ DisconnectReason::ProtocolError, 0 });
+                bool notify = false;
+
+                {
+                    std::lock_guard<std::mutex> lock{ m_connectMutex };
+
+                    // Start가 직접 실패를 반환하는 경로는 공개 통지하지 않는다.
+                    notify = m_connectAccepted;
+                }
+
+                // 서비스 함수는 Connect 락 밖에서 호출한다.
+                if (notify)
+                {
+                    NotifyConnectFailed(info);
+                }
             };
 
         return callbacks;

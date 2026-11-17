@@ -9,7 +9,12 @@
 #include "SystemPacket.h"
 #include "../ConnectionId.h"
 #include "../PacketView.h"
+#include "../PacketTypes.h"
+#include "../ServiceCallbacks.h"
+#include "../PacketResult.h"
+#include "../SessionTask.h"
 
+#include <unordered_map> // for std::unordered_map
 #include <MSWSock.h> // for LPFN_CONNECTEX
 #include <cstdint>  // for std::uint32_t
 #include <WinSock2.h> // for SOCKET, ULONG_PTR
@@ -45,6 +50,32 @@ namespace IOCPNetwork::Detail
 
         IOCPBaseImpl(IOCPBaseImpl&&) = delete;
         IOCPBaseImpl& operator=(IOCPBaseImpl&&) = delete;
+
+        // 정지 상태에서 서비스 패킷 핸들러를 등록한다.
+        // 중복 등록이나 실패 시 기존 핸들러는 변경하지 않는다.
+        [[nodiscard]] HandlerRegistrationResult RegisterPacketHandler(PacketId packetId, PacketHandler handler) noexcept;
+
+        // 정지 상태에서만 이벤트 구성을 교체한다.
+        // 교체한 이전 콜백의 캡처 자원은 상태 락 밖에서 정리한다.
+        [[nodiscard]] bool SetConnectionEvents(ConnectionEvents events) noexcept;
+
+        // 기존 본문을 복사하여 서비스 패킷을 만든다.
+        [[nodiscard]] PacketResult CreatePacket(PacketId packetId, std::span<const std::byte> payload) noexcept;
+
+        // 서비스 ID와 용량을 검증하고 풀에서 작성 저장소를 확보한다.
+        [[nodiscard]] PacketWriterResult CreatePacketWriter(PacketId packetId, std::size_t payloadCapacity) noexcept;
+
+        // ID 검증과 사용 참조 확보 후 세션의 공개 송신 경로로 전달한다.
+        // 엔진 종료 중이거나 조회할 수 없는 연결이면 Closed를 반환한다.
+        [[nodiscard]] SendResult Send(ConnectionId id, Packet&& packet) noexcept;
+
+        // 연결 참조와 빈 Task 저장소를 확보한 뒤 세션의 Job 접수 경로로 전달한다.
+        // 접수 성공 전에는 원본 Task를 이동하지 않는다.
+        [[nodiscard]] PostResult Post(ConnectionId id, SessionTask&& task) noexcept;
+
+        // 연결 참조와 종료 기한을 확보한 뒤 기존 정상 종료 경로를 시작한다.
+        // 엔진 상태 락을 해제한 상태에서 세션의 BeginDrain을 호출한다.
+        [[nodiscard]] bool Disconnect(ConnectionId id) noexcept;
 
     protected:
         // 실제 서버·클라이언트 Impl의 일부로 생성한다.
@@ -132,6 +163,18 @@ namespace IOCPNetwork::Detail
         // 연결·서비스 패킷·종료 Job의 처리 경로를 제공한다.
         // 반환된 콜백은 스케줄러가 소유하며 워커 시작 전에 확정한다.
         [[nodiscard]] virtual JobCallbacks CreateJobCallbacks() = 0;
+
+        // 서비스 패킷·연결·종료 통지를 공개 핸들러와 이벤트에 연결한다.
+        // 서버와 클라이언트가 공통으로 사용하는 내부 콜백 구성을 만든다.
+        [[nodiscard]] JobCallbacks CreateServiceJobCallbacks();
+
+        // 역할별 Impl이 공개 통지 대상으로 확정한 연결 준비 실패를 알린다.
+        // 서비스 예외는 JobScheduler의 최종 정리 경로로 전달한다.
+        void NotifyConnectFailed(DisconnectInfo info);
+
+        // Job 워커에서 서비스 Id의 핸들러를 찾아 PAcket 소유권을 전달한다.
+        // 핸드러 예외는 JobScheduler 가 처리하므로 noexcetp 를 붙이지 않는다.
+        void HandleServicePacket(ClientSession& session, Packet packet);
 
         // 시스템 패킷을 즉시 처리한다. 계속 처리할 수 있으면 true다.
         // false 또는 예외이면 ReceiveProcessor가 해당 연결을 종료한다.
@@ -225,6 +268,14 @@ namespace IOCPNetwork::Detail
         // 종료 대기자가 이전 실행의 정지를 확인하기 전에 재시작하지 못하게 한다.
         // m_stateMutex로 보호하며 atomic은 필요하지 않다.
         std::size_t m_stopWaiterCount = 0;
+
+        // 정지 상태에서만 변경하고, 실행 중에는 조회만 한다.
+        // Stop 이후에도 유지하여 같은 객체의 재시작에 사용한다.
+        std::unordered_map<PacketId, PacketHandler> m_packetHandlers;
+
+        // 정지 상태에서 설정하고, 실행 중에는 변경하지 않는다.
+        // Stop 이후에도 유지하여 재시작할 때 같은 구성을 사용한다.
+        ConnectionEvents m_connectionEvents;
 
         // 시작 요청의 공통 설정을 복사해 보관한다.
         // 시작 시 검증하고, 자원 회수가 끝나기 전에는 교체하지 않는다.

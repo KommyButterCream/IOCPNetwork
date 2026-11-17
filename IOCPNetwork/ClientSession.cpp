@@ -52,6 +52,16 @@ namespace IOCPNetwork
         return m_connectionId;
     }
 
+    SendResult ClientSession::Send(Packet&& packet) noexcept
+    {
+        if (!packet || !IsServicePacketId(packet.View().packetId))
+        {
+            return SendResult::InvalidPacket;
+        }
+
+        return EnqueueSendPacket(std::move(packet));
+    }
+
     void ClientSession::BeginClose(DisconnectInfo info) noexcept
     {
         BeginCloseImpl(info, nullptr);
@@ -566,6 +576,8 @@ namespace IOCPNetwork
 
         m_receiveTimeout = options.receiveTimeout;
 
+        m_shutdownTimeout = options.shutdownTimeout;
+
         return true;
     }
 
@@ -758,6 +770,8 @@ namespace IOCPNetwork
         Detail::SessionReference reference;
 
         bool closeRequired = false;
+        bool drainRequired = false;
+        std::chrono::steady_clock::time_point drainDeadline{};
 
         DisconnectInfo closeInfo{ DisconnectReason::TransportError, 0 };
 
@@ -836,10 +850,17 @@ namespace IOCPNetwork
                         return reference;
                     }
 
-                    // Preparing·Ready의 상대 FIN 정책은 현재 동작을 유지한다.
+                    if (m_state == State::Ready)
+                    {
+                        // FIN 이전에 접수한 Packet·Task를 취소하지 않고 배출한다.
+                        drainRequired = true;
+                        drainDeadline = std::chrono::steady_clock::now() + m_shutdownTimeout;
+                    }
+
+                    // 준비 단계의 FIN은 서비스 연결 실패로 즉시 정리한다.
                     closeInfo = DisconnectInfo{ DisconnectReason::PeerClosed, 0 };
 
-                    closeRequired = true;
+                    closeRequired = !drainRequired;
                 }
                 else if (m_state != State::Draining &&
                     !m_recvPacketBuffer->CommitReceivedBytes(completion.transferredBytes))
@@ -859,6 +880,13 @@ namespace IOCPNetwork
                     return reference;
                 }
             }
+        }
+
+        if (drainRequired)
+        {
+            // 현재 수신 후처리가 참조와 독점 실행 권한을 유지한 채 배출을 이어간다.
+            BeginDrain(closeInfo, drainDeadline);
+            return reference;
         }
 
         // BeginClose와 마지막 참조 반환은 세션 락 밖에서 수행한다.
@@ -1702,6 +1730,12 @@ namespace IOCPNetwork
 
             if (sourceTask != nullptr)
             {
+                // 보관 중인 수신 Packet의 재접수를 새 Task보다 우선한다.
+                if (m_pendingReceivePacket)
+                {
+                    return EnqueueJobResult::QueueFull;
+                }
+
                 result = m_jobQueue->Enqueue(std::move(job), *sourceTask);
             }
             else

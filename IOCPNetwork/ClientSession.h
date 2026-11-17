@@ -7,6 +7,7 @@
 #include "Packet.h"
 #include "SessionTask.h"
 #include "NetworkTypes.h"
+#include "Export.h"
 
 #include <atomic>  // for std::atomic
 #include <cstddef> // for std::size_t
@@ -65,7 +66,11 @@ namespace IOCPNetwork
 
         // 현재 연결 ID를 값으로 반환한다.
         // 호출자는 사용 참조 등으로 세션의 수명을 보호하고 있어야 한다.
-        [[nodiscard]] ConnectionId GetConnectionId() const noexcept;
+        [[nodiscard]] IOCPNETWORK_API ConnectionId GetConnectionId() const noexcept;
+
+        // 콜백에서 빌린 세션에 서비스 패킷을 송신 접수한다.
+        // Queued 일 때만 Packet을 인수하며 실패하면 원본을 유지한다.
+        [[nodiscard]] IOCPNETWORK_API SendResult Send(Packet&& packet) noexcept;
 
         // Closing으로 전환하고 소켓·보관 패킷을 정리한 뒤 연결 유지용 참조를 반환한다.
         // 호출자는 별도의 사용 참조를 보유해야 하며, 중복 호출은 무시한다.
@@ -340,6 +345,9 @@ namespace IOCPNetwork
 
         // 풀 초기화 시 확정되는 무수신 제한 시간이다. 재대여 때도 유지한다.
         std::chrono::milliseconds m_receiveTimeout{};
+
+        // 상대 FIN 이후에도 기존 Job과 응답을 배출할 수 있는 제한 시간이다.
+        std::chrono::milliseconds m_shutdownTimeout{};
 
         // Ready 상태에서 다음 완성 패킷을 기다릴 기한이다.
         // 수신 중지 중에는 검사를 유예하며, 접근은 m_mutex로 보호한다.

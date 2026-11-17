@@ -9,6 +9,7 @@
 #include "EngineExecutionScope.h"
 #include "Job.h"
 
+#include <cstring> // for std::memcpy
 #include <algorithm> // for std::min
 #include <array> // for std::array
 #include <exception> // for std::terminate
@@ -34,6 +35,316 @@ namespace IOCPNetwork::Detail
     IOCPBaseImpl::IOCPBaseImpl() noexcept = default;
 
     IOCPBaseImpl::~IOCPBaseImpl() = default;
+
+    HandlerRegistrationResult IOCPBaseImpl::RegisterPacketHandler(PacketId packetId, PacketHandler handler) noexcept
+    {
+        std::lock_guard<std::mutex> lock{ m_stateMutex };
+
+        if (m_state != State::Stopped || m_stopWaiterCount != 0)
+        {
+            return HandlerRegistrationResult::Busy;
+        }
+
+        if (!IsServicePacketId(packetId))
+        {
+            return HandlerRegistrationResult::InvalidPacketId;
+        }
+
+        if (!handler)
+        {
+            return HandlerRegistrationResult::InvalidHandler;
+        }
+
+        if (m_packetHandlers.contains(packetId))
+        {
+            return HandlerRegistrationResult::AlreadyRegistered;
+        }
+
+        try
+        {
+            m_packetHandlers.try_emplace(packetId, std::move(handler));
+        }
+        catch (const std::bad_alloc&)
+        {
+            return HandlerRegistrationResult::NoMemory;
+        }
+
+        return HandlerRegistrationResult::Registered;
+    }
+
+    bool IOCPBaseImpl::SetConnectionEvents(ConnectionEvents events) noexcept
+    {
+        {
+            std::lock_guard<std::mutex> lock{ m_stateMutex };
+
+            if (m_state != State::Stopped || m_stopWaiterCount != 0)
+            {
+                return false;
+            }
+
+            // 새 함수를 멤버로 옮기고 이전 함수는 지역 매개변수에 보관한다.
+            m_connectionEvents.connected.swap(events.connected);
+            m_connectionEvents.disconnected.swap(events.disconnected);
+            m_connectionEvents.connectFailed.swap(events.connectFailed);
+        }
+
+        // events에 들어 있는 이전 함수와 캡처 자원은 락 해제 후 정리된다.
+        return true;
+    }
+
+    PacketResult IOCPBaseImpl::CreatePacket(PacketId packetId, std::span<const std::byte> payload) noexcept
+    {
+        auto result = CreatePacketWriter(packetId, payload.size());
+
+        if (!result)
+        {
+            return { Packet{}, result.error };
+        }
+
+        if (!payload.empty())
+        {
+            const auto destination = result.writer.GetWritablePayload();
+
+            std::memcpy(
+                destination.data(),
+                payload.data(),
+                payload.size());
+        }
+
+        return result.writer.Finish(payload.size());
+    }
+
+    PacketWriterResult IOCPBaseImpl::CreatePacketWriter(PacketId packetId, std::size_t payloadCapacity) noexcept
+    {
+        if (!IsServicePacketId(packetId))
+        {
+            return { PacketWriter{}, PacketError::InvalidPacketId };
+        }
+
+        if (payloadCapacity > MaxPayloadSize)
+        {
+            return { PacketWriter{}, PacketError::PacketTooLarge };
+        }
+
+        std::shared_ptr<PacketPool> pool;
+
+        {
+            std::lock_guard<std::mutex> lock{ m_stateMutex };
+
+            if (m_state != State::Running &&
+                m_state != State::Stopping)
+            {
+                return { PacketWriter{}, PacketError::InvalidState };
+            }
+
+            // 종료 경로가 엔진의 소유권을 놓아도 생성 중에는 풀을 유지한다.
+            pool = m_packetPool;
+        }
+
+        if (!pool)
+        {
+            return { PacketWriter{}, PacketError::InvalidState };
+        }
+
+        try
+        {
+            return pool->CreatePacketWriter(packetId, payloadCapacity);
+        }
+        catch (const std::bad_alloc&)
+        {
+            return { PacketWriter{}, PacketError::NoMemory };
+        }
+    }
+
+    SendResult IOCPBaseImpl::Send(ConnectionId id, Packet&& packet) noexcept
+    {
+        if (!packet || !IsServicePacketId(packet.View().packetId))
+        {
+            return SendResult::InvalidPacket;
+        }
+
+        auto reference = TryAcquireSession(id);
+
+        if (!reference)
+        {
+            return SendResult::Closed;
+        }
+
+        return reference.Get()->Send(std::move(packet));
+    }
+
+    PostResult IOCPBaseImpl::Post(ConnectionId id, SessionTask&& task) noexcept
+    {
+        if (!task)
+        {
+            return PostResult::InvalidTask;
+        }
+
+        auto reference = TryAcquireSession(id);
+
+        if (!reference)
+        {
+            return PostResult::Closed;
+        }
+
+        ClientSession* const session = reference.Get();
+
+        try
+        {
+            // 원본 함수를 넣지 않고 빈 함수 객체의 저장소만 확보한다.
+            auto taskStorage = std::make_unique<SessionTask>();
+
+            Job job
+            {
+                std::move(reference),
+                std::move(taskStorage)
+            };
+
+            // 큐가 접수를 확정할 때만 Task를 빈 저장소로 넘긴다.
+            const auto result = session->EnqueueJob(std::move(job), &task);
+
+            switch (result)
+            {
+            case ClientSession::EnqueueJobResult::Queued:
+            {
+                return PostResult::Queued;
+            }
+
+            case ClientSession::EnqueueJobResult::NotReady:
+            {
+                return PostResult::NotReady;
+            }
+
+            case ClientSession::EnqueueJobResult::Closed:
+            {
+                return PostResult::Closed;
+            }
+
+            case ClientSession::EnqueueJobResult::QueueFull:
+            {
+                return PostResult::QueueFull;
+            }
+
+            default:
+            {
+                std::terminate();
+            }
+            }
+        }
+        catch (const std::bad_alloc&)
+        {
+            return PostResult::NoMemory;
+        }
+    }
+
+    bool IOCPBaseImpl::Disconnect(ConnectionId id) noexcept
+    {
+        if (!id.IsValid())
+        {
+            return false;
+        }
+
+        SessionReference reference;
+
+        std::chrono::steady_clock::time_point deadline{};
+
+        {
+            std::lock_guard<std::mutex> lock{ m_stateMutex };
+
+            if (m_state != State::Running || !m_sessionPool)
+            {
+                return false;
+            }
+
+            reference = m_sessionPool->TryAcquireSession(id);
+
+            if (!reference)
+            {
+                return false;
+            }
+
+            // 현재 실행의 설정과 연결을 같은 상태 보호 구간에서 확보한다.
+            deadline = std::chrono::steady_clock::now() + m_options.shutdownTimeout;
+        }
+
+        // 재개 처리 등이 다른 락을 사용할 수 있으므로 상태 락 밖에서 호출한다.
+        reference.Get()->BeginDrain(DisconnectInfo{ DisconnectReason::LocalRequest, 0 }, deadline);
+
+        return true;
+    }
+
+    JobCallbacks IOCPBaseImpl::CreateServiceJobCallbacks()
+    {
+        JobCallbacks callbacks;
+
+        // Packet의 소유권을 등록된 서비스 핸들러로 전달한다.
+        callbacks.received = [this](ClientSession& session, Packet packet)
+            {
+                HandleServicePacket(session, std::move(packet));
+            };
+
+        // 연결 통지 Job이 실행되는 시점에 서비스에 알린다.
+        callbacks.connected = [this](ClientSession& session)
+            {
+                if (m_connectionEvents.connected)
+                {
+                    m_connectionEvents.connected(session);
+                }
+            };
+
+        // 최종 정리 중이며 세션이 풀로 반환되기 전에 서비스에 알린다.
+        callbacks.disconnected =
+            [this](ClientSession& session, DisconnectInfo info)
+            {
+                if (m_connectionEvents.disconnected)
+                {
+                    m_connectionEvents.disconnected(session, info);
+                }
+            };
+
+        return callbacks;
+    }
+
+    void IOCPBaseImpl::NotifyConnectFailed(DisconnectInfo info)
+    {
+        if (m_connectionEvents.connectFailed)
+        {
+            m_connectionEvents.connectFailed(info);
+        }
+    }
+
+    void IOCPBaseImpl::HandleServicePacket(ClientSession& session, Packet packet)
+    {
+        if (!packet)
+        {
+            session.BeginClose(DisconnectInfo{ DisconnectReason::ProtocolError, 0 });
+
+            return;
+        }
+
+        const PacketId packetId = packet.View().packetId;
+
+        if (!IsServicePacketId(packetId))
+        {
+            session.BeginClose(DisconnectInfo{ DisconnectReason::ProtocolError, 0 });
+
+            return;
+        }
+
+        // 워커 실행 중에는 저장소를 변경하지 않으므로 락 없이 조회한다.
+        const auto& handlers = m_packetHandlers;
+        const auto found = handlers.find(packetId);
+
+        if (found == handlers.end())
+        {
+            session.BeginClose(DisconnectInfo{ DisconnectReason::ProtocolError, 0 });
+
+            return;
+        }
+
+        // 함수 객체는 복사하지 않고, Packet 소유권만 이동하여 전달한다.
+        found->second(session, std::move(packet));
+    }
 
     StartResult IOCPBaseImpl::StartCommon(
         const NetworkOptions& options,
@@ -1250,8 +1561,16 @@ namespace IOCPNetwork::Detail
 
         m_receiveProcessor.reset();
 
+        std::shared_ptr<PacketPool> packetPool;
+
+        {
+            std::lock_guard<std::mutex> lock{ m_stateMutex };
+
+            packetPool = std::move(m_packetPool);
+        }
+
         // 캐시와 처리 객체가 놓은 뒤 엔진의 풀 소유권을 놓는다.
-        m_packetPool.reset();
+        packetPool.reset();
 
         // 소켓과 워커의 Winsock 사용이 모두 끝난 뒤 정리한다.
         m_winsock.Reset();

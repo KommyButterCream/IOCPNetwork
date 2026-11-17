@@ -41,6 +41,18 @@ namespace IOCPNetwork
         InvalidCallContext // 엔진 내부 실행 중이어서 동기식 종료를 거절했다.
     };
 
+    // 서비스 패킷 핸들러의 등록 결과다.
+    // 실패하면 기존 등록 상태를 유지한다.
+    enum class HandlerRegistrationResult
+    {
+        Registered,        // 새 핸들러를 등록했다.
+        InvalidPacketId,   // 서비스 패킷 ID 범위가 아니다.
+        InvalidHandler,    // 전달한 함수가 비어 있다.
+        AlreadyRegistered, // 해당 ID에 핸들러가 이미 등록되어 있다.
+        Busy,              // 실행·시작·종료 중이어서 등록할 수 없다.
+        NoMemory           // 등록에 필요한 저장소를 확보하지 못했다.
+    };
+
     // 송신 접수 결과다. Queued는 상대의 수신이나 처리 완료를 의미하지 않는다.
     enum class SendResult
     {

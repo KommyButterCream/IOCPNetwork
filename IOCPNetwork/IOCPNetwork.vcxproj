@@ -212,6 +212,7 @@
     <ClInclude Include="PacketTypes.h" />
     <ClInclude Include="PacketView.h" />
     <ClInclude Include="PacketWriter.h" />
+    <ClInclude Include="ServiceCallbacks.h" />
     <ClInclude Include="SessionTask.h" />
     <ClInclude Include="Detail\SocketHandle.h" />
   </ItemGroup>
