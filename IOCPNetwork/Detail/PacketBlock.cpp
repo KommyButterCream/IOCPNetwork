@@ -80,8 +80,11 @@ namespace IOCPNetwork::Detail
             }
 
             // CAS 를 통해 안전한 증가 시도
+            // Expected == Desired 라면 증가시키고 return 으로 빠져나온다.
+            // 0 이거나 != 인 경우에는 다시 반복하여 성공할 때 까지 CAS 연산을 수행한다.
+            // compare_exchange_weak 는 spurious failure 가 발생될 수 있으므로 반복 체크 필요.
             if (block->referenceCount.compare_exchange_weak(
-                count,
+                count,  // 참조로 받아가므로 실패하면 count 값이 현재 값으로 갱신된다.
                 count + 1,
                 std::memory_order_relaxed,
                 std::memory_order_relaxed))

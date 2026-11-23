@@ -68,6 +68,7 @@ namespace IOCPNetwork::Detail
 
             if (retryPending)
             {
+                // 재시도하는 경우라면 보관하던 Pending Packet 부터 처리한다.
                 readPackets = session.RetryPendingReceivePacket();
             }
 
@@ -75,19 +76,24 @@ namespace IOCPNetwork::Detail
 
             if (readPackets)
             {
+                // Recv 버퍼로부터 패킷을 읽고 Job 을 만들어 JobQueue 에 넣는다.
                 resumeReceive = ReadPackets(session);
             }
 
+            // 이번 후처리를 마무리하고 다음 행동 결정
             // 성공·포화·종료·예외 결과 모두 같은 후처리 종료 지점을 통과한다.
             const bool retryRequested = session.FinishReceiveCompletion(resumeReceive);
 
+            // 정상 종료 조건이 완성됐는지 검사
             session.TryShutdownSend();
 
+            // Pending Packet 없어서 처리 해야 할 게 없으면 빠져나간다.
             if (!retryRequested)
             {
                 return;
             }
 
+            // Pending Packet 을 처리 해야 하므로 Recv 처리 권한을 다시 확보한다.
             // 다른 워커가 먼저 재개했으면 그 경로에 맡긴다.
             auto resumedReference = session.TryBeginReceiveResume();
 
