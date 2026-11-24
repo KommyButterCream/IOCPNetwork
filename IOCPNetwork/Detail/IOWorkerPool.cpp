@@ -19,6 +19,12 @@
 
 namespace IOCPNetwork::Detail
 {
+    namespace
+    {
+        // 실제 I/O 완료와 구분하는 워커 종료 전용 키다.
+        constexpr ULONG_PTR IOWorkerStopCompletionKey = 0xCAFE;
+    }
+
 #if defined(IOCPNETWORK_TESTING)
     namespace IOTestHooks
     {
@@ -198,7 +204,7 @@ namespace IOCPNetwork::Detail
             const BOOL posted = ::PostQueuedCompletionStatus(
                 m_completionPort,
                 0,
-                0,
+                IOWorkerStopCompletionKey,
                 nullptr);
 
             // 통지에 실패한 채 join하면 대기 중인 워커가 끝나지 않을 수 있다.
@@ -226,9 +232,10 @@ namespace IOCPNetwork::Detail
     bool IOWorkerPool::AssociateSocket(SOCKET socket, ULONG_PTR completionKey) noexcept
     {
         // 유효한 소켓과 실제 완료 대상을 나타내는 key만 등록한다.
-        // key 0은 엔진의 제어용 통지를 위해 예약한다.
+        // 빈 키와 워커 종료 전용 키는 실제 완료 대상으로 등록하지 않는다.
         if (socket == INVALID_SOCKET ||
             completionKey == 0 ||
+            completionKey == IOWorkerStopCompletionKey ||
             m_completionPort == nullptr)
         {
             return false;
@@ -289,9 +296,9 @@ namespace IOCPNetwork::Detail
 
             if (overlapped == nullptr)
             {
-                // Stop에서 등록할 종료용 통지는 성공·key 0·바이트 0으로 구분한다.
+                // 종료 통지는 성공·전용 키·바이트 0·빈 OVERLAPPED로 구분한다.
                 if (succeeded &&
-                    completionKey == 0 &&
+                    completionKey == IOWorkerStopCompletionKey &&
                     transferredBytes == 0)
                 {
                     return;
@@ -303,7 +310,7 @@ namespace IOCPNetwork::Detail
             }
 
             // 실제 I/O에는 AssociateSocket에서 등록한 유효한 key가 있어야 한다.
-            if (completionKey == 0)
+            if (completionKey == 0 || completionKey == IOWorkerStopCompletionKey)
             {
                 std::terminate();
             }
