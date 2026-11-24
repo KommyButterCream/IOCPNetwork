@@ -2,7 +2,6 @@
 
 #include "Detail/IOCPClientImpl.h"
 
-#include <cstddef> // for std::size_t
 #include <memory> // for std::make_unique
 
 namespace IOCPNetwork
@@ -15,12 +14,11 @@ namespace IOCPNetwork
     IOCPClient::~IOCPClient() = default;
 
     StartResult IOCPClient::Start(
-        const ClientOptions& options,
-        std::size_t maxTotalSegmentBytes) noexcept
+        const ClientOptions& options) noexcept
     {
         auto& impl = static_cast<Detail::IOCPClientImpl&>(GetImpl());
 
-        return impl.Start(options, maxTotalSegmentBytes);
+        return impl.Start(options);
     }
 
     StopResult IOCPClient::Stop() noexcept

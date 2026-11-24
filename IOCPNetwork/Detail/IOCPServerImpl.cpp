@@ -41,13 +41,12 @@ namespace IOCPNetwork::Detail
         }
     }
 
-    StartResult IOCPServerImpl::Start(const ServerOptions& options, std::size_t maxTotalSegmentBytes) noexcept
+    StartResult IOCPServerImpl::Start(const ServerOptions& options) noexcept
     {
         // 역할별 준비까지 포함하여 전체 시작 경로를 내부 실행으로 표시한다.
         EngineExecutionScope executionScope;
 
-        if (ValidateOptions(options) != OptionsError::None ||
-            maxTotalSegmentBytes == 0)
+        if (ValidateOptions(options) != OptionsError::None)
         {
             return { StartError::InvalidOptions, 0 };
         }
@@ -71,8 +70,7 @@ namespace IOCPNetwork::Detail
 
         const auto commonResult = StartCommon(
             network,
-            options.maxConnections,
-            maxTotalSegmentBytes);
+            options.maxConnections);
 
         if (!commonResult)
         {

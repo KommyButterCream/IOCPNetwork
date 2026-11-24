@@ -25,7 +25,7 @@ namespace IOCPNetwork::Detail
         ~IOCPClientImpl() override;
 
         // 공통 자원을 준비하고 비동기 연결 요청을 접수한다.
-        [[nodiscard]] StartResult Start(const ClientOptions& options, std::size_t maxTotalSegmentBytes) noexcept;
+        [[nodiscard]] StartResult Start(const ClientOptions& options) noexcept;
 
         // 외부 제어 스레드에서 종료 완료까지 기다린다.
         [[nodiscard]] StopResult Stop() noexcept;

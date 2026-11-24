@@ -16,6 +16,9 @@ namespace IOCPNetwork
         std::uint32_t ioWorkerCount = 0;
         std::uint32_t jobWorkerCount = 0;
 
+        // 엔진 패킷 풀의 전체 세그먼트 확보 상한이며, 미리 전부 할당하지 않는다.
+        std::size_t maxPacketPoolBytes = 16 * 1024 * 1024;
+
         // 패킷 크기는 공통 헤더를 포함한다.
         std::size_t maxRecvPacketSize = MaxPacketSize;
         std::size_t maxSendPacketSize = MaxPacketSize;

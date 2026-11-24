@@ -86,8 +86,7 @@ namespace IOCPNetwork::Detail
         // 성공하면 Starting을 유지하고, 실패하면 정리 후 Stopped로 복구한다.
         [[nodiscard]] StartResult StartCommon(
             const NetworkOptions& options,
-            std::size_t maxSessions,
-            std::size_t maxTotalSegmentBytes) noexcept;
+            std::size_t maxSessions) noexcept;
 
         // 공통 자원과 역할별 시작 준비가 모두 성공했음을 확정한다.
         void CompleteStart() noexcept;
@@ -218,8 +217,7 @@ namespace IOCPNetwork::Detail
         // workerCount 자동 설정은 호출 전에 해석하고, 워커는 아직 시작하지 않는다.
         [[nodiscard]] StartResult CreateProcessingResources(
             const NetworkOptions& options,  // 워커 수·배치 설정을 포함한 공통 설정
-            std::size_t maxSessions,    // JobScheduler 준비 큐의 세션 수용량
-            std::size_t maxTotalSegmentBytes) noexcept;   // 패킷 풀의 전체 세그먼트 메모리 한도
+            std::size_t maxSessions) noexcept;
 
         // 세션 대여 전에 Job·I/O 워커를 시작한다.
         // 일부 시작에 실패하면 이미 시작한 워커도 정지한다.

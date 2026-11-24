@@ -354,8 +354,7 @@ namespace IOCPNetwork::Detail
 
     StartResult IOCPBaseImpl::StartCommon(
         const NetworkOptions& options,
-        std::size_t maxSessions,
-        std::size_t maxTotalSegmentBytes) noexcept
+        std::size_t maxSessions) noexcept
     {
         EngineExecutionScope executionScope;
 
@@ -382,8 +381,7 @@ namespace IOCPNetwork::Detail
             options.ioWorkerCount == 0 ||
             options.jobWorkerCount == 0 ||
             maxSessions == 0 ||
-            maxSessions > (std::numeric_limits<std::uint32_t>::max)() ||
-            maxTotalSegmentBytes == 0)
+            maxSessions > (std::numeric_limits<std::uint32_t>::max)())
         {
             RollbackCommonStart();
 
@@ -401,8 +399,7 @@ namespace IOCPNetwork::Detail
 
         const auto resourcesResult = CreateProcessingResources(
             options,
-            maxSessions,
-            maxTotalSegmentBytes);
+            maxSessions);
 
         if (!resourcesResult)
         {
@@ -1253,8 +1250,7 @@ namespace IOCPNetwork::Detail
 
     StartResult IOCPBaseImpl::CreateProcessingResources(
         const NetworkOptions& options,
-        std::size_t maxSessions,
-        std::size_t maxTotalSegmentBytes) noexcept
+        std::size_t maxSessions) noexcept
     {
         // 시작 경로가 독점적으로 호출하며 기존 자원을 덮어쓰지 않는다.
         if (m_packetPool ||
@@ -1270,13 +1266,12 @@ namespace IOCPNetwork::Detail
             options.ioWorkerCount == 0 ||
             options.jobWorkerCount == 0 ||
             maxSessions == 0 ||
-            maxSessions > (std::numeric_limits<std::uint32_t>::max)() ||
-            maxTotalSegmentBytes == 0)
+            maxSessions > (std::numeric_limits<std::uint32_t>::max)())
         {
             return { StartError::InvalidOptions, 0 };
         }
 
-        auto packetPool = PacketPool::Create(maxTotalSegmentBytes);
+        auto packetPool = PacketPool::Create(options.maxPacketPoolBytes);
 
         if (!packetPool)
         {

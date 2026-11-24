@@ -26,12 +26,11 @@ namespace IOCPNetwork::Detail
         }
     }
 
-    StartResult IOCPClientImpl::Start(const ClientOptions& options, std::size_t maxTotalSegmentBytes) noexcept
+    StartResult IOCPClientImpl::Start(const ClientOptions& options) noexcept
     {
         EngineExecutionScope executionScope;
 
-        if (ValidateOptions(options) != OptionsError::None ||
-            maxTotalSegmentBytes == 0)
+        if (ValidateOptions(options) != OptionsError::None)
         {
             return { StartError::InvalidOptions, 0 };
         }
@@ -51,8 +50,7 @@ namespace IOCPNetwork::Detail
 
         const auto commonResult = StartCommon(
             network,
-            1,
-            maxTotalSegmentBytes);
+            1);
 
         if (!commonResult)
         {

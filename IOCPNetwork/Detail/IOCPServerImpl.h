@@ -27,7 +27,7 @@ namespace IOCPNetwork::Detail
 
         // 설정을 검증하고 공통 자원·Accept 처리를 시작한다.
         // 역할별 준비 실패 시 자원 회수와 Stopped 복구까지 수행한다.
-        [[nodiscard]] StartResult Start(const ServerOptions& options, std::size_t maxTotalSegmentBytes) noexcept;
+        [[nodiscard]] StartResult Start(const ServerOptions& options) noexcept;
 
         // 외부 제어 스레드에서 종료와 자원 회수 완료까지 기다린다.
         [[nodiscard]] StopResult Stop() noexcept;

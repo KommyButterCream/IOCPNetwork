@@ -22,12 +22,18 @@ namespace IOCPNetwork::Detail
         InvalidJobLimit,
         InvalidSendLimit,
         InvalidBatch,
-        InvalidTimeout
+        InvalidTimeout,
+        InvalidPacketPoolLimit
     };
 
     // 공통 설정의 범위와 항목 사이의 제약을 검사한다.
     [[nodiscard]] inline OptionsError ValidateOptions(const NetworkOptions& options) noexcept
     {
+        if (options.maxPacketPoolBytes == 0)
+        {
+            return OptionsError::InvalidPacketPoolLimit;
+        }
+
         if (options.maxRecvPacketSize < PacketHeaderSize ||
             options.maxRecvPacketSize > MaxPacketSize ||
             options.maxSendPacketSize < PacketHeaderSize ||

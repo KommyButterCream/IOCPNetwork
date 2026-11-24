@@ -4,8 +4,6 @@
 #include "NetworkOptions.h"
 #include "NetworkTypes.h"
 
-#include <cstddef> // for std::size_t
-
 namespace IOCPNetwork
 {
     // 서버 하나에 접속하는 클라이언트의 공개 진입점이다.
@@ -20,8 +18,7 @@ namespace IOCPNetwork
 
         // 비동기 연결 요청을 시작한다. 성공은 연결 완료를 뜻하지 않는다.
         [[nodiscard]] IOCPNETWORK_API StartResult Start(
-            const ClientOptions& options,
-            std::size_t maxTotalSegmentBytes) noexcept;
+            const ClientOptions& options) noexcept;
 
         // 외부 제어 스레드에서 종료 완료까지 기다린다.
         [[nodiscard]] IOCPNETWORK_API StopResult Stop() noexcept;
