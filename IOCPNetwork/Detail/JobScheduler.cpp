@@ -562,6 +562,9 @@ namespace IOCPNetwork::Detail
 
             if (std::holds_alternative<ConnectedNotification>(data))
             {
+                // Connect/Accept -> HandShake -> ConnectedNotification -> Connected Callback
+                // 세션 HandeShake 완료 후 Session State Preparing -> Ready 로 변경 한 후
+                // ConnectedNotification 를 처리하면서 서비스 레이어에 콜백으로 Connected 상태를 알린다.
                 if (m_callbacks.connected)
                 {
                     m_callbacks.connected(session);

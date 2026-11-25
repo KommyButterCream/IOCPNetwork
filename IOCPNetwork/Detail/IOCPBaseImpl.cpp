@@ -1027,6 +1027,7 @@ namespace IOCPNetwork::Detail
             {
             case ClientSession::HandshakePhase::WaitingRequest:
             {
+                // 서버가 처리
                 if (packet.packetId != ToPacketId(SystemPacketId::HandshakeRequest))
                 {
                     return false;
@@ -1039,6 +1040,7 @@ namespace IOCPNetwork::Detail
 
             case ClientSession::HandshakePhase::WaitingResponse:
             {
+                // 클라이언트가 처리
                 if (packet.packetId !=
                     ToPacketId(SystemPacketId::HandshakeResponse))
                 {
@@ -1058,6 +1060,7 @@ namespace IOCPNetwork::Detail
         // 송신 함수가 세션 락을 사용하므로 검사 구간 밖에서 호출한다.
         if (sendResponse)
         {
+            // 서버가 Request를 받은 후 Response 를 보낸다.
             std::array<std::byte, HandshakePayloadSize> response{};
 
             if (!WriteHandshakePayload(response, HandshakePayload{ ProtocolVersion }))
